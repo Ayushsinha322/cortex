@@ -202,6 +202,27 @@ touching it. Symlinks pointing out of the root are rejected.
 
 ---
 
+## Tests
+
+```bash
+tests/run                          # everything
+python3 tests/test_cortex.py       # python only
+node tests/markdown.test.js        # markdown renderer
+node tests/render-loop.test.js     # canvas render loop
+```
+
+No test framework to install; `unittest` and plain node. `tests/run` also
+byte-checks every source file, because raw NUL bytes once crept into two UI
+files and made git treat them as binary, silently breaking diffs and `grep`.
+
+`render-loop.test.js` drives the real `app.js` against a stub DOM with a manual
+frame pump. That is not for speed — Chrome pauses `requestAnimationFrame` in
+background tabs, so "has the layout stopped repainting?" cannot be answered
+from an automated tab: it reports a frozen canvas whether the code is right or
+not. Pumping frames by hand gives a real answer.
+
+---
+
 ## Layout
 
 ```
@@ -221,6 +242,11 @@ cortex/
         ├── app.js       canvas force layout, reader panel
         ├── markdown.js  dependency-free markdown renderer
         └── highlight.js dependency-free syntax highlighter
+└── tests/
+    ├── run               runs everything
+    ├── test_cortex.py    scanner, links, reader, actions, http surface
+    ├── markdown.test.js  markdown renderer
+    └── render-loop.test.js  cooling, repaint gating
 ```
 
 ## Requirements

@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Run every cortex test. Exits non-zero if any of them fail.
+set -uo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
+
+bold=$'\033[1m'; dim=$'\033[2m'; red=$'\033[38;5;203m'
+green=$'\033[38;5;42m'; off=$'\033[0m'
+
+failed=0
+
+step() {
+  local name="$1"; shift
+  printf '%s\n' "${bold}== ${name}${off}"
+  if "$@"; then
+    printf '%s\n\n' "${green}   ${name} ok${off}"
+  else
+    printf '%s\n\n' "${red}   ${name} FAILED${off}"
+    failed=1
+  fi
+}
+
+# --- syntax -----------------------------------------------------------------
+syntax() {
+  local bad=0
+  for f in cortex/*.py cortex.py; do
+    python3 -m py_compile "$f" || bad=1
+  done
+  if command -v node >/dev/null; then
+    for f in cortex/ui/*.js; do node --check "$f" >/dev/null || bad=1; done
+  fi
+  find . -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null
+  return $bad
+}
+step "syntax" syntax
+
+# --- no stray control bytes in source ---------------------------------------
+# Raw NUL bytes once crept into two UI files, which made git treat them as
+# binary and silently broke diffs and grep. Never again.
+step "source is clean text" python3 - <<'EOF'
+import pathlib, sys
+bad = []
+for f in sorted(pathlib.Path("cortex").rglob("*")):
+    if f.is_file() and f.suffix in {".js", ".css", ".html", ".py"}:
+        data = f.read_bytes()
+        if any(c < 9 or 13 < c < 32 for c in data):
+            bad.append(str(f))
+for f in bad:
+    print("  control bytes in", f)
+sys.exit(1 if bad else 0)
+EOF
+
+# --- python behaviour -------------------------------------------------------
+step "python" python3 tests/test_cortex.py
+
+# --- browser-side logic -----------------------------------------------------
+if command -v node >/dev/null; then
+  step "markdown" node tests/markdown.test.js
+  step "render loop" node tests/render-loop.test.js
+else
+  printf '%s\n\n' "${dim}   node not installed - skipping the UI tests${off}"
+fi
+
+if [ "$failed" -eq 0 ]; then
+  printf '%s\n' "${green}${bold}everything passed${off}"
+else
+  printf '%s\n' "${red}${bold}some tests failed${off}"
+fi
+exit $failed
