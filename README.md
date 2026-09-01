@@ -74,9 +74,9 @@ of folders. Name one once and it is a keystroke away after that:
 
 ```bash
 cortex ~/myproject --save myproject   # save under a name, and open it
-cortex -P myproject                          # open it again later
-cortex --list                                 # show saved projects
-cortex --forget myproject                    # delete one
+cortex -P myproject                   # open it again later
+cortex --list                         # show saved projects
+cortex --forget myproject             # delete one
 ```
 
 Saved in `~/.config/cortex/projects.json`, so you can edit it by hand.
@@ -84,8 +84,8 @@ Saved in `~/.config/cortex/projects.json`, so you can edit it by hand.
 Control how much opens on launch:
 
 ```bash
-cortex -P myproject -d 5          # five levels deep
-cortex -P myproject -d 0          # nothing; stay lazy and click in yourself
+cortex -P myproject -d 5           # five levels deep
+cortex -P myproject -d 0           # nothing; stay lazy and click in yourself
 cortex ~/big-repo --max-nodes 300  # stop after 300 nodes
 ```
 
@@ -94,8 +94,9 @@ directory — a home directory is far too big to open eagerly.
 
 **This is also where the graph earns its keep.** Across a whole home directory
 most semantic links have one end off-screen. Inside a single project nearly all
-of them resolve at once: `cortex -P myproject` gives 411 nodes with **229 of
-229** semantic edges live — every import and every note link, drawn.
+of them resolve at once. On one mid-size python project cortex opened 411
+nodes with **229 of 229** semantic edges live — every import and every note
+link, drawn.
 
 ### In the window
 
