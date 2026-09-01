@@ -1,50 +1,78 @@
 # cortex
 
-Your filesystem as a brain.
+**See your files as a graph. Read them. Open them in your editor — in the
+terminal you started from.**
 
-`cortex` maps your home directory into a force-directed graph, opens it in its
-own window, and lets you hand any file straight to `nvim`, `nano`, or a pager —
-**running in the terminal you launched it from**.
+Point `cortex` at a folder and it draws everything inside as a living map:
+folders, notes, code, PDFs, and the links between them. Click a node to read
+the file. Press <kbd>Enter</kbd> and it opens in Neovim, in your terminal, right
+where you were.
 
-```
-cortex
-```
+![The cortex graph](docs/graph.jpg)
 
-That's it. A window opens. Double-click a folder to grow it. Click a file to
-read it. Press <kbd>Enter</kbd> and it opens in your editor, in your terminal.
+No dependencies. No database. No import step. It reads your disk directly, and
+it is about 3,000 lines of Python standard library and vanilla JavaScript.
 
 ---
 
-## Why not just use Obsidian?
+## Contents
 
-|                        | Obsidian / Logseq / Anytype | cortex |
-|------------------------|------------------------------|--------|
-| Scope                  | one vault you set up          | your whole home directory, as-is |
-| Sees your code         | no                            | yes — Python, JS/TS, Go, Rust, C, shell |
-| Link types             | `[[wikilinks]]` between notes | wikilinks **and** resolved code imports |
-| Opens files in `nvim`  | no                            | yes, in your real terminal |
-| Reads PDFs             | plugin                        | built in |
-| Setup                  | import / index a vault        | none — it reads the disk directly |
-| Runtime deps           | Electron                      | Python stdlib |
+- [What problem it solves](#what-problem-it-solves)
+- [Install](#install)
+- [First run](#first-run)
+- [Reading files](#reading-files)
+- [Opening files in your editor](#opening-files-in-your-editor)
+- [Working on one project](#working-on-one-project)
+- [Reading the graph](#reading-the-graph)
+- [Every command and key](#every-command-and-key)
+- [How it works](#how-it-works)
+- [Tests](#tests)
+- [FAQ](#faq)
 
-The thing Obsidian structurally cannot do: cortex is launched *from* a terminal
-and keeps that terminal. Clicking "Neovim" runs `nvim` on your TTY. You quit
-the editor and you are back at the graph, still live, still where you were.
+---
+
+## What problem it solves
+
+Note apps like Obsidian, Logseq and Anytype draw a beautiful graph — of one
+vault you set up for them, containing only markdown. Your actual work is not in
+one vault. It is scattered across forty project folders, and half of it is code.
+
+cortex maps what is really on your disk:
+
+|                             | Obsidian / Logseq / Anytype | cortex |
+| --------------------------- | --------------------------- | ------ |
+| What it can see             | one vault you curate        | any folder, including your whole home directory |
+| Understands code            | no                          | yes — Python, JS/TS, Go, Rust, C, shell |
+| Links it draws              | `[[wikilinks]]`             | wikilinks **and** resolved code imports |
+| Opens a file in Neovim      | no                          | yes, in your real terminal |
+| Reads PDFs                  | via a plugin                | built in |
+| Setup before first use      | create and index a vault    | none |
+| Runtime                     | Electron                    | Python stdlib |
+
+The part no note app can do: cortex is launched **from** a terminal and keeps
+it. Clicking "Neovim" runs `nvim` on your TTY. You edit, you quit, and you are
+back at the graph — still open, still where you left it.
 
 ---
 
 ## Install
 
+You need Python 3.9 or newer and a browser. That is all.
+
 ```bash
-git clone <this repo> ~/cortex
+git clone https://github.com/Ayushsinha322/cortex.git ~/cortex
 cd ~/cortex
 ./install.sh
 ```
 
-That drops a `cortex` launcher into `~/.local/bin`. No packages to install —
-it is Python standard library only.
+`install.sh` writes a small `cortex` launcher into `~/.local/bin` pointing back
+at this folder. If that folder is not on your `PATH`, add it:
 
-Run it straight from the checkout instead if you prefer:
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Prefer not to install anything? Run it straight from the clone:
 
 ```bash
 python3 ~/cortex/cortex.py
@@ -52,92 +80,88 @@ python3 ~/cortex/cortex.py
 
 ---
 
-## Usage
+## First run
 
 ```bash
-cortex                      # map ~
-cortex ~/projects           # map a specific directory
-cortex .                    # map the current directory
-cortex -a                   # include dotfiles and dot-directories
-cortex -w tab               # open in a normal browser tab, not an app window
-cortex -w none              # just print the URL
-cortex -p 8800              # pin the port
-cortex --ignore build,tmp   # skip extra directory names
-cortex --no-links           # skip the semantic index (instant start)
+cortex
 ```
 
-### Projects
+A window opens showing your home directory. On Chrome, Brave or Edge it is a
+real app window — no tabs, no address bar. Firefox gets a normal window.
 
-Point it at one project and it opens the *whole* project immediately — three
-levels deep, smallest folders first — instead of making you click through rings
-of folders. Name one once and it is a keystroke away after that:
+Your terminal stays where it is and prints what it is doing:
 
-```bash
-cortex ~/myproject --save myproject   # save under a name, and open it
-cortex -P myproject                   # open it again later
-cortex --list                         # show saved projects
-cortex --forget myproject             # delete one
+```
+   ___ ___  ___ _____ _____  __
+  / __/ _ \| _ \_   _| ____|\ \/ /   your filesystem as a brain
+ | (_| (_) |   / | | | _|    >  <    v0.1.0
+  \___\___/|_|_\ |_| |___|  /_/\_\
+
+  mapping   ~
+  editors   Neovim, nano, vi, VSCodium
+  url       http://127.0.0.1:41277/?t=...
+  window    opened with google-chrome
+
+  ready. click a node in the window; actions land here. ctrl-c to quit.
 ```
 
-Saved in `~/.config/cortex/projects.json`, so you can edit it by hand.
+Leave that terminal alone — it is where your editor will appear.
+<kbd>Ctrl-C</kbd> when you are done.
 
-Control how much opens on launch:
+**Getting around the graph:**
 
-```bash
-cortex -P myproject -d 5           # five levels deep
-cortex -P myproject -d 0           # nothing; stay lazy and click in yourself
-cortex ~/big-repo --max-nodes 300  # stop after 300 nodes
-```
+- **Click** a node to select it and open the reader
+- **Double-click** a folder to grow it into the graph (again to collapse)
+- **Drag** a node to move it; drag empty space to pan
+- **Scroll** to zoom toward your cursor
+- Press <kbd>/</kbd> to search everything, however deep
+- Press <kbd>0</kbd> to fit the whole graph on screen
 
-Auto-opening defaults to 3 levels for a directory you name, and 0 for your home
-directory — a home directory is far too big to open eagerly.
+Nothing is loaded until you ask for it. A home directory can be hundreds of
+gigabytes; cortex reads one folder per double-click, so it does not care how
+big yours is.
 
-**This is also where the graph earns its keep.** Across a whole home directory
-most semantic links have one end off-screen. Inside a single project nearly all
-of them resolve at once. On one mid-size python project cortex opened 411
-nodes with **229 of 229** semantic edges live — every import and every note
-link, drawn.
+---
 
-### In the window
+## Reading files
 
-| Action | What it does |
-|---|---|
-| click | select a node, open the reader |
-| double-click | grow a folder into the graph / collapse it |
-| drag | move a node; drag empty space to pan |
-| wheel | zoom toward the cursor |
-| <kbd>/</kbd> | search everything under the root |
-| <kbd>Enter</kbd> | open the selection in your editor, in the terminal |
-| <kbd>r</kbd> | page through the selection in the terminal |
-| <kbd>e</kbd> | expand / collapse the selected folder |
-| <kbd>f</kbd> | focus mode — hide everything not linked to the selection |
-| <kbd>m</kbd> | full screen the reader |
-| <kbd>esc</kbd> | leave full screen, then close the reader |
-| <kbd>0</kbd> | fit the graph to the screen |
-| <kbd>l</kbd> | toggle semantic links |
-| <kbd>?</kbd> | shortcuts |
+Select a file and it is rendered in the panel on the right.
 
-### The reader
+![Reading a note](docs/reader.jpg)
 
-The panel is 520px, which is fine for a note and useless for a 519-page PDF.
-Hit <kbd>m</kbd> or the **full ⤢** button and the reader takes the whole window;
-<kbd>esc</kbd> brings it back, and a second <kbd>esc</kbd> closes it. The
-content is not re-rendered, so a PDF keeps its page and scroll position across
-the switch, and at full width the browser's viewer gets its page thumbnails,
-outline and zoom controls back. Full screen sticks as you move between files.
+| File type | What you get |
+| --------- | ------------ |
+| Markdown  | fully rendered — tables, task lists, code blocks, `[[wikilinks]]` |
+| Code      | syntax highlighted, with line numbers |
+| PDF       | your browser's own PDF viewer, inline |
+| Images    | shown; **video and audio** play |
+| CSV / TSV | a scrollable table |
+| Notebooks | `.ipynb` flattened into readable markdown |
+| Word      | `.docx` text extracted, with no dependencies |
 
-- **Markdown** — rendered, including tables, task lists, and `[[wikilinks]]`.
-  Clicking a wikilink grows the graph to that note and selects it.
-- **Code** — syntax highlighted with line numbers.
-- **PDF** — the browser's own viewer, inline.
-- **Images, audio, video** — played inline.
-- **CSV / TSV** — as a scrollable table.
-- **Jupyter notebooks** — flattened to readable markdown.
-- **.docx** — text extracted, no dependencies.
+**Clicking a `[[wikilink]]` grows the graph to that note and selects it.** Same
+for a relative markdown link. This is how you follow a train of thought without
+ever touching a file manager.
 
-### The terminal handoff
+### Full screen
 
-Every action in the panel that isn't a preview runs on your terminal:
+The panel is 520px, which is fine for a note and useless for a 500-page PDF.
+Press <kbd>m</kbd>, or the **full ⤢** button, and the reader takes the whole
+window — the document gets about 91% of it. <kbd>esc</kbd> brings the graph
+back; a second <kbd>esc</kbd> closes the reader.
+
+The file is not re-rendered when you switch, so a PDF keeps its page and scroll
+position, and at full width your browser's viewer regains its page thumbnails,
+outline and zoom controls.
+
+---
+
+## Opening files in your editor
+
+This is the point of the whole thing.
+
+With a file selected, press <kbd>Enter</kbd> or click the blue editor button.
+Your terminal — the one you ran `cortex` in — becomes your editor:
 
 ```
 ┌─ nvim ~/myproject/DEPLOY.md  (quit to return to the graph)
@@ -145,115 +169,269 @@ Every action in the panel that isn't a preview runs on your terminal:
 └─ back at the graph
 ```
 
-Editors are auto-detected from your `PATH`. Terminal editors (`nvim`, `vim`,
-`nano`, `micro`, `helix`, `kakoune`, `emacs -nw`) run in the foreground on your
-TTY. GUI editors (`code`, `zed`, `subl`, `kate`, …) are spawned detached and
-marked with `⧉`.
+Quit the editor and the graph is still there, still live, still on the same
+node.
 
-`shell here` drops you into `$SHELL` in that directory. Exit and you are back.
+Other actions on every file:
 
----
+| Button | What happens |
+| ------ | ------------ |
+| **Neovim** (or your first editor) | opens it in your terminal |
+| **read** | pages through it with `bat` or `less` |
+| **editor ▾** | any other editor you have installed |
+| **shell here** | drops you into `$SHELL` in that folder; exit to return |
+| **open ⧉** | hands the file to your desktop's default app |
+| **focus** | hides every node not linked to this one |
 
-## What the graph shows
-
-**Grey-blue edges** are the filesystem tree — a folder to the things inside it.
-
-**Green edges** are note links: `[[wikilinks]]` and relative markdown links,
-resolved across the entire root, not just one vault.
-
-**Blue edges** are code imports, resolved to real files on disk:
-
-| Language | Resolved from |
-|---|---|
-| Python | `import a.b`, `from .x import y` |
-| JS / TS | `import … from './x'`, `require('./x')` |
-| C / C++ | `#include "x.h"` |
-| Shell | `source ./x.sh`, `. ./x.sh` |
-
-Node colour is the file group (folder, note, code, config, doc, media,
-archive). Node size is child count for folders, file size for files. Anything
-modified in the last week gets a soft glow. Open folders are drawn as rings.
-
-The index is built in a background thread at startup and streams into the graph
-as it goes — on a 133,000-file home directory it finishes in about three
-seconds.
+Editors are found on your `PATH` automatically. Terminal editors — `nvim`,
+`vim`, `nano`, `micro`, `helix`, `kakoune`, `emacs -nw` — run in the foreground
+on your TTY. Window editors — `code`, `zed`, `subl`, `kate` — are launched
+detached and marked `⧉`.
 
 ---
 
-## Design notes
+## Working on one project
+
+Pointing cortex at a single project opens the **whole project at once** — three
+folder levels deep, smallest folders first — instead of making you click through
+rings of folders:
+
+```bash
+cortex ~/myproject
+cortex .                # just this folder
+```
+
+Name it once and it is a keystroke away forever:
+
+```bash
+cortex ~/myproject --save myproject   # save under a name, and open it
+cortex -P myproject                   # open it again later
+cortex --list                         # what have I saved?
+cortex --forget myproject             # remove one
+```
+
+Saved as plain JSON in `~/.config/cortex/projects.json`, so you can edit it by
+hand.
+
+How much opens on launch:
+
+```bash
+cortex -P myproject -d 5           # five levels deep
+cortex -P myproject -d 0           # nothing; click in yourself
+cortex ~/big-repo --max-nodes 300  # stop after 300 nodes
+```
+
+Default is 3 levels for a folder you name, and **0 for your home directory** —
+a home directory is far too big to open eagerly.
+
+**Single projects are where the graph pays off.** Across a whole home directory
+most links have one end off-screen, so the graph looks like a plain tree. Inside
+one project nearly every link resolves at once. The screenshots above are a
+26-file project: 37 nodes and **22 of 22** semantic links drawn.
+
+---
+
+## Reading the graph
+
+**Colour** is the kind of file — folder, note, code, config, document, media,
+archive — matching the chips along the top bar.
+
+**Size** is how much is inside: child count for a folder, file size for a file.
+
+**A ring instead of a dot** means an open folder. **A soft glow** means the file
+changed in the last week.
+
+**Edges** come in three kinds:
+
+| Edge | Meaning |
+| ---- | ------- |
+| faint grey-blue | the filesystem — a folder to what is inside it |
+| **green** | a note link: `[[wikilinks]]` and relative markdown links |
+| **blue** | a code import, resolved to a real file on disk |
+
+Code links are found by actually resolving the import:
+
+| Language | Read from |
+| -------- | --------- |
+| Python   | `import a.b`, `from .x import y` |
+| JS / TS  | `import … from './x'`, `require('./x')` |
+| C / C++  | `#include "x.h"` |
+| Shell    | `source ./x.sh`, `. ./x.sh` |
+
+The index is built in the background as soon as you launch, and links appear as
+it goes. On a 133,000-file home directory it finishes in about three seconds.
+
+Toggle semantic links with the **links** button or <kbd>l</kbd>, and hide whole
+categories with the coloured chips in the top bar.
+
+---
+
+## Every command and key
+
+```
+cortex [folder] [options]
+
+  folder                  what to map (default: your home directory)
+
+  -P, --project NAME      open a saved project
+      --save NAME         save this folder under NAME, then open it
+      --list              list saved projects
+      --forget NAME       delete a saved project
+
+  -d, --depth N           folder levels to open on launch
+      --max-nodes N       stop auto-opening after N nodes (default 700)
+
+  -a, --hidden            include dotfiles and dot-folders
+      --ignore a,b,c      extra folder names to skip
+      --no-links          skip the semantic index (instant start)
+
+  -w, --window MODE       app (default) | tab | none
+  -b, --browser BIN       force a particular browser
+  -p, --port N            pin the port
+  -V, --version
+```
+
+| Key | Does |
+| --- | ---- |
+| <kbd>/</kbd> | search everything under the root |
+| <kbd>Enter</kbd> | open the selection in your editor, in the terminal |
+| <kbd>r</kbd> | page through the selection in the terminal |
+| <kbd>m</kbd> | full screen the reader |
+| <kbd>e</kbd> | expand / collapse the selected folder |
+| <kbd>f</kbd> | focus mode — hide everything not linked |
+| <kbd>l</kbd> | show / hide semantic links |
+| <kbd>0</kbd> | fit the graph on screen |
+| <kbd>?</kbd> | the shortcut list |
+| <kbd>esc</kbd> | leave full screen, then close the reader |
+
+Optional extras, if you have them: `bat` for nicer terminal reading,
+`pdftotext` to page a PDF in the terminal.
+
+---
+
+## How it works
+
+```
+you type `cortex`
+        │
+        ├─ a local HTTP server starts on 127.0.0.1, with a fresh random token
+        ├─ a browser window opens pointing at it
+        └─ your terminal waits, holding your TTY
+                 │
+        window ──┤ "open this file in nvim"
+                 ▼
+        the terminal runs nvim in the foreground, on your TTY
+```
+
+Four ideas worth knowing:
+
+**Nothing is read until you ask.** One folder per expansion. Whether you point
+it at a 20-file project or a 140GB home directory, launch takes the same time.
+
+**The link index is separate from the graph.** It walks the whole folder once in
+a background thread and the UI adds edges as both ends become visible. You never
+wait for it.
 
 **The layout settles and then stops.** Force-directed graphs that simulate
-forever jitter, and jitter reads as flicker — labels sit on the edge of the
-collision threshold and blink on and off. Cortex cools the simulation to a
-freeze and then stops repainting entirely; a settled graph costs no CPU. Any
-change — expanding, searching, dragging, zooming, filtering — reheats it.
+forever jitter, and jitter reads as flicker — labels sit right on the collision
+threshold and blink. cortex cools the simulation to a freeze and then stops
+drawing entirely, so an idle graph costs no CPU and no battery. Touching
+anything wakes it.
 
-**Nothing is loaded until you ask for it.** A home directory can be hundreds of
-gigabytes. Cortex reads exactly one directory per expansion, so it stays
-responsive whether you point it at a small project or a 140 GB tree.
+**Security.** This API can start editors and shells, so: it binds to
+`127.0.0.1` only, requires a random token regenerated every run, and resolves
+every path with `realpath` to prove it is genuinely inside the folder you mapped
+before touching it. Symlinks pointing out are refused. All of that is asserted
+in the tests.
 
-**The link index is separate from the graph.** It walks the whole root once,
-in the background, and the UI grafts in edges as both endpoints become visible.
-You never wait on it.
+### Layout
 
-**Security.** The API can launch editors and shells, so it binds to `127.0.0.1`
-only, requires a fresh random token every run, and resolves every path argument
-with `realpath` to confirm it is genuinely inside the mapped root before
-touching it. Symlinks pointing out of the root are rejected.
+```
+cortex/
+├── cortex.py             run it without installing
+├── install.sh
+├── cortex/
+│   ├── cli.py            arguments, saved projects, window launch, action loop
+│   ├── scanner.py        lazy folder scanning, ignore rules, node building
+│   ├── links.py          the semantic index: wikilinks and code imports
+│   ├── reader.py         per-filetype preview extraction
+│   ├── actions.py        editor detection, terminal handoff
+│   ├── server.py         local HTTP API, token check, path guards
+│   └── ui/
+│       ├── index.html
+│       ├── style.css
+│       ├── app.js        canvas force layout and the reader panel
+│       ├── markdown.js   markdown renderer, no dependencies
+│       └── highlight.js  syntax highlighter, no dependencies
+└── tests/
+    ├── run                  runs everything
+    ├── test_cortex.py       scanner, links, reader, actions, HTTP surface
+    ├── markdown.test.js     the markdown renderer
+    └── render-loop.test.js  cooling and repaint gating
+```
 
 ---
 
 ## Tests
 
 ```bash
-tests/run                          # everything
+tests/run                          # all of it
 python3 tests/test_cortex.py       # python only
-node tests/markdown.test.js        # markdown renderer
-node tests/render-loop.test.js     # canvas render loop
+node tests/markdown.test.js
+node tests/render-loop.test.js
 ```
 
-No test framework to install; `unittest` and plain node. `tests/run` also
-byte-checks every source file, because raw NUL bytes once crept into two UI
+92 tests, no framework to install — `unittest` and plain `node`. `tests/run`
+also byte-checks every source file, because raw NUL bytes once got into two UI
 files and made git treat them as binary, silently breaking diffs and `grep`.
 
 `render-loop.test.js` drives the real `app.js` against a stub DOM with a manual
-frame pump. That is not for speed — Chrome pauses `requestAnimationFrame` in
-background tabs, so "has the layout stopped repainting?" cannot be answered
-from an automated tab: it reports a frozen canvas whether the code is right or
+frame pump. That is not for speed: Chrome pauses `requestAnimationFrame` in
+background tabs, so "has the layout stopped repainting?" cannot be answered from
+an automated browser — it reports a frozen canvas whether the code is right or
 not. Pumping frames by hand gives a real answer.
 
 ---
 
-## Layout
+## FAQ
 
-```
-cortex/
-├── cortex.py           standalone entry point
-├── install.sh
-└── cortex/
-    ├── cli.py          argument parsing, window launch, terminal loop
-    ├── scanner.py      lazy directory scanning, ignore rules, node building
-    ├── links.py        semantic index: wikilinks and code imports
-    ├── reader.py       per-filetype preview extraction
-    ├── actions.py      editor detection and terminal handoff
-    ├── server.py       local HTTP API, token auth, path guards
-    └── ui/
-        ├── index.html
-        ├── style.css
-        ├── app.js       canvas force layout, reader panel
-        ├── markdown.js  dependency-free markdown renderer
-        └── highlight.js dependency-free syntax highlighter
-└── tests/
-    ├── run               runs everything
-    ├── test_cortex.py    scanner, links, reader, actions, http surface
-    ├── markdown.test.js  markdown renderer
-    └── render-loop.test.js  cooling, repaint gating
-```
+**Does it change my files?**
+No. cortex only ever reads. The only thing it writes is
+`~/.config/cortex/projects.json` when you use `--save`. Your editor can of
+course write, but that is your editor.
 
-## Requirements
+**Does anything leave my machine?**
+No. The server binds to `127.0.0.1`, there are no external requests, and no CDN
+— the CSS and JavaScript are served from the folder you cloned.
 
-- Python 3.9+
-- A browser for the window. Chromium-family browsers get a real chromeless app
-  window via `--app=`; Firefox falls back to a normal window.
-- Optional: `bat`/`batcat` for nicer terminal reading, `pdftotext` to page a
-  PDF in the terminal.
+**Can other users on this machine see it?**
+No. It listens on loopback only and every request needs a token that is
+regenerated on each launch.
+
+**Why a browser window and not a terminal UI?**
+Because the graph needs to be pretty and PDFs need to be readable, and neither
+survives being drawn in text. The browser is the renderer; the terminal is still
+the place work happens.
+
+**Can I use it over SSH?**
+Run `cortex -w none`, forward the port (`ssh -L 41277:127.0.0.1:41277`), and
+open the printed URL locally. Editor actions run on the remote terminal, which
+is usually what you want.
+
+**It says no browser found.**
+Use `-w none` and open the URL yourself, or point it at a binary with
+`-b firefox`.
+
+**The graph is a plain tree with no green or blue links.**
+You are probably looking at your whole home directory, where most links have one
+end off-screen. Open a single project (`cortex ~/myproject`) and they appear.
+
+**Can I map a folder outside my home directory?**
+Yes — any folder you can read. That folder becomes the boundary, and nothing
+outside it can be opened.
+
+---
+
+## Licence
+
+MIT. Do what you like with it.
