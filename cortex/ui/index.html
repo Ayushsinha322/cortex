@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>cortex — __TITLE__</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<canvas id="stage"></canvas>
+
+<!-- top command bar -->
+<header id="bar">
+  <div class="brand"><span class="dot"></span>cortex</div>
+  <div class="searchwrap">
+    <svg class="mag" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16.5 16.5 21 21"/></svg>
+    <input id="q" type="text" spellcheck="false" autocomplete="off"
+           placeholder="search everything under __TITLE__">
+    <kbd class="slash">/</kbd>
+  </div>
+  <nav id="filters"></nav>
+  <div class="spacer"></div>
+  <button id="btn-links" class="ghost on" title="Toggle semantic links">links</button>
+  <button id="btn-fit" class="ghost" title="Fit graph to screen">fit</button>
+  <button id="btn-help" class="ghost" title="Keyboard shortcuts">?</button>
+</header>
+
+<!-- bottom left: what you are looking at -->
+<div id="stats" class="glass">
+  <span id="stat-nodes">0 nodes</span>
+  <span class="sep"></span>
+  <span id="stat-links">0 links</span>
+  <span class="sep"></span>
+  <span id="stat-index" class="muted">indexing…</span>
+</div>
+
+<!-- bottom right: zoom -->
+<div id="zoomer" class="glass">
+  <button id="z-out" title="Zoom out">−</button>
+  <span id="z-level">100%</span>
+  <button id="z-in" title="Zoom in">+</button>
+</div>
+
+<!-- right: the reader -->
+<aside id="panel">
+  <div id="p-head">
+    <div class="row">
+      <span id="p-kind" class="chip"></span>
+      <button id="p-close" class="ghost sm">esc</button>
+    </div>
+    <h1 id="p-name"></h1>
+    <div id="p-path"></div>
+    <div id="p-meta"></div>
+  </div>
+
+  <div id="p-acts"></div>
+
+  <div id="p-body"></div>
+</aside>
+
+<!-- overlays -->
+<div id="toast"></div>
+
+<div id="help" class="modal">
+  <div class="sheet glass">
+    <h2>cortex</h2>
+    <dl>
+      <dt><kbd>click</kbd></dt><dd>select a node and open the reader</dd>
+      <dt><kbd>double-click</kbd></dt><dd>grow a folder into the graph / collapse it</dd>
+      <dt><kbd>drag</kbd></dt><dd>move a node, or pan the empty canvas</dd>
+      <dt><kbd>wheel</kbd></dt><dd>zoom toward the cursor</dd>
+      <dt><kbd>/</kbd></dt><dd>jump to search</dd>
+      <dt><kbd>enter</kbd></dt><dd>open selection in your default editor</dd>
+      <dt><kbd>r</kbd></dt><dd>read selection in the terminal</dd>
+      <dt><kbd>e</kbd></dt><dd>expand / collapse the selected folder</dd>
+      <dt><kbd>f</kbd></dt><dd>focus mode — hide everything not connected</dd>
+      <dt><kbd>esc</kbd></dt><dd>close the reader</dd>
+    </dl>
+    <p class="muted">Editor actions run in the terminal you launched cortex from.
+       Quit the editor and the graph is still there, still live.</p>
+    <button id="help-close" class="ghost">got it</button>
+  </div>
+</div>
+
+<script>window.CORTEX = __CONFIG__;</script>
+<script src="/static/markdown.js"></script>
+<script src="/static/highlight.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
