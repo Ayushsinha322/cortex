@@ -110,11 +110,20 @@ of them resolve at once: `cortex -P myproject` gives 411 nodes with **229 of
 | <kbd>r</kbd> | page through the selection in the terminal |
 | <kbd>e</kbd> | expand / collapse the selected folder |
 | <kbd>f</kbd> | focus mode — hide everything not linked to the selection |
+| <kbd>m</kbd> | full screen the reader |
+| <kbd>esc</kbd> | leave full screen, then close the reader |
 | <kbd>0</kbd> | fit the graph to the screen |
 | <kbd>l</kbd> | toggle semantic links |
 | <kbd>?</kbd> | shortcuts |
 
 ### The reader
+
+The panel is 520px, which is fine for a note and useless for a 519-page PDF.
+Hit <kbd>m</kbd> or the **full ⤢** button and the reader takes the whole window;
+<kbd>esc</kbd> brings it back, and a second <kbd>esc</kbd> closes it. The
+content is not re-rendered, so a PDF keeps its page and scroll position across
+the switch, and at full width the browser's viewer gets its page thumbnails,
+outline and zoom controls back. Full screen sticks as you move between files.
 
 - **Markdown** — rendered, including tables, task lists, and `[[wikilinks]]`.
   Clicking a wikilink grows the graph to that note and selects it.

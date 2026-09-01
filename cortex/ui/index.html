@@ -47,7 +47,10 @@
   <div id="p-head">
     <div class="row">
       <span id="p-kind" class="chip"></span>
-      <button id="p-close" class="ghost sm">esc</button>
+      <span class="rowbtns">
+        <button id="p-max" class="ghost sm" title="Full screen (m)">full &#10530;</button>
+        <button id="p-close" class="ghost sm">esc</button>
+      </span>
     </div>
     <h1 id="p-name"></h1>
     <div id="p-path"></div>
@@ -75,7 +78,8 @@
       <dt><kbd>r</kbd></dt><dd>read selection in the terminal</dd>
       <dt><kbd>e</kbd></dt><dd>expand / collapse the selected folder</dd>
       <dt><kbd>f</kbd></dt><dd>focus mode — hide everything not connected</dd>
-      <dt><kbd>esc</kbd></dt><dd>close the reader</dd>
+      <dt><kbd>m</kbd></dt><dd>full screen the reader — for PDFs, images, long notes</dd>
+      <dt><kbd>esc</kbd></dt><dd>leave full screen, or close the reader</dd>
     </dl>
     <p class="muted">Editor actions run in the terminal you launched cortex from.
        Quit the editor and the graph is still there, still live.</p>

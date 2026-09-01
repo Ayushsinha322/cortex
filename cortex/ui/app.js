@@ -26,7 +26,7 @@ let links = [];                     // {a, b, kind, key}
 const expanded = new Set();
 const hidden = new Set();           // hidden groups
 let sel = null, hover = null, matches = new Set();
-let showSemantic = true, focusMode = false;
+let showSemantic = true, focusMode = false, maximized = false;
 let semanticEdges = null, editors = [], primaryEditor = null;
 let cam = { s: 1, x: 0, y: 0 };
 let needsFit = false;
@@ -444,7 +444,7 @@ function fit(pad = 90) {
     minX = Math.min(minX, n.x - n.r); maxX = Math.max(maxX, n.x + n.r);
     minY = Math.min(minY, n.y - n.r); maxY = Math.max(maxY, n.y + n.r);
   }
-  const panelW = $("panel").classList.contains("open") ? 520 : 0;
+  const panelW = (panel.classList.contains("open") && !maximized) ? 520 : 0;
   const availW = Math.max(200, W - panelW - pad * 2);
   const availH = Math.max(200, H - pad * 2 - 70);
   const s = Math.max(0.06, Math.min(1.15,
@@ -456,7 +456,7 @@ function fit(pad = 90) {
 }
 
 function centerOn(n) {
-  const panelW = $("panel").classList.contains("open") ? 520 : 0;
+  const panelW = (panel.classList.contains("open") && !maximized) ? 520 : 0;
   cam.s = Math.max(cam.s, 1.1);
   cam.x = (W - panelW) / 2 - n.x * cam.s;
   cam.y = H / 2 - n.y * cam.s;
@@ -516,7 +516,7 @@ window.addEventListener("mouseup", () => {
     dragging.pinned = false;
     if (travel < 4) select(dragging);
     dragging = null;
-  } else if (panning && travel < 4) {
+  } else if (panning && travel < 4 && !maximized) {
     closePanel();
   }
   panning = false;
@@ -550,8 +550,23 @@ const fmtSize = (b) =>
   : (b / 1073741824).toFixed(2) + " GB";
 
 function closePanel() {
+  setMax(false);
   panel.classList.remove("open");
   sel = null; focusMode = false; recomputeNeighbours();
+  dirty = true;
+}
+
+/* Full-screen the reader. The rendered content is reused as-is, so a PDF is
+   not reloaded and you keep your scroll position and page. */
+function setMax(on) {
+  maximized = !!on && panel.classList.contains("open");
+  panel.classList.toggle("max", maximized);
+  const btn = $("p-max");
+  if (btn) {
+    btn.innerHTML = maximized ? "exit &#10530;" : "full &#10530;";
+    btn.title = maximized ? "Leave full screen (esc)" : "Full screen (m)";
+    btn.classList.toggle("on", maximized);
+  }
   dirty = true;
 }
 
@@ -898,6 +913,7 @@ window.addEventListener("keydown", (e) => {
       e.preventDefault(); qbox.focus(); qbox.select(); break;
     case "Escape":
       if ($("help").classList.contains("open")) $("help").classList.remove("open");
+      else if (maximized) setMax(false);
       else closePanel();
       break;
     case "Enter":
@@ -908,6 +924,8 @@ window.addEventListener("keydown", (e) => {
       if (sel && sel.dir) expanded.has(sel.id) ? collapse(sel.id) : expand(sel.id); break;
     case "f":
       if (sel) { focusMode = !focusMode; recomputeNeighbours(); } break;
+    case "m":
+      if (sel) setMax(!maximized); break;
     case "l":
       $("btn-links").click(); break;
     case "?":
@@ -919,6 +937,7 @@ window.addEventListener("keydown", (e) => {
 
 // --------------------------------------------------------------------- wire
 $("p-close").addEventListener("click", closePanel);
+$("p-max").addEventListener("click", () => setMax(!maximized));
 $("p-path").addEventListener("click", () => {
   if (!sel) return;
   navigator.clipboard.writeText(sel.id).then(() => toast("path copied"),
