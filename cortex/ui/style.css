@@ -127,24 +127,44 @@ button.primary:hover{filter:brightness(1.12)}
   border:none;padding:7px 10px;border-radius:7px;cursor:pointer;color:var(--fg-dim)}
 #p-acts .menu button:hover{background:#182236;color:var(--fg)}
 
-#p-body{flex:1;overflow:auto;padding:18px 20px 60px}
+#p-body{flex:1;min-height:0;overflow:auto;padding:18px 20px 60px}
 #p-body::-webkit-scrollbar{width:10px}
 #p-body::-webkit-scrollbar-thumb{background:#1c2740;border-radius:6px;
   border:3px solid transparent;background-clip:content-box}
 #p-body::-webkit-scrollbar-thumb:hover{background:#2b3a5c;background-clip:content-box}
 
 /* maximised reader: the panel takes the whole window, so a PDF or a long note
-   gets real space instead of a 520px column */
+   gets real space instead of a 520px column.
+
+   The chrome collapses to two thin rows. At full width you are here to read the
+   file, not to admire its path, and a tall header was stealing a third of the
+   screen from the document. */
 #panel.max{width:100vw;max-width:100vw;border-left:none}
-#panel.max #p-head,#panel.max #p-acts{padding-left:26px;padding-right:26px}
-#panel.max #p-body{padding:20px 26px 30px}
-#panel.max .viewer-frame{height:calc(100vh - 215px)}
-#panel.max .viewer-img{max-height:calc(100vh - 235px);object-fit:contain;display:block;
-  margin:0 auto}
+
+#panel.max #p-head{display:flex;align-items:center;gap:12px;padding:8px 18px;
+  border-bottom:none}
+#panel.max #p-kind{display:none}
+#panel.max #p-name{order:1;flex:none;margin:0;font-size:14px;max-width:44ch;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#panel.max #p-path{order:2;flex:1 1 auto;min-width:0;margin:0;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+#panel.max #p-meta{order:3;flex:none;margin:0;white-space:nowrap}
+#panel.max #p-head .row{order:4;flex:none}
+#panel.max #p-acts{padding:0 18px 8px;border-bottom:none}
+#panel.max #p-acts button{padding:5px 11px}
+
+/* Media fills whatever height is left. Measuring it with calc() meant guessing
+   the header height, and guessing wrong put a second scrollbar on the panel. */
+#panel.max #p-body{padding:0 18px 14px;min-height:0}
+#panel.max #p-body.fill{padding:0;overflow:hidden;display:flex}
+#panel.max #p-body.fill .viewer-frame{flex:1;height:auto;border:none;
+  border-radius:0;border-top:1px solid var(--line)}
+#panel.max #p-body.fill .viewer-img{max-height:100%;max-width:100%;margin:auto;
+  border:none;border-radius:0}
+
 /* keep prose at a readable measure even on a wide screen */
 #panel.max .md{max-width:78ch;margin:0 auto}
 #panel.max .codeview{max-width:120ch}
-#panel.max #p-name{font-size:21px}
 
 /* rendered markdown */
 .md{font-size:14px;line-height:1.72;color:#d3dbe9}

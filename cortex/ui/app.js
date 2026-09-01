@@ -653,6 +653,7 @@ function buildActions(n) {
 
 async function renderBody(n) {
   const body = $("p-body");
+  body.classList.remove("fill");     // reset before any early return below
   if (n.dir) {
     const kids = expanded.has(n.id) ? null : await api("/api/children", { path: n.id })
       .catch(() => null);
@@ -727,6 +728,7 @@ async function renderBody(n) {
   }
 
   if (p.kind === "pdf") {
+    body.classList.add("fill");        // let it take all the height that is left
     const frame = document.createElement("iframe");
     frame.className = "viewer-frame";
     frame.src = rawURL(n.id);
@@ -735,6 +737,7 @@ async function renderBody(n) {
   }
 
   if (p.kind === "image") {
+    body.classList.add("fill");
     const img = document.createElement("img");
     img.className = "viewer-img";
     img.src = rawURL(n.id);
@@ -743,6 +746,7 @@ async function renderBody(n) {
   }
 
   if (p.kind === "video" || p.kind === "audio") {
+    if (p.kind === "video") body.classList.add("fill");
     const el = document.createElement(p.kind);
     el.controls = true;
     el.className = "viewer-img";
