@@ -13,6 +13,9 @@
 <!-- top command bar -->
 <header id="bar">
   <div class="brand"><span class="dot"></span>cortex</div>
+  <button id="scope" class="scope" hidden>
+    <span id="scope-name"></span><span class="x">&#10005;</span>
+  </button>
   <div class="searchwrap">
     <svg class="mag" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16.5 16.5 21 21"/></svg>
     <input id="q" type="text" spellcheck="false" autocomplete="off"
@@ -78,6 +81,8 @@
       <dt><kbd>r</kbd></dt><dd>read selection in the terminal</dd>
       <dt><kbd>e</kbd></dt><dd>expand / collapse the selected folder</dd>
       <dt><kbd>f</kbd></dt><dd>focus mode — hide everything not connected</dd>
+      <dt><kbd>o</kbd></dt><dd>only this folder — drop everything else from the graph</dd>
+      <dt><kbd>b</kbd></dt><dd>back to the whole map</dd>
       <dt><kbd>m</kbd></dt><dd>full screen the reader — for PDFs, images, long notes</dd>
       <dt><kbd>esc</kbd></dt><dd>leave full screen, or close the reader</dd>
     </dl>

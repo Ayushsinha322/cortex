@@ -224,6 +224,25 @@ cortex ~/big-repo --max-nodes 300  # stop after 300 nodes
 Default is 3 levels for a folder you name, and **0 for your home directory** —
 a home directory is far too big to open eagerly.
 
+### Narrowing down without restarting
+
+You do not have to decide up front. Select any folder in the graph and press
+<kbd>o</kbd>, or click **only this**, and the graph is rebuilt around just that
+folder. Everything else disappears — it is not dimmed or filtered, it is gone:
+
+![Narrowed to one folder](docs/scope.jpg)
+
+Search narrows with it, and says so when a match exists but is out of view
+(`0 matches for "roadmap" (1 outside this folder)`), so you are never quietly
+missing results.
+
+A pill appears in the top bar with the folder's name. Click it, or press
+<kbd>b</kbd>, to go back to the whole map. Following a `[[wikilink]]` that
+points outside the folder widens back out on its own.
+
+This is a view, not a permission: the folder you launched on is still the
+security boundary, and narrowing never lets you reach outside it.
+
 **Single projects are where the graph pays off.** Across a whole home directory
 most links have one end off-screen, so the graph looks like a plain tree. Inside
 one project nearly every link resolves at once. The screenshots above are a
@@ -299,6 +318,8 @@ cortex [folder] [options]
 | <kbd>m</kbd> | full screen the reader |
 | <kbd>e</kbd> | expand / collapse the selected folder |
 | <kbd>f</kbd> | focus mode — hide everything not linked |
+| <kbd>o</kbd> | only this folder — rebuild the graph around the selection |
+| <kbd>b</kbd> | back to the whole map |
 | <kbd>l</kbd> | show / hide semantic links |
 | <kbd>0</kbd> | fit the graph on screen |
 | <kbd>?</kbd> | the shortcut list |
@@ -424,7 +445,12 @@ Use `-w none` and open the URL yourself, or point it at a binary with
 
 **The graph is a plain tree with no green or blue links.**
 You are probably looking at your whole home directory, where most links have one
-end off-screen. Open a single project (`cortex ~/myproject`) and they appear.
+end off-screen. Open a single project (`cortex ~/myproject`) and they appear —
+or select that project's folder in the graph and press <kbd>o</kbd>.
+
+**I opened my home directory but only want one project now.**
+Select the folder and press <kbd>o</kbd>. No need to quit and relaunch. Press
+<kbd>b</kbd> to come back.
 
 **Can I map a folder outside my home directory?**
 Yes — any folder you can read. That folder becomes the boundary, and nothing

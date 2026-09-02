@@ -31,6 +31,11 @@ let semanticEdges = null, editors = [], primaryEditor = null;
 let cam = { s: 1, x: 0, y: 0 };
 let needsFit = false;
 
+/* ROOT is the folder cortex was launched on and the hard security boundary.
+   viewRoot is what the graph is currently showing, which the user can narrow to
+   any folder inside it without restarting. */
+let viewRoot = ROOT;
+
 /* The layout cools down and then freezes. Without this the graph jitters
    forever, which reads as flicker: labels keep crossing the collision
    threshold and blink on and off. Anything that changes the graph reheats it. */
@@ -105,8 +110,8 @@ function addNode(raw, near) {
     y: (near ? near.y : 0) + Math.sin(angle) * dist,
     vx: 0, vy: 0,
     fresh: raw.mtime ? (NOW - raw.mtime) < 7 * 86400 : false,
-    depth: raw.id === ROOT
-      ? 0 : raw.id.slice(ROOT.length).split("/").filter(Boolean).length,
+    depth: raw.id === viewRoot
+      ? 0 : raw.id.slice(viewRoot.length).split("/").filter(Boolean).length,
   });
   n.r = radiusOf(n);
   nodes.set(n.id, n);
@@ -198,11 +203,68 @@ async function autoGrow(maxDepth, budget) {
   }
 }
 
+/* Throw away the graph and rebuild it around one folder. Nothing outside it is
+   drawn, searched, or reachable until you come back out. */
+async function setScope(rawRoot) {
+  viewRoot = rawRoot.id;
+  nodes.clear();
+  links = [];
+  linkKeys.clear();
+  expanded.clear();
+  matches.clear();
+  closePanel();
+  qbox.value = "";
+
+  const rn = addNode(Object.assign({}, rawRoot, { parent: null }), null);
+  rn.x = 0; rn.y = 0;
+  await expand(rn.id);
+  // narrowing to a folder is a request to see that folder, so open it up even
+  // when the launch root was left lazy
+  const depth = viewRoot === ROOT ? AUTO.depth : Math.max(AUTO.depth, 3);
+  if (depth > 0) await autoGrow(depth, AUTO.budget || 700);
+
+  applySemantic();
+  updateScopeUI();
+  needsFit = true;
+  reheat(1);
+}
+
+function isolate(id) {
+  const n = nodes.get(id);
+  if (!n || !n.dir || n.id === viewRoot) return;
+  toast(`showing only ${n.name}`);
+  return setScope(n);
+}
+
+async function showFullMap() {
+  if (viewRoot === ROOT) return;
+  try {
+    await setScope(await api("/api/root"));
+    toast("showing the whole map");
+  } catch (err) { toast("could not reload the root", true); }
+}
+
+function updateScopeUI() {
+  const pill = $("scope");
+  const narrowed = viewRoot !== ROOT;
+  pill.hidden = !narrowed;
+  if (narrowed) {
+    const name = viewRoot.split("/").pop() || viewRoot;
+    $("scope-name").textContent = name;
+    pill.title = `Showing only ${viewRoot.replace(ROOT, "~")} — click for the whole map`;
+    qbox.placeholder = `search inside ${name}`;
+  } else {
+    qbox.placeholder = `search everything under ${CFG.title || "~"}`;
+  }
+}
+
 /* Grow the graph along a real path until that node exists, then select it. */
 async function revealPath(abs) {
   if (!abs.startsWith(ROOT)) { toast("outside the mapped root", true); return; }
-  const rel = abs.slice(ROOT.length).split("/").filter(Boolean);
-  let cur = ROOT;
+  // a link can point outside the folder we narrowed to; widen back out for it
+  if (viewRoot !== ROOT && !abs.startsWith(viewRoot + "/")) await showFullMap();
+  const rel = abs.slice(viewRoot.length).split("/").filter(Boolean);
+  let cur = viewRoot;
   for (let i = 0; i < rel.length; i++) {
     if (!expanded.has(cur)) await expand(cur, { quiet: true });
     cur = cur + "/" + rel[i];
@@ -263,7 +325,7 @@ function simulate(decay = true) {
   }
 
   for (const n of all) {
-    if (n.id === ROOT) { n.x = 0; n.y = 0; n.vx = 0; n.vy = 0; continue; }
+    if (n.id === viewRoot) { n.x = 0; n.y = 0; n.vx = 0; n.vy = 0; continue; }
     n.vx -= n.x * GRAVITY; n.vy -= n.y * GRAVITY;
     if (n.pinned) { n.vx = 0; n.vy = 0; continue; }
     n.vx *= DAMP; n.vy *= DAMP;
@@ -644,6 +706,13 @@ function buildActions(n) {
       buildActions(n);
     });
   }
+  if (n.dir && n.id !== viewRoot) {
+    mk("only this", "ghost", () => isolate(n.id),
+       "drop everything else and graph only this folder (o)");
+  }
+  if (viewRoot !== ROOT) {
+    mk("whole map", "ghost", () => showFullMap(), "back to everything (b)");
+  }
   mk("focus", "ghost", () => {
     focusMode = !focusMode;
     recomputeNeighbours();
@@ -854,10 +923,17 @@ async function runSearch() {
   try { r = await api("/api/search", { q: term }); }
   catch (err) { toast("search failed", true); return; }
 
-  const rootNode = nodes.get(ROOT);
-  for (const hit of r.results) {
+  // when the graph is narrowed, matches from elsewhere would graft on with no
+  // visible parent, so drop them and trim the lineage back to the view root
+  const inScope = (path) =>
+    viewRoot === ROOT || path === viewRoot || path.startsWith(viewRoot + "/");
+  const results = r.results.filter((h) => inScope(h.node.id));
+
+  const rootNode = nodes.get(viewRoot);
+  for (const hit of results) {
     let prev = rootNode;
     for (const anc of hit.ancestors) {
+      if (anc.id === viewRoot || !inScope(anc.id)) continue;
       const a = addNode(anc, prev);
       addLink(prev.id, a.id, "tree");
       prev = a;
@@ -868,9 +944,11 @@ async function runSearch() {
   }
   if (showSemantic) applySemantic();
   updateStats();
+  const shown = results.length;
   $("stat-index").textContent =
-    `${r.count} match${r.count === 1 ? "" : "es"} for “${term}”`;
-  if (r.results.length) {
+    `${shown} match${shown === 1 ? "" : "es"} for “${term}”`
+    + (shown < r.count ? ` (${r.count - shown} outside this folder)` : "");
+  if (shown) {
     warmup(220);
     fit();
   }
@@ -930,6 +1008,10 @@ window.addEventListener("keydown", (e) => {
       if (sel) { focusMode = !focusMode; recomputeNeighbours(); } break;
     case "m":
       if (sel) setMax(!maximized); break;
+    case "o":
+      if (sel && sel.dir) isolate(sel.id); break;
+    case "b":
+      showFullMap(); break;
     case "l":
       $("btn-links").click(); break;
     case "?":
@@ -947,6 +1029,7 @@ $("p-path").addEventListener("click", () => {
   navigator.clipboard.writeText(sel.id).then(() => toast("path copied"),
                                              () => toast("copy blocked", true));
 });
+$("scope").addEventListener("click", () => showFullMap());
 $("btn-fit").addEventListener("click", () => fit());
 $("btn-help").addEventListener("click", () => $("help").classList.toggle("open"));
 $("help-close").addEventListener("click", () => $("help").classList.remove("open"));
@@ -973,11 +1056,7 @@ $("z-out").addEventListener("click", () => zoomAt(W / 2, H / 2, 0.8));
   } catch (err) { /* actions degrade gracefully */ }
 
   try {
-    const root = await api("/api/root");
-    const rn = addNode(root, null);
-    rn.x = 0; rn.y = 0;
-    await expand(root.id);
-    if (AUTO.depth > 0) await autoGrow(AUTO.depth, AUTO.budget || 700);
+    await setScope(await api("/api/root"));
   } catch (err) {
     toast("cortex backend not reachable", true);
   }

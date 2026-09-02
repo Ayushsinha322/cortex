@@ -50,6 +50,16 @@ button,input{font:inherit;color:inherit}
   background:radial-gradient(circle at 35% 35%, #9ec5ff, var(--accent));
   box-shadow:0 0 12px #4c8dffcc}
 
+/* the scope pill: shown only while the graph is narrowed to one folder */
+.scope{display:flex;align-items:center;gap:8px;flex:none;max-width:240px;
+  background:#12203a;border:1px solid #2c4a86;color:#bcd6ff;border-radius:9px;
+  padding:7px 11px;cursor:pointer;font-size:12px;transition:.14s}
+.scope:hover{background:#173055;border-color:#3d63ad}
+.scope #scope-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-weight:600}
+.scope .x{opacity:.55;font-size:11px}
+.scope:hover .x{opacity:1}
+
 .searchwrap{position:relative;flex:0 1 380px;min-width:180px}
 .searchwrap .mag{position:absolute;left:11px;top:50%;transform:translateY(-50%);
   width:15px;height:15px;fill:none;stroke:var(--fg-faint);stroke-width:2;
