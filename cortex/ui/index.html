@@ -10,8 +10,22 @@
 
 <canvas id="stage"></canvas>
 
+<!-- left sidebar: every folder in the root, as a project switcher -->
+<aside id="sidebar" hidden>
+  <div class="sb-head">
+    <span class="sb-title">Directories</span>
+    <button id="sb-close" class="ghost sm"
+            title="Close — back to the whole map (s)">&#10005;</button>
+  </div>
+  <input id="sb-filter" type="text" spellcheck="false" autocomplete="off"
+         placeholder="filter folders">
+  <div id="sb-list"></div>
+  <div class="sb-foot">Closing brings the whole map back</div>
+</aside>
+
 <!-- top command bar -->
 <header id="bar">
+  <button id="sb-toggle" class="ghost icon" title="Directories (s)">&#9776;</button>
   <div class="brand"><span class="dot"></span>cortex</div>
   <button id="scope" class="scope" hidden>
     <span id="scope-name"></span><span class="x">&#10005;</span>
@@ -83,6 +97,7 @@
       <dt><kbd>f</kbd></dt><dd>focus mode — hide everything not connected</dd>
       <dt><kbd>o</kbd></dt><dd>only this folder — drop everything else from the graph</dd>
       <dt><kbd>b</kbd></dt><dd>back to the whole map</dd>
+      <dt><kbd>s</kbd></dt><dd>open / close the directory sidebar</dd>
       <dt><kbd>m</kbd></dt><dd>full screen the reader — for PDFs, images, long notes</dd>
       <dt><kbd>esc</kbd></dt><dd>leave full screen, or close the reader</dd>
     </dl>

@@ -224,21 +224,32 @@ cortex ~/big-repo --max-nodes 300  # stop after 300 nodes
 Default is 3 levels for a folder you name, and **0 for your home directory** —
 a home directory is far too big to open eagerly.
 
-### Narrowing down without restarting
+### The directory sidebar
 
-You do not have to decide up front. Select any folder in the graph and press
-<kbd>o</kbd>, or click **only this**, and the graph is rebuilt around just that
-folder. Everything else disappears — it is not dimmed or filtered, it is gone:
+You do not have to decide up front. Click **☰** in the top left, or press
+<kbd>s</kbd>, and a sidebar lists every folder in the root. Click one and the
+graph is rebuilt around just that folder — everything else is not dimmed or
+filtered, it is gone:
 
-![Narrowed to one folder](docs/scope.jpg)
+![The directory sidebar](docs/scope.jpg)
 
-Search narrows with it, and says so when a match exists but is out of view
-(`0 matches for "roadmap" (1 outside this folder)`), so you are never quietly
-missing results.
+Click another folder to jump straight to it. **Close the sidebar and the whole
+map comes back**, exactly as it looked when you launched — closing is always the
+way out, so it is not a mode you can get stuck in.
 
-A pill appears in the top bar with the folder's name. Click it, or press
-<kbd>b</kbd>, to go back to the whole map. Following a `[[wikilink]]` that
-points outside the folder widens back out on its own.
+There is a filter box for when the root has a lot of folders, and the row you
+are currently in is highlighted.
+
+### Narrowing from the graph itself
+
+Same idea without the sidebar: select any folder node and press <kbd>o</kbd>, or
+click **only this**. A pill appears in the top bar with the folder's name — click
+it, or press <kbd>b</kbd>, for the whole map again.
+
+Search narrows along with the view, and says so when a match exists but is out of
+sight (`0 matches for "roadmap" (1 outside this folder)`), so a narrowed graph
+never quietly hides results. Following a `[[wikilink]]` that points outside the
+folder widens back out on its own.
 
 This is a view, not a permission: the folder you launched on is still the
 security boundary, and narrowing never lets you reach outside it.
@@ -318,6 +329,7 @@ cortex [folder] [options]
 | <kbd>m</kbd> | full screen the reader |
 | <kbd>e</kbd> | expand / collapse the selected folder |
 | <kbd>f</kbd> | focus mode — hide everything not linked |
+| <kbd>s</kbd> | open / close the directory sidebar |
 | <kbd>o</kbd> | only this folder — rebuild the graph around the selection |
 | <kbd>b</kbd> | back to the whole map |
 | <kbd>l</kbd> | show / hide semantic links |
@@ -449,8 +461,9 @@ end off-screen. Open a single project (`cortex ~/myproject`) and they appear —
 or select that project's folder in the graph and press <kbd>o</kbd>.
 
 **I opened my home directory but only want one project now.**
-Select the folder and press <kbd>o</kbd>. No need to quit and relaunch. Press
-<kbd>b</kbd> to come back.
+Press <kbd>s</kbd> for the sidebar and click the project, or select its folder in
+the graph and press <kbd>o</kbd>. No need to quit and relaunch. Closing the
+sidebar — or <kbd>b</kbd> — brings the full map back.
 
 **Can I map a folder outside my home directory?**
 Yes — any folder you can read. That folder becomes the boundary, and nothing

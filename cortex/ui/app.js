@@ -35,6 +35,10 @@ let needsFit = false;
    viewRoot is what the graph is currently showing, which the user can narrow to
    any folder inside it without restarting. */
 let viewRoot = ROOT;
+let sidebarOpen = false;
+let rootDirs = null;              // cached folder list for the sidebar
+const SIDEBAR_W = 260;
+const sidebarInset = () => (sidebarOpen ? SIDEBAR_W : 0);
 
 /* The layout cools down and then freezes. Without this the graph jitters
    forever, which reads as flicker: labels keep crossing the collision
@@ -225,6 +229,7 @@ async function setScope(rawRoot) {
 
   applySemantic();
   updateScopeUI();
+  if (sidebarOpen && rootDirs) renderSidebar();
   needsFit = true;
   reheat(1);
 }
@@ -256,6 +261,82 @@ function updateScopeUI() {
   } else {
     qbox.placeholder = `search everything under ${CFG.title || "~"}`;
   }
+}
+
+/* ---------------------------------------------------------------- sidebar
+   A list of the folders directly under the launch root, used as a project
+   switcher: pick one and the graph is rebuilt around it. Closing the sidebar
+   puts the whole map back, so it is never a mode you can get stuck in. */
+
+async function toggleSidebar(on) {
+  const next = on === undefined ? !sidebarOpen : !!on;
+  if (next === sidebarOpen) return;
+  sidebarOpen = next;
+  $("sidebar").hidden = !sidebarOpen;
+  document.body.classList.toggle("sidebar-open", sidebarOpen);
+
+  if (sidebarOpen) {
+    await fillSidebar();
+    $("sb-filter").focus();
+  } else {
+    await showFullMap();          // closing means "show me everything again"
+  }
+  needsFit = true;
+  reheat(0.6);
+}
+
+async function fillSidebar() {
+  const list = $("sb-list");
+  if (!rootDirs) {
+    list.innerHTML = '<div class="sb-empty">reading…</div>';
+    try {
+      const kids = await api("/api/children", { path: ROOT });
+      rootDirs = kids.filter((k) => k.dir);
+    } catch (err) {
+      list.innerHTML = '<div class="sb-empty">could not read the root</div>';
+      return;
+    }
+  }
+  renderSidebar();
+}
+
+function renderSidebar() {
+  const list = $("sb-list");
+  const term = $("sb-filter").value.trim().toLowerCase();
+  const shown = rootDirs.filter((d) => !term || d.name.toLowerCase().includes(term));
+  list.textContent = "";
+
+  const row = (label, count, active, onClick, extraClass) => {
+    const b = document.createElement("button");
+    b.className = "sb-row" + (active ? " on" : "") + (extraClass ? " " + extraClass : "");
+    b.innerHTML = '<span class="bullet"></span>'
+      + `<span class="nm"></span><span class="ct">${count}</span>`;
+    b.querySelector(".nm").textContent = label;   // never trust a filename as html
+    b.addEventListener("click", onClick);
+    list.appendChild(b);
+    return b;
+  };
+
+  if (!term) {
+    row(`All of ${CFG.title || "~"}`, rootDirs.length, viewRoot === ROOT,
+        () => showFullMap(), "all");
+  }
+  if (!shown.length) {
+    const d = document.createElement("div");
+    d.className = "sb-empty";
+    d.textContent = term ? `nothing matching “${term}”` : "no folders here";
+    list.appendChild(d);
+    return;
+  }
+  for (const dir of shown) {
+    row(dir.name, dir.kids ?? "", viewRoot === dir.id, () => pickFromSidebar(dir));
+  }
+}
+
+async function pickFromSidebar(dir) {
+  if (viewRoot === dir.id) return;
+  await setScope(dir);
+  renderSidebar();
 }
 
 /* Grow the graph along a real path until that node exists, then select it. */
@@ -507,20 +588,22 @@ function fit(pad = 90) {
     minY = Math.min(minY, n.y - n.r); maxY = Math.max(maxY, n.y + n.r);
   }
   const panelW = (panel.classList.contains("open") && !maximized) ? 520 : 0;
-  const availW = Math.max(200, W - panelW - pad * 2);
+  const left = sidebarInset();
+  const availW = Math.max(200, W - panelW - left - pad * 2);
   const availH = Math.max(200, H - pad * 2 - 70);
   const s = Math.max(0.06, Math.min(1.15,
     Math.min(availW / Math.max(1, maxX - minX), availH / Math.max(1, maxY - minY))));
   cam.s = s;
-  cam.x = pad + availW / 2 - ((minX + maxX) / 2) * s;
+  cam.x = left + pad + availW / 2 - ((minX + maxX) / 2) * s;
   cam.y = pad + 40 + availH / 2 - ((minY + maxY) / 2) * s;
   showZoom();
 }
 
 function centerOn(n) {
   const panelW = (panel.classList.contains("open") && !maximized) ? 520 : 0;
+  const left = sidebarInset();
   cam.s = Math.max(cam.s, 1.1);
-  cam.x = (W - panelW) / 2 - n.x * cam.s;
+  cam.x = left + (W - left - panelW) / 2 - n.x * cam.s;
   cam.y = H / 2 - n.y * cam.s;
   showZoom();
 }
@@ -988,7 +1071,7 @@ function updateStats() {
 
 // ----------------------------------------------------------------- keyboard
 window.addEventListener("keydown", (e) => {
-  if (e.target === qbox) return;
+  if (e.target === qbox || e.target === $("sb-filter")) return;
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   switch (e.key) {
     case "/":
@@ -1012,6 +1095,8 @@ window.addEventListener("keydown", (e) => {
       if (sel && sel.dir) isolate(sel.id); break;
     case "b":
       showFullMap(); break;
+    case "s":
+      toggleSidebar(); break;
     case "l":
       $("btn-links").click(); break;
     case "?":
@@ -1030,6 +1115,15 @@ $("p-path").addEventListener("click", () => {
                                              () => toast("copy blocked", true));
 });
 $("scope").addEventListener("click", () => showFullMap());
+$("sb-toggle").addEventListener("click", () => toggleSidebar());
+$("sb-close").addEventListener("click", () => toggleSidebar(false));
+$("sb-filter").addEventListener("input", () => renderSidebar());
+$("sb-filter").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    if ($("sb-filter").value) { $("sb-filter").value = ""; renderSidebar(); }
+    else toggleSidebar(false);
+  }
+});
 $("btn-fit").addEventListener("click", () => fit());
 $("btn-help").addEventListener("click", () => $("help").classList.toggle("open"));
 $("help-close").addEventListener("click", () => $("help").classList.remove("open"));
