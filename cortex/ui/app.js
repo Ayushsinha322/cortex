@@ -27,6 +27,7 @@ const expanded = new Set();
 const hidden = new Set();           // hidden groups
 let sel = null, hover = null, matches = new Set();
 let showSemantic = true, focusMode = false, maximized = false;
+let showLabels = true;
 let semanticEdges = null, editors = [], primaryEditor = null;
 let cam = { s: 1, x: 0, y: 0 };
 let needsFit = false;
@@ -516,6 +517,8 @@ function draw() {
     }
     return true;
   };
+  if (!showLabels) { shownLabels = new Set(); return; }
+
   // A label that was visible last frame keeps priority, so a node drifting
   // past another one cannot make its label strobe.
   const ordered = [...nodes.values()].sort((p, q) =>
@@ -1097,6 +1100,11 @@ window.addEventListener("keydown", (e) => {
       showFullMap(); break;
     case "s":
       toggleSidebar(); break;
+    case "t":
+      showLabels = !showLabels;
+      dirty = true;
+      toast(showLabels ? "labels on" : "labels off — safe for screenshots");
+      break;
     case "l":
       $("btn-links").click(); break;
     case "?":
