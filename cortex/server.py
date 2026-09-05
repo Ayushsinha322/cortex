@@ -16,7 +16,7 @@ import secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
-from . import gitstatus, grep, reader
+from . import gitstatus, grep, layout, reader
 
 UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
 
@@ -36,6 +36,9 @@ CSP = ("default-src 'none'; "
        "form-action 'none'; "
        "frame-ancestors 'none'")
 
+# A layout for the biggest graph we will draw, with room to spare.
+MAX_BODY = 4 * 1024 * 1024
+
 STATIC_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
@@ -48,7 +51,7 @@ class Context:
     """Everything the handler needs, injected once at startup."""
 
     def __init__(self, scanner, links, runner, token, title, ui_config=None,
-                 watcher=None):
+                 watcher=None, remember_layout=True):
         self.scanner = scanner
         self.links = links
         self.runner = runner
@@ -56,6 +59,7 @@ class Context:
         self.title = title
         self.ui_config = ui_config or {}
         self.watcher = watcher
+        self.remember_layout = remember_layout
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -162,6 +166,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": "bad path"}, 400)
             return self._json(gitstatus.read(path, self.ctx.scanner.inside))
 
+        if route == "/api/layout":
+            if not self.ctx.remember_layout:
+                return self._json({"positions": {}, "cam": None})
+            return self._json(layout.load(self.ctx.scanner.root))
+
         if route == "/api/links":
             return self._json(self.ctx.links.snapshot())
 
@@ -176,14 +185,25 @@ class Handler(BaseHTTPRequestHandler):
         params = parse_qs(url.query)
         if not self._authed(params):
             return self._json({"error": "bad token"}, 403)
-        if url.path != "/api/action":
+        if url.path not in ("/api/action", "/api/layout"):
             return self._json({"error": "not found"}, 404)
 
         try:
             length = int(self.headers.get("Content-Length") or 0)
+            if length > MAX_BODY:
+                return self._json({"ok": False, "error": "body too large"}, 413)
             body = json.loads(self.rfile.read(length) or b"{}")
         except (ValueError, TypeError):
             return self._json({"ok": False, "error": "bad body"}, 400)
+        if not isinstance(body, dict):
+            return self._json({"ok": False, "error": "bad body"}, 400)
+
+        if url.path == "/api/layout":
+            if not self.ctx.remember_layout:
+                return self._json({"ok": False, "error": "not remembering"})
+            ok = layout.save(self.ctx.scanner.root, body.get("positions") or {},
+                             body.get("cam"))
+            return self._json({"ok": ok})
 
         path = os.path.realpath(body.get("path") or "")
         if not self.ctx.scanner.inside(path):

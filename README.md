@@ -11,7 +11,7 @@ where you were.
 ![The cortex graph](docs/graph.jpg)
 
 No dependencies. No database. No import step. It reads your disk directly, and
-it is about 3,600 lines of Python standard library and vanilla JavaScript.
+it is about 5,200 lines of Python standard library and vanilla JavaScript.
 
 ---
 
@@ -123,8 +123,15 @@ Leave that terminal alone — it is where your editor will appear.
 - **Double-click** a folder to grow it into the graph (again to collapse)
 - **Drag** a node to move it; drag empty space to pan
 - **Scroll** to zoom toward your cursor
+- **Arrow keys** step from the selected node to the next one that way,
+  following links first
 - Press <kbd>/</kbd> to search everything, however deep
 - Press <kbd>0</kbd> to fit the whole graph on screen
+
+**It opens where you left it.** Positions are saved per folder, with the
+camera, so a project you open every day is the same map every day instead of
+re-settling somewhere new. That is a cache in `~/.cache/cortex/layouts`;
+deleting it costs one re-settle, and `--no-layout` turns it off.
 
 Nothing is loaded until you ask for it. A home directory can be hundreds of
 gigabytes; cortex reads one folder per double-click, so it does not care how
@@ -457,6 +464,7 @@ cortex [folder] [options]
       --no-gitignore      show what git hides, too
       --no-links          skip the semantic index (instant start)
       --no-watch          do not notice files changing while the window is open
+      --no-layout         do not remember where the nodes were last time
 
   -w, --window MODE       app (default) | tab | none
   -b, --browser BIN       force a particular browser
@@ -480,11 +488,26 @@ cortex [folder] [options]
 | <kbd>l</kbd> | show / hide semantic links |
 | <kbd>g</kbd> | show / hide what git thinks of each file |
 | <kbd>0</kbd> | fit the graph on screen |
+| <kbd>arrows</kbd> | step to the next node that way, following links |
+| <kbd>x</kbd> | save this view as a picture — <kbd>shift</kbd> for SVG |
 | <kbd>?</kbd> | the shortcut list |
 | <kbd>esc</kbd> | leave full screen, then close the reader |
 
 Optional extras, if you have them: `rg` for faster content search, `bat` for
 nicer terminal reading, `pdftotext` to page a PDF in the terminal.
+
+---
+
+## Saving a picture of it
+
+Press <kbd>x</kbd>, or click **save**, and the view you are looking at becomes
+a PNG in your downloads. <kbd>shift</kbd> makes it an SVG instead, redrawn from
+the same numbers rather than captured, so it stays sharp on a slide or in
+print.
+
+Either way it is the view as it stands — pan, zoom, whatever the chips are
+hiding, labels on or off. <kbd>t</kbd> first if you want the shape without the
+names.
 
 ---
 
@@ -553,6 +576,7 @@ cortex/
 │   ├── grep.py           content search, through ripgrep or a plain walk
 │   ├── gitstatus.py      what git thinks of each file
 │   ├── watch.py          noticing the disk change under an open window
+│   ├── layout.py         where the nodes were, per mapped folder
 │   ├── reader.py         per-filetype preview extraction
 │   ├── actions.py        editor detection, terminal handoff
 │   ├── server.py         local HTTP API, token check, path guards
@@ -571,7 +595,8 @@ cortex/
     ├── connections.test.js  backlinks, and following one into the graph
     ├── search.test.js       both searches, and the line reaching the editor
     ├── refresh.test.js      the graph keeping up with the disk
-    └── tags.test.js         tag nodes, and their refusal to act like files
+    ├── tags.test.js         tag nodes, and their refusal to act like files
+    └── view.test.js         remembered layout, arrow keys, saving a picture
 ```
 
 ---
@@ -587,9 +612,10 @@ node tests/connections.test.js
 node tests/search.test.js
 node tests/refresh.test.js
 node tests/tags.test.js
+node tests/view.test.js
 ```
 
-286 tests, no framework to install — `unittest` and plain `node`. They run on
+326 tests, no framework to install — `unittest` and plain `node`. They run on
 every push against Python 3.9 and 3.13 on Linux, and 3.13 on macOS. `tests/run`
 also byte-checks every source file, because raw NUL bytes once got into two UI
 files and made git treat them as binary, silently breaking diffs and `grep`.
