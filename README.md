@@ -429,6 +429,7 @@ cortex [folder] [options]
       --ignore a,b,c      extra folder names to skip
       --no-gitignore      show what git hides, too
       --no-links          skip the semantic index (instant start)
+      --no-watch          do not notice files changing while the window is open
 
   -w, --window MODE       app (default) | tab | none
   -b, --browser BIN       force a particular browser
@@ -479,6 +480,16 @@ Four ideas worth knowing:
 **Nothing is read until you ask.** One folder per expansion. Whether you point
 it at a 20-file project or a 140GB home directory, launch takes the same time.
 
+**The graph keeps up with the disk.** Write a file in your editor and it
+appears in the graph, in its folder, without a relaunch; delete one and it
+leaves. The server remembers the folders the window has read and compares their
+modification times when the window asks, every two and a half seconds, so an
+idle cortex with no window attached does no work at all. The semantic index is
+rebuilt on the same signal, but only for a folder that indexed in under a
+couple of seconds and never more than once every fifteen — a home directory
+takes long enough that it would spend its life re-indexing. `--no-watch` turns
+the whole thing off.
+
 **The link index is separate from the graph.** It walks the whole folder once in
 a background thread and the UI adds edges as both ends become visible. You never
 wait for it.
@@ -514,6 +525,7 @@ cortex/
 │   ├── links.py          the semantic index: wikilinks and code imports
 │   ├── grep.py           content search, through ripgrep or a plain walk
 │   ├── gitstatus.py      what git thinks of each file
+│   ├── watch.py          noticing the disk change under an open window
 │   ├── reader.py         per-filetype preview extraction
 │   ├── actions.py        editor detection, terminal handoff
 │   ├── server.py         local HTTP API, token check, path guards
@@ -530,7 +542,8 @@ cortex/
     ├── markdown.test.js     the markdown renderer
     ├── render-loop.test.js  cooling and repaint gating
     ├── connections.test.js  backlinks, and following one into the graph
-    └── search.test.js       both searches, and the line reaching the editor
+    ├── search.test.js       both searches, and the line reaching the editor
+    └── refresh.test.js      the graph keeping up with the disk
 ```
 
 ---
@@ -544,9 +557,10 @@ node tests/markdown.test.js
 node tests/render-loop.test.js
 node tests/connections.test.js
 node tests/search.test.js
+node tests/refresh.test.js
 ```
 
-223 tests, no framework to install — `unittest` and plain `node`. They run on
+245 tests, no framework to install — `unittest` and plain `node`. They run on
 every push against Python 3.9 and 3.13 on Linux, and 3.13 on macOS. `tests/run`
 also byte-checks every source file, because raw NUL bytes once got into two UI
 files and made git treat them as binary, silently breaking diffs and `grep`.

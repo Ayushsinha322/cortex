@@ -47,13 +47,15 @@ STATIC_TYPES = {
 class Context:
     """Everything the handler needs, injected once at startup."""
 
-    def __init__(self, scanner, links, runner, token, title, ui_config=None):
+    def __init__(self, scanner, links, runner, token, title, ui_config=None,
+                 watcher=None):
         self.scanner = scanner
         self.links = links
         self.runner = runner
         self.token = token
         self.title = title
         self.ui_config = ui_config or {}
+        self.watcher = watcher
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -117,7 +119,23 @@ class Handler(BaseHTTPRequestHandler):
             path = self._safe_path(params)
             if not path:
                 return self._json({"error": "bad path"}, 400)
-            return self._json(self.ctx.scanner.children(path))
+            kids = self.ctx.scanner.children(path)
+            # `is not None`, not a truth test: a Watcher has __len__, so an
+            # empty one is falsy and would never get its first directory.
+            if self.ctx.watcher is not None:
+                self.ctx.watcher.note(path)
+            return self._json(kids)
+
+        if route == "/api/pulse":
+            if self.ctx.watcher is None:
+                return self._json({"changed": [], "reindexed": False})
+            changed = self.ctx.watcher.poll()
+            reindexed = False
+            if changed:
+                # a .gitignore may be among what changed, and the rules are cached
+                self.ctx.scanner.forget_ignores()
+                reindexed = self.ctx.links.maybe_rebuild()
+            return self._json({"changed": changed, "reindexed": reindexed})
 
         if route == "/api/search":
             term = (params.get("q") or [""])[0]

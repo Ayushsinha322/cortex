@@ -163,8 +163,9 @@ async function expand(id, opts = {}) {
   }
 }
 
-function collapse(id) {
-  expanded.delete(id);
+/* Everything under these nodes leaves the graph. Used both by collapsing a
+   folder and by a file disappearing from the disk under us. */
+function dropDescendants(ids) {
   const doomed = new Set();
   const walk = (pid) => {
     for (const n of nodes.values()) {
@@ -174,17 +175,96 @@ function collapse(id) {
       }
     }
   };
-  walk(id);
-  for (const d of doomed) { nodes.delete(d); expanded.delete(d); matches.delete(d); }
+  for (const id of ids) walk(id);
+  return doomed;
+}
+
+function forget(doomed) {
+  if (!doomed.size) return false;
+  for (const d of doomed) {
+    nodes.delete(d); expanded.delete(d); matches.delete(d);
+  }
   links = links.filter((l) => {
     const drop = doomed.has(l.a) || doomed.has(l.b);
     if (drop) linkKeys.delete(l.key);
     return !drop;
   });
   if (sel && doomed.has(sel.id)) closePanel();
+  return true;
+}
+
+function collapse(id) {
+  expanded.delete(id);
+  forget(dropDescendants([id]));
   updateStats();
   reheat(0.45);
 }
+
+/* ------------------------------------------------------------ live refresh
+
+   The graph is otherwise a photograph taken at launch. The server watches the
+   folders the UI has read and says which ones changed; each open one is then
+   re-listed and reconciled in place, so a file you just wrote appears where it
+   belongs instead of after a relaunch. */
+async function refreshDir(path) {
+  if (!expanded.has(path) || !nodes.has(path)) return false;
+  let kids;
+  try { kids = await api("/api/children", { path }); }
+  catch (err) { return false; }
+  if (!Array.isArray(kids) || !nodes.has(path)) return false;
+
+  const want = new Map(kids.map((k) => [k.id, k]));
+  const vanished = [...nodes.values()]
+    .filter((n) => n.parent === path && !want.has(n.id))
+    .map((n) => n.id);
+  let touched = forget(new Set([...vanished, ...dropDescendants(vanished)]));
+
+  const parent = nodes.get(path);
+  for (const k of kids) {
+    const had = nodes.get(k.id);
+    if (had) {
+      if (had.size !== k.size || had.mtime !== k.mtime || had.kids !== k.kids) {
+        had.size = k.size; had.mtime = k.mtime; had.kids = k.kids;
+        had.fresh = k.mtime ? (Date.now() / 1000 - k.mtime) < 7 * 86400 : false;
+        had.r = radiusOf(had);
+        touched = true;
+      }
+    } else {
+      const n = addNode(k, parent);
+      addLink(path, n.id, "tree");
+      touched = true;
+    }
+  }
+  return touched;
+}
+
+let pulseBusy = false;
+async function pulse() {
+  if (pulseBusy) return;
+  if (typeof document.visibilityState === "string"
+      && document.visibilityState === "hidden") return;
+  pulseBusy = true;
+  try {
+    const r = await api("/api/pulse");
+    const changed = (r && r.changed) || [];
+    if (!changed.length) return;
+
+    let touched = false;
+    for (const path of changed) {
+      if (await refreshDir(path)) touched = true;
+    }
+    if (r.reindexed) { semanticEdges = null; applySemantic(); }
+    loadGit();
+    if (touched) { updateStats(); reheat(0.3); }
+    if (sel && changed.includes(parentOf(sel.id))) renderBody(sel);
+  } catch (err) {
+    /* the server going away is not worth a toast every two seconds */
+  } finally {
+    pulseBusy = false;
+  }
+}
+
+const parentOf = (p) => p.slice(0, p.lastIndexOf("/"));
 
 async function applySemantic() {
   if (!semanticEdges) {
@@ -747,6 +827,7 @@ CFG.debug = () => ({
    through a synthetic canvas click would test the hit-testing maths rather
    than the thing under test. Returns false when that path is not in the graph,
    which is itself worth asserting. */
+CFG.debug.pulse = () => pulse();
 CFG.debug.select = (id) => {
   const n = nodes.get(id);
   if (n) select(n);
@@ -1466,6 +1547,8 @@ $("z-out").addEventListener("click", () => zoomAt(W / 2, H / 2, 0.8));
 
   applySemantic();
   loadGit();
+  const every = CFG.pulseMs || 0;
+  if (every > 0) setInterval(pulse, every);
   needsFit = true;
   frame();
 })();

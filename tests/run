@@ -61,6 +61,7 @@ if command -v node >/dev/null; then
   step "render loop" node tests/render-loop.test.js
   step "connections" node tests/connections.test.js
   step "search" node tests/search.test.js
+  step "refresh" node tests/refresh.test.js
 else
   printf '%s\n\n' "${dim}   node not installed - skipping the UI tests${off}"
 fi
