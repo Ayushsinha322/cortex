@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import inspect
 import unittest
 import zipfile
@@ -34,6 +35,7 @@ from cortex.links import (LinkIndex, frontmatter_tags, note_tags,
                           _code_targets, _crate_src, _resolve_rel)
 from cortex.ignore import IgnoreFile
 from cortex.scanner import Scanner, group_of
+from cortex import watch
 from cortex.watch import Watcher
 from cortex.server import Context, serve
 
@@ -544,11 +546,13 @@ class TestWatcher(unittest.TestCase):
 
     def test_a_new_file_is_noticed(self):
         self.w.note(self.dir)
+        time.sleep(0.01)
         write(f"{self.dir}/new.md", "x\n")
         self.assertEqual(self.w.poll(), [self.dir])
 
     def test_it_only_reports_a_change_once(self):
         self.w.note(self.dir)
+        time.sleep(0.01)
         write(f"{self.dir}/new.md", "x\n")
         self.w.poll()
         self.assertEqual(self.w.poll(), [])
@@ -556,23 +560,36 @@ class TestWatcher(unittest.TestCase):
     def test_a_deleted_file_is_noticed(self):
         path = write(f"{self.dir}/gone.md", "x\n")
         self.w.note(self.dir)
+        time.sleep(0.01)                 # past this filesystem's granule
         os.remove(path)
         self.assertEqual(self.w.poll(), [self.dir])
 
-    def test_a_replacement_within_the_same_second_is_still_noticed(self):
-        # Coarse filesystem timestamps make mtime alone unreliable here, so
-        # the entry count rides along with it.
-        write(f"{self.dir}/a.md", "x\n")
+    def test_a_change_inside_one_timestamp_granule_is_still_noticed(self):
+        """The case a directory mtime cannot see.
+
+        A change landing in the same filesystem timestamp granule as our last
+        look leaves the mtime identical, so mtime alone would miss it not for
+        one poll but for good. The entry count catches it, on the deeper poll.
+        """
+        write(f"{self.dir}/gone.md", "x\n")
         self.w.note(self.dir)
-        write(f"{self.dir}/b.md", "x\n")
-        os.remove(f"{self.dir}/a.md")
-        os.stat(self.dir)
-        self.assertIn(self.dir, self.w.poll() or [self.dir])
+        os.remove(f"{self.dir}/gone.md")     # same granule as note()
+        for _ in range(watch.DEEP_EVERY):
+            if self.w.poll():
+                return
+        self.fail("a same-granule change was never noticed")
+
+    def test_the_cheap_poll_still_catches_an_ordinary_change(self):
+        self.w.note(self.dir)
+        time.sleep(0.01)
+        write(f"{self.dir}/new.md", "x\n")
+        self.assertEqual(self.w.poll(), [self.dir])   # the very first poll
 
     def test_a_directory_that_disappears_is_reported_then_dropped(self):
         inner = os.path.join(self.dir, "inner")
         os.makedirs(inner)
         self.w.note(inner)
+        time.sleep(0.01)
         shutil.rmtree(inner)
         self.assertEqual(self.w.poll(), [inner])
         self.assertEqual(self.w.poll(), [])

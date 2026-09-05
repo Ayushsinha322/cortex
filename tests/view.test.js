@@ -38,8 +38,11 @@ const { pump, boot, el, sent, blobs, downloads } = harness({
   children: childrenOf,
   rootNode: () => fsnode(ROOT, true, 4, ROOT),
   layout: () => ({ positions: SAVED, cam: { s: 1, x: 800, y: 450 } }),
+  // two carriers, so the tag is drawn -- and neither of them is root, so it
+  // stays the nearby node that root is not linked to
   links: () => ({ ready: true,
-                  edges: [[ROOT, RIGHT, "note"], [RIGHT, TAG, "tag"]],
+                  edges: [[ROOT, RIGHT, "note"], [RIGHT, TAG, "tag"],
+                          [ABOVE, TAG, "tag"]],
                   notes: 5, sources: 0, tags: ["elsewhere"], elapsed: 0.1 }),
   config: { rememberLayout: true },
   autoExpand: { depth: 1, budget: 100 },
@@ -139,8 +142,8 @@ const at = (id) => global.window.CORTEX.debug.at(id);
         put && put.body.cam.x === D().cam.x && put.body.cam.s === D().cam.s,
         put && JSON.stringify(put.body.cam));
 
-  check("a tag is left out of the saved layout, having nowhere to belong",
-        put && !(TAG in put.body.positions),
+  check("a tag's place is kept too, so it does not move each launch",
+        put && TAG in put.body.positions,
         put && Object.keys(put.body.positions).join(","));
 
   done("view");

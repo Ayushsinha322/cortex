@@ -50,8 +50,9 @@ const connNames = () => [...conns()].map((r) => r.children[1].textContent);
 (async () => {
   const D = await boot();
 
-  check("a tag became a node", D.select(WORK) === true);
-  check("a tag with one carrier is there too", D.select(SOLO) === true);
+  check("a tag two notes share becomes a node", D.select(WORK) === true);
+  check("a tag only one note carries is not drawn, being no meeting point",
+        D.select(SOLO) === false);
 
   // --- the point of tags ---------------------------------------------------
   D.select(WORK);
@@ -62,10 +63,18 @@ const connNames = () => [...conns()].map((r) => r.children[1].textContent);
         connNames().join(","));
 
   D.select(A);
-  check("a note lists the tags it carries",
+  check("a note lists every tag it carries, drawn or not",
         connNames().includes("#work") && connNames().includes("#solo"),
         connNames().join(","));
   check("and still lists the note it links to", connNames().includes("c.md"));
+
+  // clicking one that is not drawn brings it in rather than refusing
+  [...conns()].find((r) => r.children[1].textContent === "#solo").click();
+  await new Promise((r) => setTimeout(r, 60));
+  pump(2);
+  check("clicking an undrawn tag brings it into the graph",
+        D().selected === SOLO && D.select(SOLO) === true,
+        `selected=${D().selected}`);
 
   // --- a tag is not a file -------------------------------------------------
   D.select(WORK);
@@ -107,17 +116,32 @@ const connNames = () => [...conns()].map((r) => r.children[1].textContent);
   const chip = el("filters").children.find((c) => c.innerHTML.includes("tags"));
   check("tags have a filter chip of their own", !!chip);
 
-  const withTags = shown();
+  const withAll = shown();
   const total = D().nodes;
-  chip.click();
+  const tagCount = 2;                  // #work, and #solo once asked for
+
+  // shift-click still hides one kind on its own
+  chip.click({ shiftKey: true });
   pump(2);
-  check("hiding tags takes both of them off screen", shown() === withTags - 2,
-        `${withTags} shown -> ${shown()}`);
+  check("shift-clicking hides tags and leaves the rest",
+        shown() === withAll - tagCount, `${withAll} shown -> ${shown()}`);
   check("but does not delete them", D().nodes === total,
         `${total} nodes -> ${D().nodes}`);
+  chip.click({ shiftKey: true });
+  pump(2);
+  check("and they come back", shown() === withAll, `${shown()}`);
+
+  // a plain click shows that kind and takes the rest off
   chip.click();
   pump(2);
-  check("and they come back", shown() === withTags, `${shown()}`);
+  check("clicking shows only tags, and the folders they hang from",
+        shown() === tagCount + 1, `${shown()} shown`);
+  check("the chip says which kind is soloed", chip.classList.contains("solo"));
+  chip.click();
+  pump(2);
+  check("clicking it again brings everything back", shown() === withAll,
+        `${shown()}`);
+  check("and the chip stops saying so", !chip.classList.contains("solo"));
 
   done("tags");
 })();

@@ -118,6 +118,7 @@ kbd{background:#161f2e;border:1px solid #26324a;border-bottom-width:2px;
 .chip-f.on{color:var(--fg);border-color:var(--line);background:#16203300}
 .chip-f i{width:8px;height:8px;border-radius:50%;background:currentColor;flex:none}
 .chip-f.off i{opacity:.25}
+.chip-f.solo{border-color:currentColor;background:#16203a}
 
 .spacer{flex:1}
 button.ghost{background:#0e1524;border:1px solid var(--line);border-radius:9px;

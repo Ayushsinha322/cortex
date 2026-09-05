@@ -15,9 +15,12 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import threading
+import time
 
 TIMEOUT = 5.0
 MAX_ENTRIES = 5000          # a repository mid-rebase can report a great many
+CACHE_TTL = 2.0             # seconds; `git status` is cheap, not free
 
 MODIFIED = "modified"
 STAGED = "staged"
@@ -91,7 +94,28 @@ def _roll_up(states: dict, repo: str) -> dict:
     return out
 
 
+_CACHE: dict[str, tuple[float, dict]] = {}
+_CACHE_LOCK = threading.Lock()
+
+
 def read(path: str, inside=None) -> dict:
+    """Cached in front of `_read`, because the window asks after every change
+    it notices and a burst of saves would otherwise be a burst of subprocesses.
+    """
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        hit = _CACHE.get(path)
+        if hit and now - hit[0] < CACHE_TTL:
+            return hit[1]
+    answer = _read(path, inside)
+    with _CACHE_LOCK:
+        _CACHE[path] = (now, answer)
+        if len(_CACHE) > 32:
+            _CACHE.clear()
+    return answer
+
+
+def _read(path: str, inside=None) -> dict:
     """{"repo": ..., "branch": ..., "states": {path: state}} for one folder.
 
     `inside` is the boundary test.  A repository usually starts above the

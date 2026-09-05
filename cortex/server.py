@@ -136,8 +136,12 @@ class Handler(BaseHTTPRequestHandler):
             changed = self.ctx.watcher.poll()
             reindexed = False
             if changed:
-                # a .gitignore may be among what changed, and the rules are cached
-                self.ctx.scanner.forget_ignores()
+                # Parsed ignore rules are only stale if a .gitignore moved.
+                # Dropping them for any change meant re-reading every one of
+                # them on the next expansion, for nothing.
+                if any(os.path.isfile(os.path.join(d, ".gitignore"))
+                       for d in changed):
+                    self.ctx.scanner.forget_ignores()
                 reindexed = self.ctx.links.maybe_rebuild()
             return self._json({"changed": changed, "reindexed": reindexed})
 
