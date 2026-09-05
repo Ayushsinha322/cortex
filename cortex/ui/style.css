@@ -101,6 +101,11 @@ button,input{font:inherit;color:inherit}
 .hits-note{padding:7px 10px;color:var(--fg-faint);font-size:12px}
 .codeview .ln.hit-line{color:#ffd166;font-weight:700}
 
+/* what git thinks of the selected file */
+.chip.git{border-color:currentColor;opacity:.9;margin-right:auto}
+.chip.git[hidden]{display:none}
+#stat-git[hidden]{display:none}
+
 kbd{background:#161f2e;border:1px solid #26324a;border-bottom-width:2px;
   border-radius:5px;padding:1px 6px;font:11px var(--mono);color:#b9c6dd}
 
@@ -256,7 +261,7 @@ body.sidebar-open #stats{left:274px}
 
 #panel.max #p-head{display:flex;align-items:center;gap:12px;padding:8px 18px;
   border-bottom:none}
-#panel.max #p-kind{display:none}
+#panel.max #p-kind,#panel.max #p-git{display:none}
 #panel.max #p-name{order:1;flex:none;margin:0;font-size:14px;max-width:44ch;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #panel.max #p-path{order:2;flex:1 1 auto;min-width:0;margin:0;white-space:nowrap;
