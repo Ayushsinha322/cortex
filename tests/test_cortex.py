@@ -25,6 +25,7 @@ from cortex import reader
 from cortex.actions import (ActionRunner, available_editors, env_editor,
                             _editor_argv, _is_gui, pager_argv)
 from cortex.links import LinkIndex, _code_targets, _crate_src, _resolve_rel
+from cortex.ignore import IgnoreFile
 from cortex.scanner import Scanner, group_of
 from cortex.server import Context, serve
 
@@ -300,6 +301,93 @@ class TestActions(Tree):
     def test_pager_command_includes_the_file(self):
         argv = pager_argv(f"{self.root}/notes/index.md")
         self.assertIn(f"{self.root}/notes/index.md", argv)
+
+
+
+class TestGitignore(unittest.TestCase):
+    """The project already told git what is noise; read the same file."""
+
+    def setUp(self):
+        self.root = os.path.realpath(tempfile.mkdtemp(prefix="cortex-gi-"))
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        r = self.root
+        write(f"{r}/.gitignore",
+              "# a comment\n\n*.log\n!keep.log\ngenerated/\nout-*/\n"
+              "secret?.txt\ndocs/*.tmp\n")
+        for rel in ("app.py", "debug.log", "keep.log", "secret1.txt",
+                    "secretAB.txt", "generated/thing.py", "out-x86/bin.py",
+                    "src/ok.py", "src/deep.log", "docs/a.tmp", "docs/b.md"):
+            write(f"{r}/{rel}", "x\n")
+        write(f"{r}/src/.gitignore", "!deep.log\nok.py\n")
+        self.scanner = Scanner(self.root)
+
+    def names(self, rel=""):
+        base = os.path.join(self.root, rel) if rel else self.root
+        return sorted(n["name"] for n in self.scanner.children(base))
+
+    def test_a_matching_file_is_gone(self):
+        self.assertNotIn("debug.log", self.names())
+
+    def test_negation_brings_one_back(self):
+        self.assertIn("keep.log", self.names())
+
+    def test_a_directory_pattern_removes_the_directory(self):
+        self.assertNotIn("generated", self.names())
+
+    def test_a_wildcard_directory_pattern_works(self):
+        self.assertNotIn("out-x86", self.names())
+
+    def test_a_single_character_wildcard_matches_one_character(self):
+        self.assertNotIn("secret1.txt", self.names())
+        self.assertIn("secretAB.txt", self.names())
+
+    def test_a_pattern_with_a_slash_is_anchored_to_its_own_folder(self):
+        self.assertNotIn("a.tmp", self.names("docs"))
+        self.assertIn("b.md", self.names("docs"))
+
+    def test_a_nested_gitignore_can_override_its_parent(self):
+        self.assertIn("deep.log", self.names("src"))
+
+    def test_a_nested_gitignore_adds_rules_of_its_own(self):
+        self.assertNotIn("ok.py", self.names("src"))
+
+    def test_comments_and_blank_lines_are_not_patterns(self):
+        self.assertIn("app.py", self.names())
+
+    def test_the_child_count_matches_what_expanding_shows(self):
+        self.assertEqual(self.scanner.count_children(self.root),
+                         len(self.names()))
+
+    def test_search_does_not_return_ignored_files(self):
+        hits = [h["node"]["name"] for h in self.scanner.search("log")]
+        self.assertIn("keep.log", hits)
+        self.assertNotIn("debug.log", hits)
+
+    def test_the_index_does_not_walk_into_ignored_directories(self):
+        self.assertTrue(self.scanner.gitignored(
+            f"{self.root}/generated", True))
+        self.assertFalse(self.scanner.gitignored(f"{self.root}/src", True))
+
+    def test_it_can_be_turned_off_entirely(self):
+        loose = Scanner(self.root, use_gitignore=False)
+        names = {n["name"] for n in loose.children(self.root)}
+        self.assertIn("debug.log", names)
+        self.assertIn("generated", names)
+
+    def test_a_double_star_spans_directories(self):
+        rules = IgnoreFile("/r", "a/**/b.txt\n")
+        self.assertTrue(rules.verdict("a/b.txt", False))
+        self.assertTrue(rules.verdict("a/x/y/b.txt", False))
+        self.assertIsNone(rules.verdict("z/b.txt", False))
+
+    def test_an_unanchored_pattern_matches_at_any_depth(self):
+        rules = IgnoreFile("/r", "node_modules/\n")
+        self.assertTrue(rules.verdict("node_modules", True))
+        self.assertTrue(rules.verdict("a/b/node_modules", True))
+
+    def test_an_unreadable_pattern_is_skipped_not_fatal(self):
+        rules = IgnoreFile("/r", "[\n*.ok\n")
+        self.assertTrue(rules.verdict("x.ok", False))
 
 
 class TestEnvEditor(unittest.TestCase):

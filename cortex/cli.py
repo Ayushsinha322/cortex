@@ -121,6 +121,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="include dotfiles and dot-directories")
     p.add_argument("--ignore", default="",
                    help="comma-separated extra directory names to skip")
+    p.add_argument("--no-gitignore", action="store_true",
+                   help="do not read .gitignore files; show what git hides")
     p.add_argument("--no-links", action="store_true",
                    help="skip the semantic link index (faster start)")
 
@@ -199,7 +201,8 @@ def main(argv=None) -> int:
     depth = max(0, depth)
 
     extra = {s.strip() for s in args.ignore.split(",") if s.strip()}
-    scanner = Scanner(root, show_hidden=args.hidden, extra_ignores=extra)
+    scanner = Scanner(root, show_hidden=args.hidden, extra_ignores=extra,
+                      use_gitignore=not args.no_gitignore)
     links = LinkIndex(scanner)
     runner = ActionRunner()
     token = secrets.token_urlsafe(24)
