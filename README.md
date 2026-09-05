@@ -418,8 +418,13 @@ anything wakes it.
 **Security.** This API can start editors and shells, so: it binds to
 `127.0.0.1` only, requires a random token regenerated every run, and resolves
 every path with `realpath` to prove it is genuinely inside the folder you mapped
-before touching it. Symlinks pointing out are refused. All of that is asserted
-in the tests.
+before touching it. Symlinks pointing out are refused.
+
+The page is served under a strict `Content-Security-Policy`, because a markdown
+file in a repository you cloned is untrusted input. The renderer escapes HTML;
+the policy is the second lock, and it allows no script at all except the two
+files cortex serves and one inline config blob carrying a nonce regenerated on
+every request. All of that is asserted in the tests.
 
 ### Layout
 
@@ -461,7 +466,7 @@ node tests/render-loop.test.js
 node tests/connections.test.js
 ```
 
-141 tests, no framework to install — `unittest` and plain `node`. `tests/run`
+143 tests, no framework to install — `unittest` and plain `node`. `tests/run`
 also byte-checks every source file, because raw NUL bytes once got into two UI
 files and made git treat them as binary, silently breaking diffs and `grep`.
 

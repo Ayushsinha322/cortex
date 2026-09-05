@@ -12,12 +12,29 @@ import json
 import mimetypes
 import os
 import posixpath
+import secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
 from . import reader
 
 UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
+
+# The page renders markdown out of files on your disk, so a note in a cloned
+# repository is untrusted input.  The renderer escapes HTML, and this is the
+# second lock: nothing may execute except our own scripts, and the only inline
+# script is the config blob, which carries a fresh nonce each time the page is
+# served.  Remote images are still allowed, because notes legitimately use them.
+CSP = ("default-src 'none'; "
+       "script-src 'self' 'nonce-{nonce}'; "
+       "style-src 'self'; "
+       "img-src 'self' data: https:; "
+       "media-src 'self'; "
+       "frame-src 'self'; "
+       "connect-src 'self'; "
+       "base-uri 'none'; "
+       "form-action 'none'; "
+       "frame-ancestors 'none'")
 
 STATIC_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -159,9 +176,13 @@ class Handler(BaseHTTPRequestHandler):
         cfg = {"token": self.ctx.token, "root": self.ctx.scanner.root,
                "title": self.ctx.title}
         cfg.update(self.ctx.ui_config)
+        nonce = secrets.token_urlsafe(16)
         page = (page.replace("__CONFIG__", json.dumps(cfg))
+                    .replace("__NONCE__", nonce)
                     .replace("__TITLE__", html.escape(self.ctx.title)))
-        return self._send(200, page, "text/html; charset=utf-8")
+        return self._send(200, page, "text/html; charset=utf-8",
+                          {"Content-Security-Policy": CSP.format(nonce=nonce),
+                           "Referrer-Policy": "no-referrer"})
 
     def _static(self, rel):
         rel = posixpath.normpath("/" + rel).lstrip("/")
