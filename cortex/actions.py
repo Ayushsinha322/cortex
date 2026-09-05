@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import queue
+import shlex
 import shutil
 import subprocess
 import sys
@@ -39,6 +40,14 @@ GUI_EDITORS = [
     ("mousepad", "Mousepad", ["mousepad"]),
 ]
 
+# The editor named by $VISUAL / $EDITOR is offered first, under this id.  It is
+# resolved at call time rather than at import, so changing the variable and
+# relaunching is enough.
+ENV_EDITOR_ID = "env"
+
+# What `open ⧉` and `reveal` hand a path to, per platform.
+OPENER = ["open"] if sys.platform == "darwin" else ["xdg-open"]
+
 C = {
     "dim": "\033[2m", "b": "\033[1m", "off": "\033[0m",
     "blue": "\033[38;5;39m", "green": "\033[38;5;42m",
@@ -47,18 +56,69 @@ C = {
 }
 
 
+def _known_label(binary: str) -> tuple[str, bool] | None:
+    """(label, is_gui) for a binary we already know about, else None."""
+    for group, gui in ((TUI_EDITORS, False), (GUI_EDITORS, True)):
+        for _eid, label, argv in group:
+            if argv[0] == binary:
+                return label, gui
+    return None
+
+
+def env_editor() -> dict | None:
+    """Whatever $VISUAL / $EDITOR names, if we can actually run it.
+
+    Honouring this is table stakes for a terminal tool: someone who has set
+    `EDITOR=hx` should not be handed Neovim because our list happens to start
+    there.  The value is a command line, so `EDITOR="emacs -nw"` works too.
+    """
+    for var in ("VISUAL", "EDITOR"):
+        raw = (os.environ.get(var) or "").strip()
+        if not raw:
+            continue
+        try:
+            argv = shlex.split(raw)
+        except ValueError:                       # unbalanced quotes
+            continue
+        if not argv or not shutil.which(argv[0]):
+            continue
+        binary = os.path.basename(argv[0])
+        known = _known_label(binary)
+        label, gui = known if known else (binary, False)
+        return {"id": ENV_EDITOR_ID, "label": label, "gui": gui,
+                "env": True, "argv": argv, "var": var, "binary": binary}
+    return None
+
+
 def available_editors() -> list[dict]:
-    found = []
-    seen_labels = set()
+    """Editors we can offer, best first. $VISUAL / $EDITOR always leads."""
+    found: list[dict] = []
+    seen_labels: set[str] = set()
+    seen_binaries: set[str] = set()
+
+    chosen = env_editor()
+    if chosen:
+        seen_labels.add(chosen["label"])
+        seen_binaries.add(chosen["binary"])
+        found.append({"id": chosen["id"], "label": chosen["label"],
+                      "gui": chosen["gui"], "env": True})
+
     for group, gui in ((TUI_EDITORS, False), (GUI_EDITORS, True)):
         for eid, label, argv in group:
-            if shutil.which(argv[0]) and label not in seen_labels:
+            if label in seen_labels or argv[0] in seen_binaries:
+                continue
+            if shutil.which(argv[0]):
                 seen_labels.add(label)
-                found.append({"id": eid, "label": label, "gui": gui})
+                seen_binaries.add(argv[0])
+                found.append({"id": eid, "label": label, "gui": gui,
+                              "env": False})
     return found
 
 
 def _editor_argv(eid: str) -> list[str] | None:
+    if eid == ENV_EDITOR_ID:
+        chosen = env_editor()
+        return list(chosen["argv"]) if chosen else None
     for group in (TUI_EDITORS, GUI_EDITORS):
         for cand, _label, argv in group:
             if cand == eid and shutil.which(argv[0]):
@@ -67,6 +127,9 @@ def _editor_argv(eid: str) -> list[str] | None:
 
 
 def _is_gui(eid: str) -> bool:
+    if eid == ENV_EDITOR_ID:
+        chosen = env_editor()
+        return bool(chosen and chosen["gui"])
     return any(cand == eid for cand, _l, _a in GUI_EDITORS)
 
 
@@ -126,21 +189,26 @@ class ActionRunner:
         cwd = path if is_dir else os.path.dirname(path)
 
         if kind == "open":
-            self._detach(["xdg-open", path])
+            self._detach(OPENER + [path])
             print(f"{C['grey']}  opened externally  {short}{C['off']}")
             return
         if kind == "reveal":
-            self._detach(["xdg-open", cwd])
+            self._detach(OPENER + [cwd])
             print(f"{C['grey']}  revealed  {cwd.replace(os.path.expanduser('~'), '~', 1)}{C['off']}")
             return
 
         if kind == "edit":
-            argv = _editor_argv(editor) + [path]
+            argv = _editor_argv(editor)
+            if argv is None:
+                print(f"{C['red']}  {editor} is not installed{C['off']}")
+                return
+            name = os.path.basename(argv[0])
+            argv = argv + [path]
             if _is_gui(editor):
                 self._detach(argv)
-                print(f"{C['grey']}  handed to {editor}  {short}{C['off']}")
+                print(f"{C['grey']}  handed to {name}  {short}{C['off']}")
                 return
-            self._foreground(argv, f"{editor} {short}")
+            self._foreground(argv, f"{name} {short}")
             return
 
         if kind == "read":
