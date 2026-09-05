@@ -12,12 +12,13 @@ import sys
 import threading
 import webbrowser
 
+from . import __version__
 from .actions import ActionRunner, available_editors, C
 from .links import LinkIndex
 from .scanner import Scanner
 from .server import Context, serve
 
-VERSION = "0.1.0"
+VERSION = __version__
 
 # Chromium-family browsers can open a real app window: no tabs, no URL bar.
 APP_BROWSERS = ["google-chrome", "google-chrome-stable", "brave-browser",
