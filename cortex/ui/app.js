@@ -10,7 +10,10 @@ const TOKEN = CFG.token;
 const ROOT = CFG.root;
 const AUTO = CFG.autoExpand || { depth: 0, budget: 0 };
 
-const GROUPS = ["dir", "note", "code", "config", "doc", "media", "archive", "other"];
+const GROUPS = ["dir", "note", "code", "config", "doc", "media", "archive",
+                "other", "tag"];
+const TAG_PREFIX = "tag:";
+const isTag = (id) => id.startsWith(TAG_PREFIX);
 /* What git thinks of a file, as a dot on its node. Amber for work in progress,
    green for work already staged, red for something you have to resolve. */
 const GIT_COLOR = {
@@ -20,10 +23,12 @@ const GIT_COLOR = {
 const COLOR = {
   dir: "#f5a524", note: "#34d399", code: "#60a5fa", config: "#a78bfa",
   doc: "#f472b6", media: "#fb7185", archive: "#94a3b8", other: "#64748b",
+  tag: "#c084fc",
 };
 const LABEL = {
   dir: "folders", note: "notes", code: "code", config: "config",
   doc: "docs", media: "media", archive: "archives", other: "other",
+  tag: "tags",
 };
 
 // ------------------------------------------------------------------- state
@@ -278,7 +283,20 @@ async function applySemantic() {
     } catch (err) { return; }
   }
   const before = links.length;
-  for (const [a, b, kind] of semanticEdges) addLink(a, b, kind);
+  tagWeight = new Map();
+  for (const [a, b, kind] of semanticEdges) {
+    if (kind !== "tag") continue;
+    tagWeight.set(b, (tagWeight.get(b) || 0) + 1);
+  }
+  for (const [a, b, kind] of semanticEdges) {
+    if (kind === "tag") {
+      // a tag has no folder to live in, so it appears beside the first file
+      // carrying it and only while at least one of them is on screen
+      if (!nodes.has(a)) continue;
+      if (!nodes.has(b)) addTagNode(b, nodes.get(a));
+    }
+    addLink(a, b, kind);
+  }
   if (links.length !== before) reheat(0.4);
   buildConnIndex();
   if (sel) renderConnections(sel);
@@ -340,7 +358,22 @@ function buildConnIndex() {
   }
 }
 
-const baseName = (p) => p.slice(p.lastIndexOf("/") + 1);
+const baseName = (p) =>
+  isTag(p) ? "#" + p.slice(TAG_PREFIX.length) : p.slice(p.lastIndexOf("/") + 1);
+
+/* How many files carry each tag, which is what sizes its node. */
+let tagWeight = new Map();
+
+function addTagNode(id, near) {
+  const n = addNode({
+    id, name: "#" + id.slice(TAG_PREFIX.length), dir: false, group: "tag",
+    size: 0, mtime: 0, parent: null, tag: true,
+  }, near);
+  n.tag = true;
+  n.r = Math.max(4.5, Math.min(14, 4.5 + 1.6 * Math.log2(
+    1 + (tagWeight.get(id) || 1))));
+  return n;
+}
 
 function dirLabel(p) {
   const dir = p.slice(0, p.lastIndexOf("/"));
@@ -381,7 +414,7 @@ function renderConnections(n) {
   rows.className = "conn-list";
   for (const c of list.slice(0, 300)) {
     const row = document.createElement("button");
-    row.className = "conn " + (c.kind === "note" ? "note" : "code");
+    row.className = "conn " + c.kind;
     row.title = c.path;
     const arrow = document.createElement("span");
     arrow.className = "arrow";
@@ -393,7 +426,7 @@ function renderConnections(n) {
     where.className = "where";
     where.textContent = dirLabel(c.path);
     row.append(arrow, name, where);
-    row.addEventListener("click", () => revealPath(c.path));
+    row.addEventListener("click", () => focusOn(c.path));
     rows.appendChild(row);
   }
   box.appendChild(rows);
@@ -684,7 +717,8 @@ function draw() {
     const lit = sel && (l.a === sel.id || l.b === sel.id);
     if (semantic) {
       ctx.strokeStyle = lit ? "#34d399dd"
-        : l.kind === "code" ? "#60a5fa2e" : "#34d3992e";
+        : l.kind === "code" ? "#60a5fa2e"
+        : l.kind === "tag" ? "#c084fc38" : "#34d3992e";
       ctx.lineWidth = lit ? 1.6 : 1;
     } else {
       ctx.strokeStyle = lit ? "#a9c8ffcc" : "#1e293b";
@@ -711,7 +745,18 @@ function draw() {
     }
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
-    if (n.dir && expanded.has(n.id)) {
+    if (n.tag) {
+      ctx.fillStyle = "#0b1120";
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = c;
+      ctx.lineWidth = Math.max(1.2, r * 0.22);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(x, y, Math.max(1, r * 0.3), 0, Math.PI * 2);
+      ctx.fillStyle = c;
+      ctx.fill();
+    } else if (n.dir && expanded.has(n.id)) {
       ctx.fillStyle = "#0b1120";
       ctx.fill();
       ctx.shadowBlur = 0;
@@ -978,12 +1023,13 @@ function select(n) {
   focusMode = false;
   recomputeNeighbours();
   panel.classList.add("open");
-  $("p-kind").textContent = n.dir ? "folder" : (n.group === "other" ? "file" : n.group);
+  $("p-kind").textContent = n.tag ? "tag"
+    : n.dir ? "folder" : (n.group === "other" ? "file" : n.group);
   $("p-name").textContent = n.name;
-  $("p-path").textContent = n.id.replace(ROOT, "~");
-  $("p-meta").textContent =
-    (n.dir ? `${n.kids || 0} item${n.kids === 1 ? "" : "s"}` : fmtSize(n.size)) +
-    (n.mtime ? "  ·  " + new Date(n.mtime * 1000).toLocaleString() : "");
+  $("p-path").textContent = n.tag ? "a tag, not a file" : n.id.replace(ROOT, "~");
+  $("p-meta").textContent = n.tag ? ""
+    : (n.dir ? `${n.kids || 0} item${n.kids === 1 ? "" : "s"}` : fmtSize(n.size)) +
+      (n.mtime ? "  ·  " + new Date(n.mtime * 1000).toLocaleString() : "");
   renderGitChip(n);
   buildActions(n);
   renderConnections(n);
@@ -993,6 +1039,21 @@ function select(n) {
 function buildActions(n) {
   const bar = $("p-acts");
   bar.textContent = "";
+
+  if (n.tag) {
+    // nothing on disk to edit, page or open
+    const b = document.createElement("button");
+    b.className = "ghost";
+    b.textContent = focusMode ? "showing everything" : "focus";
+    b.title = "hide everything not carrying this tag";
+    b.addEventListener("click", () => {
+      focusMode = !focusMode;
+      recomputeNeighbours();
+      buildActions(n);
+    });
+    bar.appendChild(b);
+    return;
+  }
 
   const mk = (label, cls, fn, title) => {
     const b = document.createElement("button");
@@ -1067,6 +1128,7 @@ function buildActions(n) {
 async function renderBody(n) {
   const body = $("p-body");
   body.classList.remove("fill");     // reset before any early return below
+  if (n.tag) return renderTagBody(n, body);
   if (n.dir) {
     const kids = expanded.has(n.id) ? null : await api("/api/children", { path: n.id })
       .catch(() => null);
@@ -1194,6 +1256,45 @@ async function renderBody(n) {
     error: "Could not read this file.",
   };
   body.appendChild(hint(msgs[p.kind] || "No preview for this type."));
+}
+
+/* A tag's "contents" are the notes carrying it. */
+function renderTagBody(n, body) {
+  body.textContent = "";
+  const carriers = (connIndex && connIndex.get(n.id)) || [];
+  const note = document.createElement("div");
+  note.className = "empty";
+  note.textContent = carriers.length
+    ? `Carried by ${carriers.length} note${carriers.length === 1 ? "" : "s"}.`
+    : "Nothing carries this tag any more.";
+  body.appendChild(note);
+  if (!carriers.length) return;
+
+  const list = document.createElement("div");
+  list.className = "md";
+  const ul = document.createElement("ul");
+  for (const c of carriers) {
+    const li = document.createElement("li");
+    const a = document.createElement("a");
+    a.className = "wiki";
+    a.textContent = baseName(c.path);
+    a.title = c.path;
+    a.addEventListener("click", () => focusOn(c.path));
+    li.appendChild(a);
+    ul.appendChild(li);
+  }
+  list.appendChild(ul);
+  body.appendChild(list);
+}
+
+/* Follow a connection. A tag has no path to reveal, so it is selected where it
+   already stands in the graph. */
+function focusOn(id) {
+  if (!isTag(id)) return revealPath(id);
+  const n = nodes.get(id);
+  if (!n) { toast("that tag is not on screen", true); return; }
+  select(n);
+  centerOn(n);
 }
 
 function hint(html) {
@@ -1452,9 +1553,12 @@ window.addEventListener("keydown", (e) => {
       else closePanel();
       break;
     case "Enter":
-      if (sel && primaryEditor) act("edit", sel.id, primaryEditor.id, selLine); break;
+      if (sel && !sel.tag && primaryEditor) {
+        act("edit", sel.id, primaryEditor.id, selLine);
+      }
+      break;
     case "r":
-      if (sel && !sel.dir) act("read", sel.id, null, selLine); break;
+      if (sel && !sel.dir && !sel.tag) act("read", sel.id, null, selLine); break;
     case "e":
       if (sel && sel.dir) expanded.has(sel.id) ? collapse(sel.id) : expand(sel.id); break;
     case "f":
@@ -1469,7 +1573,7 @@ window.addEventListener("keydown", (e) => {
     case "m":
       if (sel) setMax(!maximized); break;
     case "o":
-      if (sel && sel.dir) isolate(sel.id); break;
+      if (sel && sel.dir && !sel.tag) isolate(sel.id); break;
     case "b":
       showFullMap(); break;
     case "s":
@@ -1492,7 +1596,7 @@ window.addEventListener("keydown", (e) => {
 $("p-close").addEventListener("click", closePanel);
 $("p-max").addEventListener("click", () => setMax(!maximized));
 $("p-path").addEventListener("click", () => {
-  if (!sel) return;
+  if (!sel || sel.tag) return;
   navigator.clipboard.writeText(sel.id).then(() => toast("path copied"),
                                              () => toast("copy blocked", true));
 });

@@ -40,6 +40,24 @@ SKIP_SUFFIX = (".min.js", ".min.css", ".bundle.js", ".pack.js", "-lock.json",
 RE_WIKILINK = re.compile(r"\[\[\s*([^\]\|#\n]+)")
 RE_MDLINK = re.compile(r"\]\(\s*(?!https?:|mailto:|#)([^)\s]+)")
 
+# --- tags -------------------------------------------------------------------
+#
+# The other way notes are organised. A tag is a node in the graph, so two notes
+# that never link to each other still meet if they are about the same thing.
+
+TAG_PREFIX = "tag:"
+MAX_TAGS_PER_FILE = 40
+MAX_TAGS = 600                   # distinct tags; beyond this it is not a graph
+
+# `#thing`, after whitespace or at the start of a line. A markdown heading is
+# `#` followed by a space or another `#`, so it cannot match. A URL fragment
+# has something other than whitespace in front of it, so it cannot either.
+RE_TAG = re.compile(r"(?:^|(?<=\s))#([A-Za-z][\w/-]*)")
+RE_FENCE = re.compile(r"^```.*?^```", re.M | re.S)
+RE_INLINE_CODE = re.compile(r"`[^`\n]*`")
+RE_FRONTMATTER = re.compile(r"\A---[ \t]*\n(.*?)\n---[ \t]*(?:\n|\Z)", re.S)
+RE_YAML_TAGS = re.compile(r"^(tags?|keywords)[ \t]*:[ \t]*(.*)$", re.M | re.I)
+
 # --- code links -------------------------------------------------------------
 
 RE_PY_FROM = re.compile(r"^\s*from\s+([.\w]+)\s+import", re.M)
@@ -80,6 +98,7 @@ class LinkIndex:
         self.ready = False
         self.notes = 0
         self.sources = 0
+        self.tags: list[str] = []
         self.elapsed = 0.0
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -114,7 +133,7 @@ class LinkIndex:
         with self._lock:
             return {"ready": self.ready, "edges": list(self.edges),
                     "notes": self.notes, "sources": self.sources,
-                    "elapsed": self.elapsed}
+                    "tags": list(self.tags), "elapsed": self.elapsed}
 
     # -- build -------------------------------------------------------------
 
@@ -158,6 +177,7 @@ class LinkIndex:
 
         edges: list[list] = []
         seen: set[tuple[str, str]] = set()
+        tag_names: set[str] = set()
 
         def emit(a: str, b: str, kind: str) -> None:
             if a == b:
@@ -184,6 +204,11 @@ class LinkIndex:
                     target = _resolve_rel(path, raw, all_files)
                     if target:
                         emit(path, target, "note")
+                for tag in note_tags(text):
+                    if tag not in tag_names and len(tag_names) >= MAX_TAGS:
+                        continue
+                    tag_names.add(tag)
+                    emit(path, TAG_PREFIX + tag, "tag")
             if i % PROGRESS_EVERY == 0:
                 if self._partial:
                     with self._lock:
@@ -206,6 +231,7 @@ class LinkIndex:
 
         with self._lock:
             self.edges = edges
+            self.tags = sorted(tag_names)
             self.ready = True
             self._partial = True
             self.elapsed = round(time.monotonic() - started, 1)
@@ -435,3 +461,70 @@ def _rust_targets(path: str, text: str, universe: set[str]) -> list[str]:
                 break
             parts.pop()
     return out
+
+
+# --- tags -------------------------------------------------------------------
+
+
+def _clean_tag(raw: str) -> str | None:
+    tag = raw.strip().strip("#").strip("/").strip()
+    tag = tag.strip("\"'")
+    if not tag or len(tag) > 60 or not tag[0].isalpha():
+        return None
+    if not all(c.isalnum() or c in "_-/" for c in tag):
+        return None
+    return tag.lower()
+
+
+def frontmatter_tags(text: str) -> list[str]:
+    """`tags:` out of a YAML front matter block, in any of its three shapes.
+
+    Deliberately not a YAML parser: front matter is read from files nobody
+    validated, and the three list shapes people actually write are worth far
+    less than a dependency.
+    """
+    match = RE_FRONTMATTER.match(text)
+    if not match:
+        return []
+    block = match.group(1)
+    out: list[str] = []
+    for entry in RE_YAML_TAGS.finditer(block):
+        value = entry.group(2).strip()
+        if value.startswith("["):                   # tags: [a, b]
+            value = value.strip("[]")
+            out += value.split(",")
+        elif value:                                 # tags: a, b   /  tags: a
+            out += value.split(",")
+        else:                                       # tags:\n  - a\n  - b
+            rest = block[entry.end():]
+            for line in rest.split("\n"):
+                stripped = line.strip()
+                if stripped.startswith("- "):
+                    out.append(stripped[2:])
+                elif stripped and not line.startswith((" ", "\t")):
+                    break
+    return out
+
+
+def note_tags(text: str) -> list[str]:
+    """Every tag in a note: front matter first, then `#tags` in the prose."""
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def take(raw):
+        tag = _clean_tag(raw)
+        if tag and tag not in seen:
+            seen.add(tag)
+            found.append(tag)
+
+    for raw in frontmatter_tags(text):
+        take(raw)
+
+    body = RE_FRONTMATTER.sub("", text, count=1)
+    body = RE_FENCE.sub("", body)          # a shell script is not a tag list
+    body = RE_INLINE_CODE.sub("", body)
+    for raw in RE_TAG.findall(body):
+        take(raw)
+        if len(found) >= MAX_TAGS_PER_FILE:
+            break
+    return found[:MAX_TAGS_PER_FILE]
