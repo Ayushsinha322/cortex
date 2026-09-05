@@ -57,7 +57,8 @@ back at the graph — still open, still where you left it.
 
 ## Install
 
-You need Python 3.9 or newer and a browser. That is all.
+You need Python 3.9 or newer and a browser. That is all. Linux and macOS are
+both supported.
 
 ```bash
 git clone https://github.com/Ayushsinha322/cortex.git ~/cortex
@@ -183,10 +184,15 @@ Other actions on every file:
 | **open ⧉** | hands the file to your desktop's default app |
 | **focus** | hides every node not linked to this one |
 
-Editors are found on your `PATH` automatically. Terminal editors — `nvim`,
-`vim`, `nano`, `micro`, `helix`, `kakoune`, `emacs -nw` — run in the foreground
-on your TTY. Window editors — `code`, `zed`, `subl`, `kate` — are launched
-detached and marked `⧉`.
+**If you have set `$EDITOR` or `$VISUAL`, that is what <kbd>Enter</kbd> uses.**
+You have already told your system which editor you want; cortex is not going to
+argue. `$VISUAL` wins over `$EDITOR`, and arguments are kept, so
+`EDITOR="emacs -nw"` and `EDITOR="code --wait"` both work.
+
+Failing that, editors are found on your `PATH` automatically. Terminal
+editors — `nvim`, `vim`, `nano`, `micro`, `helix`, `kakoune`, `emacs -nw` — run
+in the foreground on your TTY. Window editors — `code`, `zed`, `subl`, `kate` —
+are launched detached and marked `⧉`.
 
 ---
 
@@ -445,6 +451,16 @@ regenerated on each launch.
 Because the graph needs to be pretty and PDFs need to be readable, and neither
 survives being drawn in text. The browser is the renderer; the terminal is still
 the place work happens.
+
+**Which editor does <kbd>Enter</kbd> open?**
+Whatever `$VISUAL` or `$EDITOR` says, if either is set and names something
+installed. Otherwise the first terminal editor found on your `PATH`. The
+**editor ▾** menu has the rest, and the reader's button always shows which one
+<kbd>Enter</kbd> will use.
+
+**Does it work on macOS?**
+Yes. Terminal handoff, the graph and the reader all behave the same; `open ⧉`
+uses `open` instead of `xdg-open`.
 
 **Can I use it over SSH?**
 Run `cortex -w none`, forward the port (`ssh -L 41277:127.0.0.1:41277`), and

@@ -22,7 +22,8 @@ from urllib.request import Request, urlopen
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cortex import reader
-from cortex.actions import ActionRunner, available_editors, pager_argv
+from cortex.actions import (ActionRunner, available_editors, env_editor,
+                            _editor_argv, _is_gui, pager_argv)
 from cortex.links import LinkIndex, _code_targets, _resolve_rel
 from cortex.scanner import Scanner, group_of
 from cortex.server import Context, serve
@@ -292,12 +293,102 @@ class TestActions(Tree):
 
     def test_editor_detection_returns_wellformed_entries(self):
         for entry in available_editors():
-            self.assertEqual({"id", "label", "gui"}, set(entry))
+            self.assertEqual({"id", "label", "gui", "env"}, set(entry))
             self.assertIsInstance(entry["gui"], bool)
+            self.assertIsInstance(entry["env"], bool)
 
     def test_pager_command_includes_the_file(self):
         argv = pager_argv(f"{self.root}/notes/index.md")
         self.assertIn(f"{self.root}/notes/index.md", argv)
+
+
+class TestEnvEditor(unittest.TestCase):
+    """$VISUAL / $EDITOR is what a terminal user has already told the system."""
+
+    VARS = ("VISUAL", "EDITOR")
+
+    def env(self, **kw):
+        """Set $VISUAL/$EDITOR for one test and put the real ones back after."""
+        before = {v: os.environ.get(v) for v in self.VARS}
+        self.addCleanup(self.restore, before)
+        for var in self.VARS:
+            os.environ.pop(var, None)
+        os.environ.update(kw)
+
+    def restore(self, before):
+        for var, value in before.items():
+            if value is None:
+                os.environ.pop(var, None)
+            else:
+                os.environ[var] = value
+
+    def a_real_binary(self):
+        for cand in ("cat", "true", "sh"):
+            if shutil.which(cand):
+                return cand
+        self.skipTest("no ordinary binary on PATH")
+
+    def test_unset_means_no_env_editor(self):
+        self.env()
+        self.assertIsNone(env_editor())
+
+    def test_editor_is_picked_up(self):
+        binary = self.a_real_binary()
+        self.env(EDITOR=binary)
+        got = env_editor()
+        self.assertIsNotNone(got)
+        self.assertEqual(got["binary"], binary)
+        self.assertEqual(got["var"], "EDITOR")
+
+    def test_visual_beats_editor(self):
+        binary = self.a_real_binary()
+        self.env(VISUAL=binary, EDITOR="definitely-not-installed")
+        self.assertEqual(env_editor()["var"], "VISUAL")
+
+    def test_arguments_are_kept(self):
+        binary = self.a_real_binary()
+        self.env(EDITOR=f"{binary} -x --wait")
+        self.assertEqual(env_editor()["argv"], [binary, "-x", "--wait"])
+
+    def test_an_uninstalled_editor_is_ignored(self):
+        self.env(EDITOR="definitely-not-installed-anywhere")
+        self.assertIsNone(env_editor())
+
+    def test_unbalanced_quotes_do_not_crash(self):
+        self.env(EDITOR='nvim "unclosed')
+        self.assertIsNone(env_editor())
+
+    def test_it_leads_the_offered_list(self):
+        binary = self.a_real_binary()
+        self.env(EDITOR=binary)
+        offered = available_editors()
+        self.assertTrue(offered[0]["env"])
+        self.assertFalse(any(e["env"] for e in offered[1:]))
+
+    def test_a_known_editor_is_not_offered_twice(self):
+        if not shutil.which("nano"):
+            self.skipTest("nano not installed")
+        self.env(EDITOR="nano")
+        binaries = [e["label"] for e in available_editors()]
+        self.assertEqual(binaries.count("nano"), 1)
+
+    def test_the_env_id_resolves_to_its_command(self):
+        binary = self.a_real_binary()
+        self.env(EDITOR=f"{binary} -q")
+        self.assertEqual(_editor_argv("env"), [binary, "-q"])
+        self.assertFalse(_is_gui("env"))
+
+    def test_the_env_id_is_dead_when_nothing_is_set(self):
+        self.env()
+        self.assertIsNone(_editor_argv("env"))
+        self.assertFalse(_is_gui("env"))
+
+    def test_a_windowed_editor_is_recognised_as_windowed(self):
+        if not shutil.which("code"):
+            self.skipTest("code not installed")
+        self.env(EDITOR="code")
+        self.assertTrue(env_editor()["gui"])
+        self.assertTrue(_is_gui("env"))
 
 
 class TestServer(Tree):
