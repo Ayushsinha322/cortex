@@ -150,12 +150,13 @@ function addNode(raw, near) {
 }
 
 function addLink(a, b, kind) {
-  if (a === b || !nodes.has(a) || !nodes.has(b)) return;
+  if (a === b || !nodes.has(a) || !nodes.has(b)) return false;
   // \u0000 cannot occur in a path, so it is a safe key separator
   const key = (a < b ? a + "\u0000" + b : b + "\u0000" + a) + "|" + kind;
-  if (linkKeys.has(key)) return;
+  if (linkKeys.has(key)) return false;
   linkKeys.add(key);
   links.push({ a, b, kind, key });
+  return true;
 }
 const linkKeys = new Set();
 
@@ -165,11 +166,13 @@ async function expand(id, opts = {}) {
   expanded.add(id);
   try {
     const kids = await api("/api/children", { path: id });
+    const fresh = [];
     for (const kid of kids) {
       addNode(kid, parent);
       addLink(id, kid.id, "tree");
+      fresh.push(kid.id);
     }
-    if (showSemantic) applySemantic();
+    linkUp(fresh);
     updateStats();
     reheat();
   } catch (err) {
@@ -301,9 +304,7 @@ async function saveLayout() {
   if (!CFG.rememberLayout || !layoutDirty || !nodes.size) return;
   layoutDirty = false;
   const positions = {};
-  for (const n of nodes.values()) {
-    if (!n.tag) positions[n.id] = [n.x, n.y];   // a tag has nowhere to belong
-  }
+  for (const n of nodes.values()) positions[n.id] = [n.x, n.y];
   try {
     await post("/api/layout", { positions, cam: { s: cam.s, x: cam.x, y: cam.y } });
   } catch (err) { layoutDirty = true; }
@@ -317,30 +318,48 @@ async function applySemantic() {
       $("stat-index").textContent = snap.ready
         ? `${snap.notes} notes · ${snap.sources} sources indexed`
         : `indexing… ${snap.edges.length} links`;
+      buildConnIndex();
       if (!snap.ready) setTimeout(() => { semanticEdges = null; applySemantic(); }, 4000);
     } catch (err) { return; }
   }
-  const before = links.length;
-  tagWeight = new Map();
-  for (const [a, b, kind] of semanticEdges) {
-    if (kind !== "tag") continue;
-    tagWeight.set(b, (tagWeight.get(b) || 0) + 1);
-  }
-  for (const [a, b, kind] of semanticEdges) {
-    if (kind === "tag") {
-      // a tag has no folder to live in, so it appears beside the first file
-      // carrying it and only while at least one of them is on screen
-      if (!nodes.has(a)) continue;
-      if (!nodes.has(b)) addTagNode(b, nodes.get(a));
+  if (!connIndex) buildConnIndex();
+  linkUp(nodes.keys());
+}
+
+/* Draw the semantic edges that touch these nodes.
+
+   This used to walk the entire edge list every time anything appeared, which
+   on a home directory is tens of thousands of edges re-examined per folder you
+   opened, per search, and every four seconds while the index was still being
+   built. The connection index already maps a path to its edges, so looking up
+   only what arrived turns that into work proportional to the new nodes. */
+function linkUp(ids) {
+  if (!connIndex || !showSemantic) return false;
+  let added = false, novel = false;
+  for (const id of ids) {
+    const touching = connIndex.get(id);
+    if (!touching) continue;
+    for (const c of touching) {
+      if (c.kind === "tag" && !nodes.has(c.path)) {
+        // a tag only one note carries is a label, not a meeting point, and
+        // pays for its node in clutter without joining anything up. Selecting
+        // it from the reader still brings it in, on request.
+        if ((tagWeight.get(c.path) || 0) < 2) continue;
+        addTagNode(c.path, nodes.get(id));
+      }
+      if (!addLink(id, c.path, c.kind)) continue;
+      added = true;
+      // a link between two nodes the saved layout already placed was part of
+      // that layout, so it has nothing new to say about where they belong
+      if (!savedPos.has(id) || !savedPos.has(c.path)) novel = true;
     }
-    addLink(a, b, kind);
   }
-  // a restored layout is where you left it; late links nudge, they do not
-  // get to throw the whole thing back in the air
-  if (links.length !== before) reheat(savedPos.size ? 0.12 : 0.4);
-  buildConnIndex();
-  if (sel) renderConnections(sel);
-  updateStats();
+  if (added) {
+    if (novel || !savedPos.size) reheat(savedPos.size ? 0.12 : 0.4);
+    if (sel) renderConnections(sel);
+    updateStats();
+  }
+  return added;
 }
 
 /* Ask git what it thinks of the folder now in view. Cheap on a project, and
@@ -382,12 +401,14 @@ function renderGitChip(n) {
    first. */
 function buildConnIndex() {
   connIndex = new Map();
+  tagWeight = new Map();
   const add = (from, to, kind, out) => {
     let list = connIndex.get(from);
     if (!list) connIndex.set(from, (list = []));
     list.push({ path: to, kind, out });
   };
   for (const [a, b, kind] of semanticEdges || []) {
+    if (kind === "tag") tagWeight.set(b, (tagWeight.get(b) || 0) + 1);
     add(a, b, kind, true);
     add(b, a, kind, false);
   }
@@ -915,6 +936,7 @@ CFG.debug = () => ({
    than the thing under test. Returns false when that path is not in the graph,
    which is itself worth asserting. */
 CFG.debug.pulse = () => pulse();
+CFG.debug.expand = (id) => expand(id);
 CFG.debug.saveLayout = () => { layoutDirty = true; return saveLayout(); };
 CFG.debug.at = (id) => nodes.get(id);
 CFG.debug.key = (name) =>
@@ -1338,8 +1360,15 @@ function renderTagBody(n, body) {
    already stands in the graph. */
 function focusOn(id) {
   if (!isTag(id)) return revealPath(id);
-  const n = nodes.get(id);
-  if (!n) { toast("that tag is not on screen", true); return; }
+  let n = nodes.get(id);
+  if (!n) {
+    // a tag too thinly carried to draw itself is still worth seeing when you
+    // click it, so bring it in beside whatever you clicked it from
+    n = addTagNode(id, sel);
+    linkUp([id]);
+    updateStats();
+    reheat(0.35);
+  }
   select(n);
   centerOn(n);
 }
@@ -1523,6 +1552,7 @@ async function runSearch() {
   const results = r.results.filter((h) => inScope(h.node.id));
 
   const rootNode = nodes.get(viewRoot);
+  const grafted = [];
   for (const hit of results) {
     let prev = rootNode;
     for (const anc of hit.ancestors) {
@@ -1534,8 +1564,9 @@ async function runSearch() {
     const n = addNode(hit.node, prev);
     addLink(prev.id, n.id, "tree");
     matches.add(n.id);
+    grafted.push(n.id);
   }
-  if (showSemantic) applySemantic();
+  linkUp(grafted);
   updateStats();
   const shown = results.length;
   $("stat-index").textContent =
@@ -1676,6 +1707,17 @@ function exportScene(kind) {
 }
 
 // ------------------------------------------------------------------ filters
+/* The chips along the top bar.
+
+   Clicking one shows that kind and takes everything else off the graph, which
+   is the way round people reach for: you click "notes" because you want to see
+   the notes, not because you want them gone. Folders stay either way, because
+   they are the skeleton every other node hangs from and a graph without them
+   is a cloud of unconnected dots. Clicking the same chip again brings it all
+   back, and shift-clicking still hides one kind on its own. */
+let soloGroup = null;
+const chipEls = new Map();
+
 function buildFilters() {
   const nav = $("filters");
   for (const g of GROUPS) {
@@ -1683,16 +1725,43 @@ function buildFilters() {
     chip.className = "chip-f on";
     chip.style.color = COLOR[g];
     chip.innerHTML = `<i></i><span>${LABEL[g]}</span>`;
-    chip.title = `show / hide ${LABEL[g]}`;
-    chip.addEventListener("click", () => {
-      if (hidden.has(g)) hidden.delete(g); else hidden.add(g);
-      chip.classList.toggle("on", !hidden.has(g));
-      chip.classList.toggle("off", hidden.has(g));
-      updateStats();
-      reheat(0.3);
+    chip.title = `show only ${LABEL[g]} — shift-click to hide just this kind`;
+    chip.addEventListener("click", (e) => {
+      if (e.shiftKey) muteGroup(g); else soloOnly(g);
     });
+    chipEls.set(g, chip);
     nav.appendChild(chip);
   }
+}
+
+function soloOnly(g) {
+  soloGroup = soloGroup === g ? null : g;
+  hidden.clear();
+  if (soloGroup) {
+    for (const other of GROUPS) {
+      if (other === soloGroup) continue;
+      if (other === "dir") continue;        // the skeleton always stays
+      hidden.add(other);
+    }
+  }
+  afterFilterChange();
+}
+
+function muteGroup(g) {
+  soloGroup = null;
+  if (hidden.has(g)) hidden.delete(g); else hidden.add(g);
+  afterFilterChange();
+}
+
+function afterFilterChange() {
+  for (const [g, chip] of chipEls) {
+    const off = hidden.has(g);
+    chip.classList.toggle("on", !off);
+    chip.classList.toggle("off", off);
+    chip.classList.toggle("solo", soloGroup === g);
+  }
+  updateStats();
+  reheat(0.3);
 }
 
 function updateStats() {
@@ -1838,7 +1907,7 @@ $("z-out").addEventListener("click", () => zoomAt(W / 2, H / 2, 0.8));
     toast("cortex backend not reachable", true);
   }
 
-  await applySemantic();
+  applySemantic();          // not awaited: the graph should paint first
   loadGit();
   const every = CFG.pulseMs || 0;
   if (every > 0) setInterval(pulse, every);
@@ -1857,7 +1926,9 @@ $("z-out").addEventListener("click", () => zoomAt(W / 2, H / 2, 0.8));
   }
   if (CFG.rememberLayout) {
     layoutDirty = true;
-    setInterval(() => saveLayout(), 10000);
+    // only once it has stopped moving: saving mid-settle posts every position
+    // in the graph to write down somewhere it is about to leave
+    setInterval(() => { if (alpha < ALPHA_MIN) saveLayout(); }, 10000);
     window.addEventListener("pagehide", () => saveLayout());
   }
   frame();

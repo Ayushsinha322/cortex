@@ -358,6 +358,12 @@ one project nearly every link resolves at once. The screenshots above are a
 **Colour** is the kind of file — folder, note, code, config, document, media,
 archive — matching the chips along the top bar.
 
+**Click a chip to see only that kind.** Click "notes" and the graph is your
+notes; click it again and everything comes back. Folders stay either way,
+because they are the skeleton the rest hangs from and a graph without them is a
+cloud of unconnected dots. Shift-click hides one kind on its own, for when a
+folder full of images is the only thing in the way.
+
 **Size** is how much is inside: child count for a folder, file size for a file.
 
 **A ring instead of a dot** means an open folder. **A soft glow** means the file
@@ -439,8 +445,11 @@ path through those files, including `foo.rs` owning the `foo/` beside it.
 The index is built in the background as soon as you launch, and links appear as
 it goes. On a 133,000-file home directory it finishes in about three seconds.
 
-Toggle semantic links with the **links** button or <kbd>l</kbd>, and hide whole
-categories with the coloured chips in the top bar.
+Toggle semantic links with the **links** button or <kbd>l</kbd>.
+
+A tag carried by only one note is not drawn: it labels that note but joins
+nothing to anything, and a graph full of them is harder to read, not richer.
+The reader still lists it, and clicking it there brings it in.
 
 ---
 
@@ -595,6 +604,7 @@ cortex/
     ├── connections.test.js  backlinks, and following one into the graph
     ├── search.test.js       both searches, and the line reaching the editor
     ├── refresh.test.js      the graph keeping up with the disk
+    ├── perf.test.js         opening a folder staying cheap as links pile up
     ├── tags.test.js         tag nodes, and their refusal to act like files
     └── view.test.js         remembered layout, arrow keys, saving a picture
 ```
@@ -613,9 +623,10 @@ node tests/search.test.js
 node tests/refresh.test.js
 node tests/tags.test.js
 node tests/view.test.js
+node tests/perf.test.js
 ```
 
-331 tests, no framework to install — `unittest` and plain `node`. They run on
+340 tests, no framework to install — `unittest` and plain `node`. They run on
 every push against Python 3.9 and 3.13 on Linux, and 3.13 on macOS. `tests/run`
 also byte-checks every source file, because raw NUL bytes once got into two UI
 files and made git treat them as binary, silently breaking diffs and `grep`.
