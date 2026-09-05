@@ -67,10 +67,39 @@ button,input{font:inherit;color:inherit}
   width:15px;height:15px;fill:none;stroke:var(--fg-faint);stroke-width:2;
   stroke-linecap:round;pointer-events:none}
 #q{width:100%;background:#0a0e17;border:1px solid var(--line);border-radius:9px;
-  padding:8px 34px 8px 34px;outline:none;transition:border-color .15s, box-shadow .15s}
+  padding:8px 94px 8px 34px;outline:none;transition:border-color .15s, box-shadow .15s}
 #q::placeholder{color:var(--fg-faint)}
 #q:focus{border-color:var(--accent);box-shadow:0 0 0 3px #4c8dff22}
 .slash{position:absolute;right:9px;top:50%;transform:translateY(-50%)}
+
+/* names / text toggle, and the content-search results under the box */
+.mode{position:absolute;right:32px;top:50%;transform:translateY(-50%);
+  background:#101827;border:1px solid var(--line);border-radius:6px;
+  padding:2px 8px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--fg-faint);cursor:pointer;transition:.14s}
+.mode:hover{color:var(--fg);border-color:#31405c}
+.mode.on{color:#bcd6ff;border-color:#2c4a86;background:#12203a}
+
+#hits{position:absolute;top:calc(100% + 8px);left:0;width:min(620px,72vw);
+  max-height:min(56vh,520px);overflow:auto;z-index:30;padding:5px;
+  background:rgba(10,14,23,.97);border:1px solid var(--line);border-radius:11px;
+  backdrop-filter:blur(16px) saturate(140%);box-shadow:0 22px 50px -22px #000}
+#hits[hidden]{display:none}
+#hits::-webkit-scrollbar{width:10px}
+#hits::-webkit-scrollbar-thumb{background:#1c2740;border-radius:6px;
+  border:3px solid transparent;background-clip:content-box}
+.hit{display:flex;align-items:baseline;gap:10px;width:100%;padding:6px 9px;
+  background:none;border:none;border-radius:7px;cursor:pointer;text-align:left;
+  color:var(--fg-dim)}
+.hit:hover{background:#182236;color:var(--fg)}
+.hit-where{flex:none;max-width:26ch;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;font:11px var(--mono);color:var(--note)}
+.hit-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;font:12px var(--mono);color:var(--fg-faint)}
+.hit:hover .hit-text{color:var(--fg-dim)}
+.hit-text mark{background:#2b5fd955;color:#dce8ff;border-radius:3px;padding:0 1px}
+.hits-note{padding:7px 10px;color:var(--fg-faint);font-size:12px}
+.codeview .ln.hit-line{color:#ffd166;font-weight:700}
 
 kbd{background:#161f2e;border:1px solid #26324a;border-bottom-width:2px;
   border-radius:5px;padding:1px 6px;font:11px var(--mono);color:#b9c6dd}

@@ -34,7 +34,11 @@
     <svg class="mag" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16.5 16.5 21 21"/></svg>
     <input id="q" type="text" spellcheck="false" autocomplete="off"
            placeholder="search everything under __TITLE__">
+    <button id="mode" class="mode"
+            title="Search names, or search inside files (tab)">names</button>
     <kbd class="slash">/</kbd>
+    <!-- content-search results: file, line, and the line itself -->
+    <div id="hits" hidden></div>
   </div>
   <nav id="filters"></nav>
   <div class="spacer"></div>
@@ -94,6 +98,7 @@
       <dt><kbd>drag</kbd></dt><dd>move a node, or pan the empty canvas</dd>
       <dt><kbd>wheel</kbd></dt><dd>zoom toward the cursor</dd>
       <dt><kbd>/</kbd></dt><dd>jump to search</dd>
+      <dt><kbd>tab</kbd></dt><dd>in the search box: file names, or inside files</dd>
       <dt><kbd>enter</kbd></dt><dd>open selection in your default editor</dd>
       <dt><kbd>r</kbd></dt><dd>read selection in the terminal</dd>
       <dt><kbd>e</kbd></dt><dd>expand / collapse the selected folder</dd>

@@ -30,6 +30,8 @@ let showSemantic = true, focusMode = false, maximized = false;
 let showLabels = true;
 let semanticEdges = null, editors = [], primaryEditor = null;
 let connIndex = null, connOpen = true;
+let searchMode = "names";       // or "text" -- search inside files
+let selLine = null;             // line to open the selection at, from a hit
 let cam = { s: 1, x: 0, y: 0 };
 let needsFit = false;
 
@@ -430,7 +432,7 @@ async function pickFromSidebar(dir) {
 }
 
 /* Grow the graph along a real path until that node exists, then select it. */
-async function revealPath(abs) {
+async function revealPath(abs, line) {
   if (!abs.startsWith(ROOT)) { toast("outside the mapped root", true); return; }
   // a link can point outside the folder we narrowed to; widen back out for it
   if (viewRoot !== ROOT && !abs.startsWith(viewRoot + "/")) await showFullMap();
@@ -444,7 +446,26 @@ async function revealPath(abs) {
   const node = nodes.get(abs);
   if (!node) { toast("could not locate that file", true); return; }
   select(node);
+  if (line) setLine(line);
   centerOn(node);
+}
+
+/* A line the selection should open at, from a content-search hit. Shown in the
+   reader's header, passed to the editor, and forgotten as soon as the
+   selection moves. */
+function setLine(line) {
+  selLine = line || null;
+  const meta = $("p-meta");
+  if (selLine && meta && !meta.textContent.includes("line ")) {
+    meta.textContent += `  ·  line ${selLine}`;
+  }
+  const pre = $("p-body").querySelector(".codeview");
+  if (!pre || !selLine) return;
+  const gutter = pre.querySelectorAll(".ln")[selLine - 1];
+  if (gutter) {
+    gutter.classList.add("hit-line");
+    gutter.scrollIntoView({ block: "center" });
+  }
 }
 
 // ----------------------------------------------------------------- physics
@@ -801,7 +822,7 @@ function closePanel() {
   setMax(false);
   panel.classList.remove("open");
   $("p-links").hidden = true;
-  sel = null; focusMode = false; recomputeNeighbours();
+  sel = null; selLine = null; focusMode = false; recomputeNeighbours();
   dirty = true;
 }
 
@@ -821,6 +842,7 @@ function setMax(on) {
 
 function select(n) {
   sel = n;
+  selLine = null;
   focusMode = false;
   recomputeNeighbours();
   panel.classList.add("open");
@@ -851,11 +873,12 @@ function buildActions(n) {
 
   if (primaryEditor) {
     mk(primaryEditor.label, "primary",
-       () => act("edit", n.id, primaryEditor.id),
+       () => act("edit", n.id, primaryEditor.id, selLine),
        `open in ${primaryEditor.label} in your terminal`);
   }
   if (!n.dir) {
-    mk("read", "ghost", () => act("read", n.id), "page through it in the terminal");
+    mk("read", "ghost", () => act("read", n.id, null, selLine),
+       "page through it in the terminal");
   }
 
   const others = editors.filter((e) => !primaryEditor || e.id !== primaryEditor.id);
@@ -872,7 +895,7 @@ function buildActions(n) {
       item.textContent = ed.label + (ed.gui ? "  ⧉" : "");
       item.addEventListener("click", () => {
         menu.classList.remove("open");
-        act("edit", n.id, ed.id);
+        act("edit", n.id, ed.id, selLine);
       });
       menu.appendChild(item);
     }
@@ -1072,9 +1095,9 @@ async function jumpToWiki(name) {
 }
 
 // ------------------------------------------------------------------ actions
-async function act(kind, path, editor) {
+async function act(kind, path, editor, line) {
   try {
-    const r = await post("/api/action", { kind, path, editor });
+    const r = await post("/api/action", { kind, path, editor, line });
     if (!r.ok) { toast(r.error || "action failed", true); return; }
     toast(r.terminal ? "→ switch to your terminal" : "opening…");
   } catch (err) { toast("could not reach cortex", true); }
@@ -1098,14 +1121,115 @@ qbox.addEventListener("input", () => {
   searchTimer = setTimeout(runSearch, 300);
 });
 qbox.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { qbox.value = ""; matches.clear(); qbox.blur(); }
+  if (e.key === "Escape") {
+    if (!$("hits").hidden) { hideHits(); return; }
+    qbox.value = ""; matches.clear(); hideHits(); qbox.blur();
+  }
   if (e.key === "Enter") { clearTimeout(searchTimer); runSearch(); }
+  if (e.key === "Tab") { e.preventDefault(); toggleSearchMode(); }
 });
+
+/* Two searches share one box. Names answers "where did I put it"; text answers
+   "where did I say that", which is the question you actually have about your
+   own notes. */
+function toggleSearchMode(next) {
+  searchMode = next || (searchMode === "names" ? "text" : "names");
+  const btn = $("mode");
+  btn.textContent = searchMode;
+  btn.classList.toggle("on", searchMode === "text");
+  qbox.placeholder = searchMode === "text"
+    ? "search inside files"
+    : `search everything under ${CFG.title || ROOT}`;
+  hideHits();
+  matches.clear();
+  if (qbox.value.trim().length >= 2) runSearch(); else updateStats();
+}
+
+function hideHits() {
+  const box = $("hits");
+  box.hidden = true;
+  box.textContent = "";
+}
+
+/* Wrap each occurrence of the term in a <mark>, without handing a line out of
+   someone's file to innerHTML. */
+function markTerm(into, text, term) {
+  const low = text.toLowerCase(), needle = term.toLowerCase();
+  let i = 0;
+  while (needle) {
+    const at = low.indexOf(needle, i);
+    if (at === -1) break;
+    if (at > i) into.appendChild(document.createTextNode(text.slice(i, at)));
+    const m = document.createElement("mark");
+    m.textContent = text.slice(at, at + needle.length);
+    into.appendChild(m);
+    i = at + needle.length;
+  }
+  if (i < text.length) into.appendChild(document.createTextNode(text.slice(i)));
+}
+
+async function runTextSearch(term) {
+  $("stat-index").textContent = "searching…";
+  let r;
+  try { r = await api("/api/grep", { q: term }); }
+  catch (err) { toast("search failed", true); hideHits(); return; }
+  if (qbox.value.trim() !== term) return;          // the box moved on
+
+  const inScope = (path) =>
+    viewRoot === ROOT || path === viewRoot || path.startsWith(viewRoot + "/");
+  const all = r.hits || [];
+  const hits = all.filter((h) => inScope(h.path));
+
+  const box = $("hits");
+  box.textContent = "";
+  box.hidden = false;
+
+  for (const h of hits.slice(0, 200)) {
+    if (nodes.has(h.path)) matches.add(h.path);
+    const row = document.createElement("button");
+    row.className = "hit";
+    row.title = `${h.path}:${h.line}`;
+    const where = document.createElement("span");
+    where.className = "hit-where";
+    where.textContent = `${baseName(h.path)}:${h.line}`;
+    const text = document.createElement("span");
+    text.className = "hit-text";
+    markTerm(text, h.text || "", term);
+    row.append(where, text);
+    row.addEventListener("click", () => {
+      hideHits();
+      revealPath(h.path, h.line);
+    });
+    box.appendChild(row);
+  }
+
+  if (!hits.length) {
+    const note = document.createElement("div");
+    note.className = "hits-note";
+    note.textContent = all.length
+      ? `no matches here — ${all.length} outside this folder`
+      : `nothing contains “${term}”`;
+    box.appendChild(note);
+  } else if (r.truncated || hits.length > 200) {
+    const note = document.createElement("div");
+    note.className = "hits-note";
+    note.textContent = "more matches than shown — narrow the search";
+    box.appendChild(note);
+  }
+
+  const files = new Set(hits.map((h) => h.path)).size;
+  $("stat-index").textContent = hits.length
+    ? `${hits.length} line${hits.length === 1 ? "" : "s"} in ${files} file${files === 1 ? "" : "s"}`
+    : `nothing contains “${term}”`;
+  dirty = true;
+}
 
 async function runSearch() {
   const term = qbox.value.trim();
   matches.clear();
-  if (term.length < 2) { updateStats(); return; }
+  if (term.length < 2) { hideHits(); updateStats(); return; }
+  if (searchMode === "text") return runTextSearch(term);
+  hideHits();
   $("stat-index").textContent = "searching…";
   let r;
   try { r = await api("/api/search", { q: term }); }
@@ -1187,9 +1311,9 @@ window.addEventListener("keydown", (e) => {
       else closePanel();
       break;
     case "Enter":
-      if (sel && primaryEditor) act("edit", sel.id, primaryEditor.id); break;
+      if (sel && primaryEditor) act("edit", sel.id, primaryEditor.id, selLine); break;
     case "r":
-      if (sel && !sel.dir) act("read", sel.id); break;
+      if (sel && !sel.dir) act("read", sel.id, null, selLine); break;
     case "e":
       if (sel && sel.dir) expanded.has(sel.id) ? collapse(sel.id) : expand(sel.id); break;
     case "f":
@@ -1236,6 +1360,12 @@ $("sb-filter").addEventListener("keydown", (e) => {
     else toggleSidebar(false);
   }
 });
+$("mode").addEventListener("click", () => toggleSearchMode());
+document.addEventListener("click", (e) => {
+  if (!$("hits").hidden && !(e.target.closest && e.target.closest(".searchwrap"))) {
+    hideHits();
+  }
+});
 $("btn-fit").addEventListener("click", () => fit());
 $("btn-help").addEventListener("click", () => $("help").classList.toggle("open"));
 $("help-close").addEventListener("click", () => $("help").classList.remove("open"));
@@ -1254,6 +1384,7 @@ $("z-out").addEventListener("click", () => zoomAt(W / 2, H / 2, 0.8));
 (async () => {
   buildFilters();
   showZoom();
+  toggleSearchMode("names");        // label, placeholder and list, in one place
 
   try {
     const list = await api("/api/editors");

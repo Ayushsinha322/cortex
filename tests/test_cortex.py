@@ -22,8 +22,9 @@ from urllib.request import Request, urlopen
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cortex import reader
+from cortex import grep
 from cortex.actions import (ActionRunner, available_editors, env_editor,
-                            _editor_argv, _is_gui, pager_argv)
+                            open_at_line, _editor_argv, _is_gui, pager_argv)
 from cortex.links import LinkIndex, _code_targets, _crate_src, _resolve_rel
 from cortex.ignore import IgnoreFile
 from cortex.scanner import Scanner, group_of
@@ -302,6 +303,138 @@ class TestActions(Tree):
         argv = pager_argv(f"{self.root}/notes/index.md")
         self.assertIn(f"{self.root}/notes/index.md", argv)
 
+    def test_a_line_reaches_the_queue(self):
+        self.runner.submit("read", f"{self.root}/notes/index.md", None, 42)
+        self.assertEqual(self.runner.q.get()["line"], 42)
+
+    def test_a_line_that_is_not_a_number_is_dropped_not_fatal(self):
+        self.runner.submit("read", f"{self.root}/notes/index.md", None, "nope")
+        self.assertIsNone(self.runner.q.get()["line"])
+
+    def test_an_absurd_line_is_dropped(self):
+        self.runner.submit("read", f"{self.root}/notes/index.md", None, -3)
+        self.assertIsNone(self.runner.q.get()["line"])
+
+
+class TestContentSearch(unittest.TestCase):
+    """Finding a note by what it says, not by what it is called."""
+
+    def setUp(self):
+        self.root = os.path.realpath(tempfile.mkdtemp(prefix="cortex-grep-"))
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        r = self.root
+        write(f"{r}/notes/plan.md", "# Plan\nthe budget is fixed\nnothing\n")
+        write(f"{r}/notes/old.md", "an old BUDGET note\n")
+        write(f"{r}/src/a.py", "BUDGET = 10\n")
+        write(f"{r}/.gitignore", "hidden/\n")
+        write(f"{r}/hidden/x.md", "budget in an ignored folder\n")
+        write(f"{r}/pic.png", "budget\n")
+        self.scanner = Scanner(self.root)
+
+    def found(self, term="budget"):
+        return grep._python(self.scanner, term, 50)["hits"]
+
+    def rel(self, hits):
+        return {os.path.relpath(h["path"], self.root) for h in hits}
+
+    def test_it_finds_the_line_in_every_file(self):
+        self.assertEqual(self.rel(self.found()),
+                         {"notes/plan.md", "notes/old.md", "src/a.py"})
+
+    def test_the_match_is_case_insensitive(self):
+        self.assertIn("notes/old.md", self.rel(self.found()))
+
+    def test_each_hit_carries_its_line_number_and_text(self):
+        hit = next(h for h in self.found()
+                   if h["path"].endswith("plan.md"))
+        self.assertEqual(hit["line"], 2)
+        self.assertEqual(hit["text"], "the budget is fixed")
+
+    def test_it_does_not_read_ignored_folders(self):
+        self.assertFalse([p for p in self.rel(self.found()) if "hidden" in p])
+
+    def test_it_does_not_read_binaries(self):
+        self.assertNotIn("pic.png", self.rel(self.found()))
+
+    def test_a_one_character_term_is_refused(self):
+        out = grep.search(self.scanner, "b")
+        self.assertEqual(out["hits"], [])
+        self.assertEqual(out["engine"], "none")
+
+    def test_the_public_entry_point_answers_with_an_engine(self):
+        out = grep.search(self.scanner, "budget")
+        self.assertIn(out["engine"], ("rg", "python"))
+        self.assertTrue(out["hits"])
+
+    def test_the_limit_is_honoured(self):
+        out = grep._python(self.scanner, "budget", 1)
+        self.assertEqual(len(out["hits"]), 1)
+        self.assertTrue(out["truncated"])
+
+    def test_a_very_long_line_is_clipped(self):
+        write(f"{self.root}/notes/wide.md", "budget " + "x" * 5000)
+        hit = next(h for h in self.found() if h["path"].endswith("wide.md"))
+        self.assertLessEqual(len(hit["text"]), grep.MAX_LINE)
+
+    # -- the ripgrep reader, which we can exercise without ripgrep -----------
+
+    def test_ripgrep_output_is_parsed(self):
+        out = f"{self.root}/notes/plan.md:2:the budget is fixed\n"
+        got = grep.parse_rg(self.scanner, out, 50)
+        self.assertEqual(got, [{"path": f"{self.root}/notes/plan.md", "line": 2,
+                                "text": "the budget is fixed"}])
+
+    def test_a_colon_in_the_path_does_not_confuse_the_reader(self):
+        odd = write(f"{self.root}/od:d/note.md", "x\n")
+        got = grep.parse_rg(self.scanner, f"{odd}:7:a: colon\n", 50)
+        self.assertEqual(got[0]["path"], odd)
+        self.assertEqual(got[0]["line"], 7)
+        self.assertEqual(got[0]["text"], "a: colon")
+
+    def test_rubbish_lines_are_dropped(self):
+        self.assertEqual(grep.parse_rg(self.scanner, "not a hit\n", 50), [])
+
+    def test_a_path_outside_the_root_is_refused(self):
+        got = grep.parse_rg(self.scanner, "/etc/passwd:1:root\n", 50)
+        self.assertEqual(got, [])
+
+
+class TestOpenAtLine(unittest.TestCase):
+    """A search hit knows its line; the editor should land on it."""
+
+    def test_terminal_editors_take_a_plus_flag(self):
+        for binary in ("nvim", "vim", "nano", "micro", "kak"):
+            self.assertEqual(open_at_line(binary, [binary], "/f.py", 12),
+                             [binary, "+12", "/f.py"])
+
+    def test_helix_and_zed_take_a_suffix(self):
+        self.assertEqual(open_at_line("hx", ["hx"], "/f.py", 12),
+                         ["hx", "/f.py:12"])
+        self.assertEqual(open_at_line("zed", ["zed"], "/f.py", 12),
+                         ["zed", "/f.py:12"])
+
+    def test_vscode_takes_goto(self):
+        self.assertEqual(open_at_line("code", ["code"], "/f.py", 12),
+                         ["code", "-g", "/f.py:12"])
+
+    def test_kate_takes_a_line_flag(self):
+        self.assertEqual(open_at_line("kate", ["kate"], "/f.py", 12),
+                         ["kate", "-l", "12", "/f.py"])
+
+    def test_an_editor_we_do_not_know_is_opened_without_a_line(self):
+        # Guessing a flag would stop it opening at all, which is worse than
+        # losing the line.
+        self.assertEqual(open_at_line("ne", ["ne"], "/f.py", 12), ["ne", "/f.py"])
+
+    def test_no_line_means_no_flag(self):
+        self.assertEqual(open_at_line("nvim", ["nvim"], "/f.py", None),
+                         ["nvim", "/f.py"])
+        self.assertEqual(open_at_line("nvim", ["nvim"], "/f.py", 0),
+                         ["nvim", "/f.py"])
+
+    def test_arguments_already_on_the_command_line_are_kept(self):
+        self.assertEqual(open_at_line("emacs", ["emacs", "-nw"], "/f.py", 3),
+                         ["emacs", "-nw", "+3", "/f.py"])
 
 
 class TestGitignore(unittest.TestCase):
@@ -746,6 +879,26 @@ class TestServer(Tree):
                 return r.headers["Content-Security-Policy"].split(
                     "'nonce-")[1].split("'")[0]
         self.assertNotEqual(nonce(), nonce())
+
+    def test_grep_searches_inside_files(self):
+        status, body = self.get(f"/api/grep?t=tok&q=Index")
+        self.assertEqual(status, 200)
+        self.assertIn(body["engine"], ("rg", "python"))
+        hits = {h["path"] for h in body["hits"]}
+        self.assertIn(f"{self.root}/notes/index.md", hits)
+
+    def test_grep_requires_the_token(self):
+        with self.assertRaises(HTTPError) as cm:
+            self.get("/api/grep?q=Index")
+        self.assertEqual(cm.exception.code, 403)
+
+    def test_an_action_can_carry_a_line(self):
+        status, body = self.post(
+            "/api/action?t=tok",
+            {"kind": "read", "path": f"{self.root}/notes/index.md", "line": 9})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(self.runner.q.get()["line"], 9)
 
     def test_unknown_routes_404(self):
         with self.assertRaises(HTTPError) as cm:

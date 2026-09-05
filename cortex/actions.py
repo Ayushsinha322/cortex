@@ -48,6 +48,17 @@ ENV_EDITOR_ID = "env"
 # What `open ⧉` and `reveal` hand a path to, per platform.
 OPENER = ["open"] if sys.platform == "darwin" else ["xdg-open"]
 
+# How each editor is told to jump to a line. Anything not listed is opened at
+# the top of the file rather than guessed at: an unknown flag would stop the
+# editor from opening at all, which is a worse failure than losing the line.
+LINE_STYLE = {
+    "nvim": "plus", "vim": "plus", "vi": "plus", "nano": "plus",
+    "micro": "plus", "emacs": "plus", "kak": "plus", "gedit": "plus",
+    "hx": "colon", "helix": "colon", "zed": "colon", "subl": "colon",
+    "code": "goto", "codium": "goto",
+    "kate": "kate", "mousepad": "mousepad",
+}
+
 C = {
     "dim": "\033[2m", "b": "\033[1m", "off": "\033[0m",
     "blue": "\033[38;5;39m", "green": "\033[38;5;42m",
@@ -133,16 +144,38 @@ def _is_gui(eid: str) -> bool:
     return any(cand == eid for cand, _l, _a in GUI_EDITORS)
 
 
-def pager_argv(path: str) -> list[str]:
+def open_at_line(binary: str, argv: list[str], path: str,
+                 line: int | None) -> list[str]:
+    """Finish an editor command line, jumping to `line` when we know how."""
+    style = LINE_STYLE.get(os.path.basename(binary))
+    if not line or line < 1 or not style:
+        return argv + [path]
+    if style == "plus":
+        return argv + [f"+{line}", path]
+    if style == "colon":
+        return argv + [f"{path}:{line}"]
+    if style == "goto":
+        return argv + ["-g", f"{path}:{line}"]
+    if style == "kate":
+        return argv + ["-l", str(line), path]
+    if style == "mousepad":
+        return argv + [f"--line={line}", path]
+    return argv + [path]
+
+
+def pager_argv(path: str, line: int | None = None) -> list[str]:
     """Best available read-only viewer for a path."""
     ext = os.path.splitext(path)[1].lower()
     if ext == ".pdf" and shutil.which("pdftotext"):
         return ["sh", "-c", f'pdftotext -layout "$1" - | ${{PAGER:-less}} -R', "sh", path]
     for name in ("bat", "batcat"):
         if shutil.which(name):
-            return [name, "--style=numbers,header", "--paging=always", path]
+            argv = [name, "--style=numbers,header", "--paging=always"]
+            if line and line > 0:
+                argv += [f"--highlight-line={line}", f"--line-range={max(1, line - 20)}:"]
+            return argv + [path]
     if shutil.which("less"):
-        return ["less", "-R", path]
+        return ["less", "-R"] + ([f"+{line}"] if line and line > 0 else []) + [path]
     return ["cat", path]
 
 
@@ -156,7 +189,8 @@ class ActionRunner:
         self.stop = threading.Event()
 
     # called from the HTTP thread
-    def submit(self, kind: str, path: str, editor: str | None = None) -> dict:
+    def submit(self, kind: str, path: str, editor: str | None = None,
+               line=None) -> dict:
         if kind not in self.VALID:
             return {"ok": False, "error": f"unknown action {kind!r}"}
         if not os.path.exists(path):
@@ -166,7 +200,13 @@ class ActionRunner:
                 return {"ok": False, "error": "no editor given"}
             if _editor_argv(editor) is None:
                 return {"ok": False, "error": f"{editor} is not installed"}
-        self.q.put({"kind": kind, "path": path, "editor": editor})
+        try:
+            line = int(line) if line is not None else None
+        except (TypeError, ValueError):
+            line = None
+        if line is not None and not 1 <= line <= 10_000_000:
+            line = None
+        self.q.put({"kind": kind, "path": path, "editor": editor, "line": line})
         gui = kind == "open" or (kind == "edit" and _is_gui(editor or ""))
         return {"ok": True, "terminal": not gui}
 
@@ -184,6 +224,7 @@ class ActionRunner:
 
     def _run(self, job: dict) -> None:
         kind, path, editor = job["kind"], job["path"], job.get("editor")
+        line = job.get("line")
         short = path.replace(os.path.expanduser("~"), "~", 1)
         is_dir = os.path.isdir(path)
         cwd = path if is_dir else os.path.dirname(path)
@@ -203,12 +244,13 @@ class ActionRunner:
                 print(f"{C['red']}  {editor} is not installed{C['off']}")
                 return
             name = os.path.basename(argv[0])
-            argv = argv + [path]
+            argv = open_at_line(argv[0], argv, path, line)
+            where = f"{short}" + (f":{line}" if line else "")
             if _is_gui(editor):
                 self._detach(argv)
-                print(f"{C['grey']}  handed to {name}  {short}{C['off']}")
+                print(f"{C['grey']}  handed to {name}  {where}{C['off']}")
                 return
-            self._foreground(argv, f"{name} {short}")
+            self._foreground(argv, f"{name} {where}")
             return
 
         if kind == "read":
@@ -218,7 +260,8 @@ class ActionRunner:
                      "sh", path],
                     f"list {short}")
             else:
-                self._foreground(pager_argv(path), f"read {short}")
+                self._foreground(pager_argv(path, line),
+                                 f"read {short}" + (f":{line}" if line else ""))
             return
 
         if kind == "shell":
