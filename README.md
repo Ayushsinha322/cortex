@@ -21,6 +21,7 @@ it is about 3,000 lines of Python standard library and vanilla JavaScript.
 - [Install](#install)
 - [First run](#first-run)
 - [Reading files](#reading-files)
+- [Following the links](#following-the-links)
 - [Opening files in your editor](#opening-files-in-your-editor)
 - [Working on one project](#working-on-one-project)
 - [Reading the graph](#reading-the-graph)
@@ -154,6 +155,33 @@ back; a second <kbd>esc</kbd> closes the reader.
 The file is not re-rendered when you switch, so a PDF keeps its page and scroll
 position, and at full width your browser's viewer regains its page thumbnails,
 outline and zoom controls.
+
+---
+
+## Following the links
+
+Under the actions in the reader is a list of every file connected to this one:
+what it links to, and what links back to it.
+
+```
+  4 connections                         3 out · 1 in
+    →  lexer.rs        src/parser/
+    →  util.rs         src/
+    →  ast.rs          src/parser/
+    ←  main.rs         src/
+```
+
+The arrow says which way the link runs. Green names are note links, blue ones
+are code imports, the same colours the graph draws them in.
+
+**The list is not limited to what is on screen.** The index knows every link
+under the root, so a file can be listed here long before its folder has been
+grown into the graph. Click it and cortex opens the folders it needs to and
+selects it. That is the fastest way through a codebase you do not know: open
+one file, read what calls it, jump, repeat.
+
+Press <kbd>c</kbd> to collapse the list when you want the height back. It is
+hidden in full screen, where you are there to read the file.
 
 ---
 
@@ -344,6 +372,7 @@ cortex [folder] [options]
 | <kbd>m</kbd> | full screen the reader |
 | <kbd>e</kbd> | expand / collapse the selected folder |
 | <kbd>f</kbd> | focus mode — hide everything not linked |
+| <kbd>c</kbd> | collapse / expand the connections list |
 | <kbd>s</kbd> | open / close the directory sidebar |
 | <kbd>o</kbd> | only this folder — rebuild the graph around the selection |
 | <kbd>b</kbd> | back to the whole map |
@@ -414,8 +443,10 @@ cortex/
 └── tests/
     ├── run                  runs everything
     ├── test_cortex.py       scanner, links, reader, actions, HTTP surface
+    ├── harness.js           the stub DOM the browser-side tests run against
     ├── markdown.test.js     the markdown renderer
-    └── render-loop.test.js  cooling and repaint gating
+    ├── render-loop.test.js  cooling and repaint gating
+    └── connections.test.js  backlinks, and following one into the graph
 ```
 
 ---
@@ -427,17 +458,19 @@ tests/run                          # all of it
 python3 tests/test_cortex.py       # python only
 node tests/markdown.test.js
 node tests/render-loop.test.js
+node tests/connections.test.js
 ```
 
-92 tests, no framework to install — `unittest` and plain `node`. `tests/run`
+141 tests, no framework to install — `unittest` and plain `node`. `tests/run`
 also byte-checks every source file, because raw NUL bytes once got into two UI
 files and made git treat them as binary, silently breaking diffs and `grep`.
 
-`render-loop.test.js` drives the real `app.js` against a stub DOM with a manual
-frame pump. That is not for speed: Chrome pauses `requestAnimationFrame` in
-background tabs, so "has the layout stopped repainting?" cannot be answered from
-an automated browser — it reports a frozen canvas whether the code is right or
-not. Pumping frames by hand gives a real answer.
+The browser-side suites drive the real `app.js` against a stub DOM
+(`harness.js`) with a manual frame pump. That is not for speed: Chrome pauses
+`requestAnimationFrame` in background tabs, so "has the layout stopped
+repainting?" cannot be answered from an automated browser — it reports a frozen
+canvas whether the code is right or not. Pumping frames by hand gives a real
+answer.
 
 ---
 

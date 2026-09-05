@@ -29,6 +29,7 @@ let sel = null, hover = null, matches = new Set();
 let showSemantic = true, focusMode = false, maximized = false;
 let showLabels = true;
 let semanticEdges = null, editors = [], primaryEditor = null;
+let connIndex = null, connOpen = true;
 let cam = { s: 1, x: 0, y: 0 };
 let needsFit = false;
 
@@ -189,7 +190,95 @@ async function applySemantic() {
   const before = links.length;
   for (const [a, b, kind] of semanticEdges) addLink(a, b, kind);
   if (links.length !== before) reheat(0.4);
+  buildConnIndex();
+  if (sel) renderConnections(sel);
   updateStats();
+}
+
+/* ------------------------------------------------------------- connections
+
+   Backlinks. The index holds every semantic edge under the root, whether or
+   not both ends have been grown into the graph, so the reader can list a
+   connection the canvas has not drawn yet -- clicking one grows it.
+
+   Edges are stored source first and deduplicated by unordered pair, so a pair
+   of notes that link to each other survives once, in the direction seen
+   first. */
+function buildConnIndex() {
+  connIndex = new Map();
+  const add = (from, to, kind, out) => {
+    let list = connIndex.get(from);
+    if (!list) connIndex.set(from, (list = []));
+    list.push({ path: to, kind, out });
+  };
+  for (const [a, b, kind] of semanticEdges || []) {
+    add(a, b, kind, true);
+    add(b, a, kind, false);
+  }
+  for (const list of connIndex.values()) {
+    list.sort((x, y) =>
+      (x.out === y.out ? 0 : x.out ? -1 : 1) ||
+      baseName(x.path).localeCompare(baseName(y.path)));
+  }
+}
+
+const baseName = (p) => p.slice(p.lastIndexOf("/") + 1);
+
+function dirLabel(p) {
+  const dir = p.slice(0, p.lastIndexOf("/"));
+  if (dir === ROOT) return "./";
+  return (dir.startsWith(ROOT + "/") ? dir.slice(ROOT.length + 1) : dir) + "/";
+}
+
+function renderConnections(n) {
+  const box = $("p-links");
+  box.textContent = "";
+  const list = (n && connIndex && connIndex.get(n.id)) || [];
+  if (!list.length) { box.hidden = true; return; }
+  box.hidden = false;
+  box.classList.toggle("closed", !connOpen);
+
+  const outs = list.filter((c) => c.out).length;
+  const head = document.createElement("button");
+  head.className = "conn-head";
+  head.title = "Files linked to this one — click one to grow it into the graph (c)";
+  const caret = document.createElement("span");
+  caret.className = "caret";
+  caret.textContent = "\u25be";
+  const label = document.createElement("span");
+  label.textContent =
+    `${list.length} connection${list.length === 1 ? "" : "s"}`;
+  const detail = document.createElement("span");
+  detail.className = "muted";
+  detail.textContent = `${outs} out \u00b7 ${list.length - outs} in`;
+  head.append(caret, label, detail);
+  head.addEventListener("click", () => {
+    connOpen = !connOpen;
+    renderConnections(n);
+  });
+  box.appendChild(head);
+  if (!connOpen) return;
+
+  const rows = document.createElement("div");
+  rows.className = "conn-list";
+  for (const c of list.slice(0, 300)) {
+    const row = document.createElement("button");
+    row.className = "conn " + (c.kind === "note" ? "note" : "code");
+    row.title = c.path;
+    const arrow = document.createElement("span");
+    arrow.className = "arrow";
+    arrow.textContent = c.out ? "\u2192" : "\u2190";
+    const name = document.createElement("span");
+    name.className = "nm";
+    name.textContent = baseName(c.path);
+    const where = document.createElement("span");
+    where.className = "where";
+    where.textContent = dirLabel(c.path);
+    row.append(arrow, name, where);
+    row.addEventListener("click", () => revealPath(c.path));
+    rows.appendChild(row);
+  }
+  box.appendChild(rows);
 }
 
 /* Open the first few levels on launch, smallest folders first so the node
@@ -579,7 +668,18 @@ CFG.debug = () => ({
   alpha: Number(alpha.toFixed(4)), frozen: alpha < ALPHA_MIN, dirty,
   frames: frameCount, draws: drawCount,
   nodes: nodes.size, links: links.length, labels: shownLabels.size,
+  selected: sel ? sel.id : null,
 });
+
+/* A test seam. The stub-DOM suites drive the real app.js, and selecting a node
+   through a synthetic canvas click would test the hit-testing maths rather
+   than the thing under test. Returns false when that path is not in the graph,
+   which is itself worth asserting. */
+CFG.debug.select = (id) => {
+  const n = nodes.get(id);
+  if (n) select(n);
+  return !!n;
+};
 
 // -------------------------------------------------------------- navigation
 function fit(pad = 90) {
@@ -700,6 +800,7 @@ const fmtSize = (b) =>
 function closePanel() {
   setMax(false);
   panel.classList.remove("open");
+  $("p-links").hidden = true;
   sel = null; focusMode = false; recomputeNeighbours();
   dirty = true;
 }
@@ -730,6 +831,7 @@ function select(n) {
     (n.dir ? `${n.kids || 0} item${n.kids === 1 ? "" : "s"}` : fmtSize(n.size)) +
     (n.mtime ? "  ·  " + new Date(n.mtime * 1000).toLocaleString() : "");
   buildActions(n);
+  renderConnections(n);
   renderBody(n);
 }
 
@@ -1092,6 +1194,8 @@ window.addEventListener("keydown", (e) => {
       if (sel && sel.dir) expanded.has(sel.id) ? collapse(sel.id) : expand(sel.id); break;
     case "f":
       if (sel) { focusMode = !focusMode; recomputeNeighbours(); } break;
+    case "c":
+      if (sel) { connOpen = !connOpen; renderConnections(sel); } break;
     case "m":
       if (sel) setMax(!maximized); break;
     case "o":
@@ -1154,7 +1258,8 @@ $("z-out").addEventListener("click", () => zoomAt(W / 2, H / 2, 0.8));
   try {
     const list = await api("/api/editors");
     editors = list.editors || [];
-    primaryEditor = editors.find((e) => !e.gui) || editors[0] || null;
+    primaryEditor = editors.find((e) => e.env)
+                 || editors.find((e) => !e.gui) || editors[0] || null;
   } catch (err) { /* actions degrade gracefully */ }
 
   try {
