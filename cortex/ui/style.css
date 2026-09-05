@@ -183,6 +183,34 @@ body.sidebar-open #stats{left:274px}
   border:none;padding:7px 10px;border-radius:7px;cursor:pointer;color:var(--fg-dim)}
 #p-acts .menu button:hover{background:#182236;color:var(--fg)}
 
+/* connections: what links to this file and what it links to, whether or not
+   the other end has been grown into the graph yet */
+#p-links{flex:none;border-bottom:1px solid var(--line);
+  display:flex;flex-direction:column;min-height:0}
+.conn-head{display:flex;align-items:center;gap:9px;width:100%;flex:none;
+  padding:9px 20px;background:none;border:none;cursor:pointer;text-align:left;
+  color:var(--fg-dim);font-size:12px}
+.conn-head:hover{color:var(--fg);background:#0e1524}
+.conn-head .caret{color:var(--fg-faint);font-size:10px;transition:transform .15s}
+#p-links.closed .conn-head .caret{transform:rotate(-90deg)}
+.conn-head .muted{margin-left:auto;color:var(--fg-faint);font-size:11px}
+.conn-list{overflow:auto;max-height:138px;padding:0 12px 8px}
+#p-links.closed .conn-list{display:none}
+.conn-list::-webkit-scrollbar{width:10px}
+.conn-list::-webkit-scrollbar-thumb{background:#1c2740;border-radius:6px;
+  border:3px solid transparent;background-clip:content-box}
+.conn{display:flex;align-items:baseline;gap:8px;width:100%;padding:5px 8px;
+  background:none;border:none;border-radius:7px;cursor:pointer;text-align:left;
+  color:var(--fg-dim);font-size:12.5px}
+.conn:hover{background:#182236;color:var(--fg)}
+.conn .arrow{flex:none;width:11px;font-size:11px;color:var(--fg-faint)}
+.conn.note .nm{color:var(--note)}
+.conn.code .nm{color:var(--code)}
+.conn .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:26ch}
+.conn .where{margin-left:auto;flex:none;font:10.5px/1 var(--mono);
+  color:var(--fg-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  max-width:18ch;direction:rtl}
+
 #p-body{flex:1;min-height:0;overflow:auto;padding:18px 20px 60px}
 #p-body::-webkit-scrollbar{width:10px}
 #p-body::-webkit-scrollbar-thumb{background:#1c2740;border-radius:6px;
@@ -207,6 +235,7 @@ body.sidebar-open #stats{left:274px}
 #panel.max #p-meta{order:3;flex:none;margin:0;white-space:nowrap}
 #panel.max #p-head .row{order:4;flex:none}
 #panel.max #p-acts{padding:0 18px 8px;border-bottom:none}
+#panel.max #p-links{display:none}
 #panel.max #p-acts button{padding:5px 11px}
 
 /* Media fills whatever height is left. Measuring it with calc() meant guessing
