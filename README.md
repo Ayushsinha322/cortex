@@ -264,6 +264,18 @@ cortex ~/big-repo --max-nodes 300  # stop after 300 nodes
 Default is 3 levels for a folder you name, and **0 for your home directory** —
 a home directory is far too big to open eagerly.
 
+### What it leaves out
+
+cortex skips caches, build output and dependency trees by name — `node_modules`,
+`__pycache__`, `target`, `.venv` and the rest — because they are noise in a
+graph of what you wrote.
+
+That list cannot know your project writes to `generated/`, so **cortex also
+reads the project's `.gitignore`**, the file where you already wrote that down.
+Negation, directory-only patterns and nested `.gitignore` files all behave the
+way git behaves, so a folder that is clean in `git status` is clean here.
+Pass `--no-gitignore` when you want to see what git is hiding.
+
 ### The directory sidebar
 
 You do not have to decide up front. Click **☰** in the top left, or press
@@ -362,6 +374,7 @@ cortex [folder] [options]
 
   -a, --hidden            include dotfiles and dot-folders
       --ignore a,b,c      extra folder names to skip
+      --no-gitignore      show what git hides, too
       --no-links          skip the semantic index (instant start)
 
   -w, --window MODE       app (default) | tab | none
@@ -442,6 +455,7 @@ cortex/
 ├── cortex/
 │   ├── cli.py            arguments, saved projects, window launch, action loop
 │   ├── scanner.py        lazy folder scanning, ignore rules, node building
+│   ├── ignore.py         .gitignore parsing, the way git reads it
 │   ├── links.py          the semantic index: wikilinks and code imports
 │   ├── reader.py         per-filetype preview extraction
 │   ├── actions.py        editor detection, terminal handoff

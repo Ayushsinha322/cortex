@@ -103,11 +103,14 @@ class LinkIndex:
         sc = self.scanner
         walked = 0
         for dirpath, dirnames, filenames in os.walk(sc.root, followlinks=False):
-            dirnames[:] = [d for d in dirnames if not sc.skip(d, True)]
+            dirnames[:] = [d for d in dirnames if not sc.skip(d, True)
+                           and not sc.gitignored(os.path.join(dirpath, d), True)]
             for fn in filenames:
                 if sc.skip(fn, False):
                     continue
                 full = os.path.join(dirpath, fn)
+                if sc.gitignored(full, False):
+                    continue
                 all_files.add(full)
                 walked += 1
                 lower = fn.lower()

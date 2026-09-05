@@ -9,6 +9,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
+from . import ignore as ignore_rules
+
 # Directories that are noise in a knowledge graph: caches, build output,
 # dependency trees, browser profiles, language toolchains.
 IGNORE_DIRS = {
@@ -90,10 +92,44 @@ class Scanner:
     root: str
     show_hidden: bool = False
     extra_ignores: set[str] = field(default_factory=set)
+    use_gitignore: bool = True
 
     def __post_init__(self) -> None:
         self.root = os.path.realpath(os.path.expanduser(self.root))
         self._ignore_dirs = IGNORE_DIRS | self.extra_ignores
+        self._chains: dict[str, list] = {}
+
+    # -- .gitignore --------------------------------------------------------
+
+    def ignore_chain(self, directory: str) -> list:
+        """Every `.gitignore` from the root down to `directory`, in order.
+
+        Cached per directory: expanding one folder asks about every entry in
+        it, and a deep folder would otherwise re-read the same files each time.
+        """
+        if not self.use_gitignore:
+            return []
+        cached = self._chains.get(directory)
+        if cached is not None:
+            return cached
+        parent = os.path.dirname(directory)
+        if directory == self.root or not self.inside(directory) or parent == directory:
+            chain = []
+        else:
+            chain = list(self.ignore_chain(parent))
+        here = ignore_rules.load(directory)
+        if here:
+            chain = chain + [here]
+        self._chains[directory] = chain
+        return chain
+
+    def forget_ignores(self) -> None:
+        """Drop the cache, for when a `.gitignore` has been edited."""
+        self._chains.clear()
+
+    def gitignored(self, path: str, is_dir: bool) -> bool:
+        chain = self.ignore_chain(os.path.dirname(path))
+        return bool(chain) and ignore_rules.decide(chain, path, is_dir)
 
     # -- guards ------------------------------------------------------------
 
@@ -143,14 +179,19 @@ class Scanner:
 
     def count_children(self, path: str, cap: int = 400) -> int:
         """Cheap child count -- drives node size in the graph."""
+        chain = self.ignore_chain(path)
         try:
             total = 0
             with os.scandir(path) as it:
                 for e in it:
                     try:
-                        if self.skip(e.name, e.is_dir(follow_symlinks=False)):
+                        is_dir = e.is_dir(follow_symlinks=False)
+                        if self.skip(e.name, is_dir):
                             continue
                     except OSError:
+                        continue
+                    if chain and ignore_rules.decide(
+                            chain, os.path.join(path, e.name), is_dir):
                         continue
                     total += 1
                     if total >= cap:
@@ -163,6 +204,7 @@ class Scanner:
         """Direct children of a directory: folders first, then files, A-Z."""
         if not self.inside(path) or not os.path.isdir(path):
             return []
+        chain = self.ignore_chain(path)
         out: list[dict] = []
         try:
             with os.scandir(path) as it:
@@ -173,7 +215,10 @@ class Scanner:
                         continue
                     if self.skip(e.name, is_dir):
                         continue
-                    out.append(self.node(os.path.join(path, e.name), e))
+                    full = os.path.join(path, e.name)
+                    if chain and ignore_rules.decide(chain, full, is_dir):
+                        continue
+                    out.append(self.node(full, e))
         except OSError:
             return []
         out.sort(key=lambda n: (not n["dir"], n["name"].lower()))
@@ -194,7 +239,12 @@ class Scanner:
         hits: list[dict] = []
         seen_dirs = 0
         for dirpath, dirnames, filenames in os.walk(self.root, followlinks=False):
-            dirnames[:] = sorted(d for d in dirnames if not self.skip(d, True))
+            chain = self.ignore_chain(dirpath)
+            dirnames[:] = sorted(
+                d for d in dirnames
+                if not self.skip(d, True)
+                and not (chain and ignore_rules.decide(
+                    chain, os.path.join(dirpath, d), True)))
             seen_dirs += 1
             if seen_dirs > max_dirs or len(hits) >= limit:
                 break
@@ -204,6 +254,8 @@ class Scanner:
                 full = os.path.join(dirpath, name)
                 is_dir = name in dirnames
                 if not is_dir and self.skip(name, False):
+                    continue
+                if not is_dir and chain and ignore_rules.decide(chain, full, False):
                     continue
                 hits.append(self._hit(full))
                 if len(hits) >= limit:
