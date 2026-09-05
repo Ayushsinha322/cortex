@@ -26,7 +26,8 @@ from cortex import reader
 from cortex import gitstatus, grep
 from cortex.actions import (ActionRunner, available_editors, env_editor,
                             open_at_line, _editor_argv, _is_gui, pager_argv)
-from cortex.links import LinkIndex, _code_targets, _crate_src, _resolve_rel
+from cortex.links import (LinkIndex, frontmatter_tags, note_tags,
+                          _code_targets, _crate_src, _resolve_rel)
 from cortex.ignore import IgnoreFile
 from cortex.scanner import Scanner, group_of
 from cortex.watch import Watcher
@@ -199,6 +200,100 @@ class TestLinks(Tree):
     def test_external_urls_are_not_treated_as_files(self):
         self.assertIsNone(_resolve_rel(f"{self.root}/notes/index.md",
                                        "https://example.com/x.md", set()))
+
+
+class TestTags(unittest.TestCase):
+    """The other way notes are organised, and the one wikilinks cannot express."""
+
+    def test_an_inline_tag_is_found(self):
+        self.assertEqual(note_tags("talking about #work here\n"), ["work"])
+
+    def test_a_nested_tag_keeps_its_slash(self):
+        self.assertEqual(note_tags("#deep/focus\n"), ["deep/focus"])
+
+    def test_a_heading_is_not_a_tag(self):
+        self.assertEqual(note_tags("# Heading\n## Deeper\n"), [])
+
+    def test_a_tag_at_the_start_of_a_line_still_counts(self):
+        self.assertEqual(note_tags("#realtag\n"), ["realtag"])
+
+    def test_a_url_fragment_is_not_a_tag(self):
+        self.assertEqual(note_tags("see http://x.com/a#frag\n"), [])
+
+    def test_a_fenced_code_block_is_not_read_for_tags(self):
+        text = "```sh\n# a comment\necho '#nope'\n```\n#yes\n"
+        self.assertEqual(note_tags(text), ["yes"])
+
+    def test_inline_code_is_not_read_either(self):
+        self.assertEqual(note_tags("use `#nope` but #yes\n"), ["yes"])
+
+    def test_tags_are_deduplicated_and_lowercased(self):
+        self.assertEqual(note_tags("#Same and #same and #SAME\n"), ["same"])
+
+    def test_something_that_is_not_a_tag_is_left_alone(self):
+        self.assertEqual(note_tags("#1number # spaced #-dash\n"), [])
+
+    # -- front matter -------------------------------------------------------
+
+    def test_an_inline_yaml_list(self):
+        self.assertEqual(note_tags("---\ntags: [alpha, beta]\n---\n"),
+                         ["alpha", "beta"])
+
+    def test_a_comma_separated_value(self):
+        self.assertEqual(note_tags("---\ntags: alpha, beta\n---\n"),
+                         ["alpha", "beta"])
+
+    def test_a_yaml_block_list(self):
+        text = "---\ntitle: x\ntags:\n  - alpha\n  - beta\nauthor: me\n---\n"
+        self.assertEqual(note_tags(text), ["alpha", "beta"])
+
+    def test_the_singular_key_works_too(self):
+        self.assertEqual(note_tags("---\ntag: solo\n---\n"), ["solo"])
+
+    def test_front_matter_and_prose_tags_are_both_kept(self):
+        self.assertEqual(note_tags("---\ntags: [fm]\n---\nand #body\n"),
+                         ["fm", "body"])
+
+    def test_front_matter_is_not_scanned_twice_as_prose(self):
+        self.assertEqual(note_tags("---\ntags: [one]\n---\n"), ["one"])
+
+    def test_no_front_matter_is_not_an_error(self):
+        self.assertEqual(frontmatter_tags("just a note\n"), [])
+
+    def test_a_dashed_rule_partway_down_is_not_front_matter(self):
+        self.assertEqual(frontmatter_tags("text\n---\ntags: [no]\n---\n"), [])
+
+    def test_a_note_with_too_many_tags_is_capped(self):
+        text = " ".join(f"#t{i}" for i in range(200))
+        self.assertEqual(len(note_tags(text)), 40)
+
+
+class TestTagEdges(Tree):
+    """Tags become nodes, so two notes about one thing meet without linking."""
+
+    def build(self):
+        write(f"{self.root}/notes/index.md",
+              "---\ntags: [work, urgent]\n---\n# Index\nsee [[deep]] and #deep/focus\n")
+        write(f"{self.root}/notes/other.md", "# Other\ntagged #work too\n")
+        index = LinkIndex(self.scanner)
+        index._build()
+        return index.snapshot()
+
+    def test_the_index_lists_every_tag_it_saw(self):
+        self.assertEqual(self.build()["tags"], ["deep/focus", "urgent", "work"])
+
+    def test_a_tag_edge_runs_from_the_file_to_the_tag(self):
+        edges = [(a, b) for a, b, k in self.build()["edges"] if k == "tag"]
+        self.assertIn((f"{self.root}/notes/index.md", "tag:work"), edges)
+
+    def test_two_notes_reach_the_same_tag(self):
+        edges = {(a, b) for a, b, k in self.build()["edges"] if k == "tag"}
+        self.assertIn((f"{self.root}/notes/index.md", "tag:work"), edges)
+        self.assertIn((f"{self.root}/notes/other.md", "tag:work"), edges)
+
+    def test_code_files_are_not_scanned_for_tags(self):
+        write(f"{self.root}/app/hash.py", "# not a tag\nx = 1  # neither\n")
+        self.assertNotIn("not", self.build()["tags"])
 
 
 class TestReader(Tree):

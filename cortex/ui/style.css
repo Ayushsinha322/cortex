@@ -19,6 +19,7 @@
   --media:   #fb7185;
   --archive: #94a3b8;
   --other:   #64748b;
+  --tag:     #c084fc;
 
   --mono: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Inter, sans-serif;
@@ -240,6 +241,7 @@ body.sidebar-open #stats{left:274px}
 .conn .arrow{flex:none;width:11px;font-size:11px;color:var(--fg-faint)}
 .conn.note .nm{color:var(--note)}
 .conn.code .nm{color:var(--code)}
+.conn.tag .nm{color:var(--tag)}
 .conn .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:26ch}
 .conn .where{margin-left:auto;flex:none;font:10.5px/1 var(--mono);
   color:var(--fg-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;

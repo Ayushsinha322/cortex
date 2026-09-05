@@ -376,13 +376,40 @@ full of projects shows nothing until you narrow to one — the same moment the
 rest of the graph starts paying off. Nothing outside the folder you mapped is
 ever reported, even when the repository extends above it.
 
-**Edges** come in three kinds:
+**Edges** come in four kinds:
 
 | Edge | Meaning |
 | ---- | ------- |
 | faint grey-blue | the filesystem — a folder to what is inside it |
 | **green** | a note link: `[[wikilinks]]` and relative markdown links |
 | **blue** | a code import, resolved to a real file on disk |
+| **purple** | a tag, joining every note that carries it |
+
+### Tags
+
+A tag is a node in the graph, drawn as a purple ring. That is the point: two
+notes that never link to each other still meet, at the thing they are both
+about.
+
+Both ways of writing one are read:
+
+```markdown
+---
+tags: [work, urgent]
+---
+
+Some thinking about #deep/focus.
+```
+
+Front matter takes an inline list, a comma-separated value or a YAML block
+list. In the prose, a `#tag` is one only after whitespace or at the start of a
+line, so `# Heading` is a heading and `example.com/a#frag` is a URL. Fenced and
+inline code is skipped, because a shell script is not a tag list.
+
+Select a tag and the reader lists the notes carrying it; click one to go there.
+A tag is not a file, so it has no editor button, no path and no size — there is
+nothing on disk to open. The **tags** chip in the top bar hides them all when
+you would rather see the folders.
 
 Code links are found by actually resolving the import:
 
@@ -522,7 +549,7 @@ cortex/
 │   ├── cli.py            arguments, saved projects, window launch, action loop
 │   ├── scanner.py        lazy folder scanning, ignore rules, node building
 │   ├── ignore.py         .gitignore parsing, the way git reads it
-│   ├── links.py          the semantic index: wikilinks and code imports
+│   ├── links.py          the semantic index: wikilinks, imports and tags
 │   ├── grep.py           content search, through ripgrep or a plain walk
 │   ├── gitstatus.py      what git thinks of each file
 │   ├── watch.py          noticing the disk change under an open window
@@ -543,7 +570,8 @@ cortex/
     ├── render-loop.test.js  cooling and repaint gating
     ├── connections.test.js  backlinks, and following one into the graph
     ├── search.test.js       both searches, and the line reaching the editor
-    └── refresh.test.js      the graph keeping up with the disk
+    ├── refresh.test.js      the graph keeping up with the disk
+    └── tags.test.js         tag nodes, and their refusal to act like files
 ```
 
 ---
@@ -558,9 +586,10 @@ node tests/render-loop.test.js
 node tests/connections.test.js
 node tests/search.test.js
 node tests/refresh.test.js
+node tests/tags.test.js
 ```
 
-245 tests, no framework to install — `unittest` and plain `node`. They run on
+286 tests, no framework to install — `unittest` and plain `node`. They run on
 every push against Python 3.9 and 3.13 on Linux, and 3.13 on macOS. `tests/run`
 also byte-checks every source file, because raw NUL bytes once got into two UI
 files and made git treat them as binary, silently breaking diffs and `grep`.
