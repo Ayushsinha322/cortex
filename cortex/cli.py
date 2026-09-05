@@ -126,6 +126,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="do not read .gitignore files; show what git hides")
     p.add_argument("--no-links", action="store_true",
                    help="skip the semantic link index (faster start)")
+    p.add_argument("--no-watch", action="store_true",
+                   help="do not notice files changing while the window is open")
+    p.add_argument("--no-layout", action="store_true",
+                   help="do not remember where the nodes were last time")
 
     g = p.add_argument_group("projects")
     g.add_argument("-P", "--project", metavar="NAME",
