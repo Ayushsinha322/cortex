@@ -88,7 +88,9 @@ function element(id, ctx2d) {
     /* Enough of a selector engine for the class and tag lookups app.js does. */
     querySelectorAll(sel) { return descend(el, sel, []); },
     querySelector(sel) { return descend(el, sel, [], true)[0] || null; },
-    focus() {}, blur() {}, select() {}, scrollTo() {},
+    focus() { el.focused = true; },
+    blur() { el.focused = false; el.blurs = (el.blurs || 0) + 1; },
+    select() {}, scrollTo() {}, scrollIntoView() {},
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 1600, height: 900 }),
   };
 

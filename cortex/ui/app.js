@@ -42,6 +42,7 @@ let showLabels = true;
 let semanticEdges = null, editors = [], primaryEditor = null;
 let connIndex = null, connOpen = true;
 let searchMode = "names";       // or "text" -- search inside files
+let hitRows = [], hitIndex = -1;
 let selLine = null;             // line to open the selection at, from a hit
 let gitStates = new Map();      // path -> modified | staged | untracked | ...
 let gitBranch = null, showGit = true;
@@ -436,10 +437,25 @@ function addTagNode(id, near) {
   return n;
 }
 
-function dirLabel(p) {
+function hitsNote(term, shown, total) {
+  if (shown) {
+    return shown < total
+      ? `${total - shown} more outside this folder`
+      : (shown >= 200 ? "more matches than shown — narrow the search" : "");
+  }
+  return total ? `nothing here — ${total} outside this folder`
+               : `nothing called “${term}”`;
+}
+
+/* The folder a path is in, relative to the root, trimmed from the left when
+   it is long: the end of a path is the part that identifies it. Trimming here
+   rather than with CSS avoids the bidi trick that would otherwise be needed,
+   which moves the slashes about. */
+function dirLabel(p, cap = 34) {
   const dir = p.slice(0, p.lastIndexOf("/"));
   if (dir === ROOT) return "./";
-  return (dir.startsWith(ROOT + "/") ? dir.slice(ROOT.length + 1) : dir) + "/";
+  const rel = (dir.startsWith(ROOT + "/") ? dir.slice(ROOT.length + 1) : dir) + "/";
+  return rel.length > cap ? "…" + rel.slice(rel.length - cap + 1) : rel;
 }
 
 function renderConnections(n) {
@@ -485,7 +501,7 @@ function renderConnections(n) {
     name.textContent = baseName(c.path);
     const where = document.createElement("span");
     where.className = "where";
-    where.textContent = dirLabel(c.path);
+    where.textContent = dirLabel(c.path, 18);
     row.append(arrow, name, where);
     row.addEventListener("click", () => focusOn(c.path));
     rows.appendChild(row);
@@ -1434,8 +1450,17 @@ qbox.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (!$("hits").hidden) { hideHits(); return; }
     qbox.value = ""; matches.clear(); hideHits(); qbox.blur();
+    return;
   }
-  if (e.key === "Enter") { clearTimeout(searchTimer); runSearch(); }
+  if (e.key === "ArrowDown") { e.preventDefault(); moveHit(1); return; }
+  if (e.key === "ArrowUp") { e.preventDefault(); moveHit(-1); return; }
+  if (e.key === "Enter") {
+    e.preventDefault();
+    clearTimeout(searchTimer);
+    if (takeHit()) return;        // a result is waiting; go to it
+    runSearch();                  // nothing yet, so ask again
+    return;
+  }
   if (e.key === "Tab") { e.preventDefault(); toggleSearchMode(); }
 });
 
@@ -1459,6 +1484,74 @@ function hideHits() {
   const box = $("hits");
   box.hidden = true;
   box.textContent = "";
+  hitRows = [];
+  hitIndex = -1;
+}
+
+/* Both searches answer with the same list, because both answer the same
+   question: which one of these did you mean? Each item is a label, some
+   context, and what to do when it is chosen. */
+function showHits(items, note) {
+  const box = $("hits");
+  box.textContent = "";
+  hitRows = [];
+  hitIndex = -1;
+  if (!items.length && !note) { box.hidden = true; return; }
+  box.hidden = false;
+
+  for (const item of items.slice(0, 200)) {
+    const row = document.createElement("button");
+    row.className = "hit";
+    row.title = item.title || "";
+
+    const label = document.createElement("span");
+    label.className = "hit-name";
+    if (item.colour) label.style.color = item.colour;
+    label.textContent = item.label;
+
+    const detail = document.createElement("span");
+    detail.className = "hit-sub" + (item.path ? " path" : "");
+    if (item.mark) markTerm(detail, item.detail || "", item.mark);
+    else detail.textContent = item.detail || "";
+
+    row.append(label, detail);
+    row.addEventListener("click", () => choose(item));
+    box.appendChild(row);
+    row._item = item;
+    hitRows.push(row);
+  }
+
+  if (note) {
+    const line = document.createElement("div");
+    line.className = "hits-note";
+    line.textContent = note;
+    box.appendChild(line);
+  }
+}
+
+function choose(item) {
+  hideHits();
+  qbox.blur();                    // so the graph's own keys work straight away
+  item.go();
+}
+
+/* Arrow through the list without leaving the box. */
+function moveHit(step) {
+  if (!hitRows.length) return;
+  if (hitIndex >= 0) hitRows[hitIndex].classList.remove("on");
+  hitIndex = (hitIndex + step + hitRows.length) % hitRows.length;
+  const row = hitRows[hitIndex];
+  row.classList.add("on");
+  if (row.scrollIntoView) row.scrollIntoView({ block: "nearest" });
+}
+
+/* Enter takes the highlighted result, or the first one when you have not
+   moved -- typing a name and pressing enter should just get you there. */
+function takeHit() {
+  const row = hitRows[hitIndex >= 0 ? hitIndex : 0];
+  if (!row) return false;
+  choose(row._item);
+  return true;
 }
 
 /* Wrap each occurrence of the term in a <mark>, without handing a line out of
@@ -1490,42 +1583,22 @@ async function runTextSearch(term) {
   const all = r.hits || [];
   const hits = all.filter((h) => inScope(h.path));
 
-  const box = $("hits");
-  box.textContent = "";
-  box.hidden = false;
+  for (const h of hits) if (nodes.has(h.path)) matches.add(h.path);
 
-  for (const h of hits.slice(0, 200)) {
-    if (nodes.has(h.path)) matches.add(h.path);
-    const row = document.createElement("button");
-    row.className = "hit";
-    row.title = `${h.path}:${h.line}`;
-    const where = document.createElement("span");
-    where.className = "hit-where";
-    where.textContent = `${baseName(h.path)}:${h.line}`;
-    const text = document.createElement("span");
-    text.className = "hit-text";
-    markTerm(text, h.text || "", term);
-    row.append(where, text);
-    row.addEventListener("click", () => {
-      hideHits();
-      revealPath(h.path, h.line);
-    });
-    box.appendChild(row);
-  }
+  const note = hits.length
+    ? (r.truncated || hits.length > 200
+        ? "more matches than shown — narrow the search" : "")
+    : (all.length ? `nothing here — ${all.length} outside this folder`
+                  : `nothing contains “${term}”`);
 
-  if (!hits.length) {
-    const note = document.createElement("div");
-    note.className = "hits-note";
-    note.textContent = all.length
-      ? `no matches here — ${all.length} outside this folder`
-      : `nothing contains “${term}”`;
-    box.appendChild(note);
-  } else if (r.truncated || hits.length > 200) {
-    const note = document.createElement("div");
-    note.className = "hits-note";
-    note.textContent = "more matches than shown — narrow the search";
-    box.appendChild(note);
-  }
+  showHits(hits.map((h) => ({
+    label: `${baseName(h.path)}:${h.line}`,
+    detail: h.text || "",
+    mark: term,
+    colour: COLOR.note,
+    title: `${h.path}:${h.line}`,
+    go: () => revealPath(h.path, h.line),
+  })), note);
 
   const files = new Set(hits.map((h) => h.path)).size;
   $("stat-index").textContent = hits.length
@@ -1539,7 +1612,6 @@ async function runSearch() {
   matches.clear();
   if (term.length < 2) { hideHits(); updateStats(); return; }
   if (searchMode === "text") return runTextSearch(term);
-  hideHits();
   $("stat-index").textContent = "searching…";
   let r;
   try { r = await api("/api/search", { q: term }); }
@@ -1568,7 +1640,18 @@ async function runSearch() {
   }
   linkUp(grafted);
   updateStats();
+  if (qbox.value.trim() !== term) return;          // the box moved on
+
   const shown = results.length;
+  showHits(results.map((hit) => ({
+    label: hit.node.name + (hit.node.dir ? "/" : ""),
+    detail: dirLabel(hit.node.id),
+    path: true,
+    colour: COLOR[hit.node.group] || COLOR.other,
+    title: hit.node.id,
+    go: () => revealPath(hit.node.id),
+  })), hitsNote(term, shown, r.count));
+
   $("stat-index").textContent =
     `${shown} match${shown === 1 ? "" : "es"} for “${term}”`
     + (shown < r.count ? ` (${r.count - shown} outside this folder)` : "");

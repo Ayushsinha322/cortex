@@ -202,8 +202,22 @@ hidden in full screen, where you are there to read the file.
 ## Searching
 
 Press <kbd>/</kbd> and the box searches **file names**, anywhere under the root,
-however deep. Matches are grafted into the graph with their real folder lineage,
-so you see where a file lives rather than a flat list.
+however deep:
+
+```
+  plan.md                             notes/
+  design.md                           notes/
+  README.md                           ./
+```
+
+<kbd>↑</kbd> and <kbd>↓</kbd> move through the results and <kbd>enter</kbd>
+goes to the highlighted one, opening the folders it needs to on the way. With
+nothing highlighted, <kbd>enter</kbd> takes the first, so typing a name and
+pressing enter simply gets you there. Focus leaves the box as you land, so the
+graph's own keys work straight away.
+
+Matches are also grafted into the graph with their real folder lineage, so the
+list tells you which one you want and the graph tells you where it sits.
 
 Press <kbd>tab</kbd>, or click the small **names** button in the box, and it
 searches **inside** files instead:
@@ -215,8 +229,9 @@ searches **inside** files instead:
 ```
 
 That is the question you usually have about your own notes — not "where did I
-put it" but "where did I say that". Click a result and cortex opens the folders
-it needs to, selects the file, and remembers the line.
+put it" but "where did I say that". The same list, the same keys: arrow to one
+and press <kbd>enter</kbd>, and cortex opens the folders it needs to, selects
+the file, and remembers the line.
 
 **The line then follows you into your editor.** With a hit selected,
 <kbd>Enter</kbd> opens the file at that line rather than at the top —
@@ -485,6 +500,8 @@ cortex [folder] [options]
 | --- | ---- |
 | <kbd>/</kbd> | search everything under the root |
 | <kbd>tab</kbd> | in the search box: file names, or inside files |
+| <kbd>↑</kbd> <kbd>↓</kbd> | in the search box: move through the results |
+| <kbd>enter</kbd> | in the search box: go to the highlighted result |
 | <kbd>Enter</kbd> | open the selection in your editor, in the terminal |
 | <kbd>r</kbd> | page through the selection in the terminal |
 | <kbd>m</kbd> | full screen the reader |
@@ -626,7 +643,7 @@ node tests/view.test.js
 node tests/perf.test.js
 ```
 
-340 tests, no framework to install — `unittest` and plain `node`. They run on
+358 tests, no framework to install — `unittest` and plain `node`. They run on
 every push against Python 3.9 and 3.13 on Linux, and 3.13 on macOS. `tests/run`
 also byte-checks every source file, because raw NUL bytes once got into two UI
 files and made git treat them as binary, silently breaking diffs and `grep`.

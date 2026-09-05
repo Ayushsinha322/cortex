@@ -27,6 +27,17 @@ const HITS = [
   { path: OLD, line: 7, text: "an old budget note" },
 ];
 
+/* What /api/search answers: a node plus the folders above it. */
+const node = (id) => fsnode(id, false, 0, ROOT);
+const NAMED = {
+  plan: { results: [{ node: node(PLAN), ancestors: [fsnode(`${ROOT}/notes`, true, 1, ROOT)] }],
+          count: 1 },
+  md: { results: [
+          { node: node(PLAN), ancestors: [fsnode(`${ROOT}/notes`, true, 1, ROOT)] },
+          { node: node(OLD), ancestors: [fsnode(`${ROOT}/archive`, true, 1, ROOT)] },
+        ], count: 3 },
+};
+
 const { pump, boot, el, sent, typeSearch, key } = harness({
   root: ROOT,
   children: childrenOf,
@@ -34,14 +45,17 @@ const { pump, boot, el, sent, typeSearch, key } = harness({
   grep: (q) => (q === "budget"
     ? { hits: HITS, engine: "python", truncated: false }
     : { hits: [], engine: "python", truncated: false }),
+  search: (q) => NAMED[q] || { results: [], count: 0 },
   autoExpand: { depth: 0, budget: 200 },  // leaves both folders shut
 });
 
 const { check, done } = reporter();
 
 const hits = () => el("hits");
-const rows = () => hits().children.filter((c) => c.className === "hit");
+const rows = () => hits().children.filter((c) => c.classList.contains("hit"));
 const lastPost = () => [...sent].reverse().find((s) => s.url.includes("/api/action"));
+const notes = () => hits().children.filter((c) => c.className === "hits-note");
+const marked = () => rows().findIndex((r) => r.classList.contains("on"));
 
 (async () => {
   const D = await boot();
@@ -120,6 +134,63 @@ const lastPost = () => [...sent].reverse().find((s) => s.url.includes("/api/acti
   check("it reopens on the next search", hits().hidden === false);
   el("mode").click();
   check("going back to names closes it", hits().hidden === true);
+
+  // --- names answer with a list too, not just highlighted nodes ------------
+  check("we are back on names", el("mode").textContent === "names",
+        el("mode").textContent);
+
+  await typeSearch("md");
+  check("a name search lists what it found", rows().length === 2,
+        `${rows().length} rows`);
+  check("a row names the file", rows()[0].children[0].textContent === "plan.md",
+        rows()[0].children[0].textContent);
+  check("and says which folder it is in",
+        rows()[0].children[1].textContent === "notes/",
+        rows()[0].children[1].textContent);
+  check("the folder is aligned as a path, not as prose",
+        rows()[0].children[1].classList.contains("path"));
+  check("it says how many it could not show here",
+        notes().length === 1 && notes()[0].textContent.includes("1 more outside"),
+        notes().map((n) => n.textContent).join("|"));
+
+  // --- arrowing through it -------------------------------------------------
+  check("nothing is highlighted before you move", marked() === -1);
+  key(q, "ArrowDown");
+  check("down highlights the first result", marked() === 0);
+  key(q, "ArrowDown");
+  check("and then the second", marked() === 1);
+  key(q, "ArrowDown");
+  check("it wraps round the end", marked() === 0);
+  key(q, "ArrowUp");
+  check("up wraps the other way", marked() === 1);
+  check("only one is ever highlighted",
+        rows().filter((r) => r.classList.contains("on")).length === 1);
+
+  // --- enter goes there ----------------------------------------------------
+  key(q, "Enter");
+  await new Promise((r) => setTimeout(r, 80));
+  pump(2);
+  check("enter goes to the highlighted result", D().selected === OLD,
+        `selected=${D().selected}`);
+  check("and the list closes behind you", hits().hidden === true);
+  check("focus leaves the box, so the graph's own keys work at once",
+        q.blurs > 0 && q.focused === false, `blurs=${q.blurs}`);
+
+  // --- enter without arrowing takes the first ------------------------------
+  await typeSearch("plan");
+  check("a single match is listed", rows().length === 1);
+  key(q, "Enter");
+  await new Promise((r) => setTimeout(r, 80));
+  pump(2);
+  check("enter with nothing highlighted takes the first result",
+        D().selected === PLAN, `selected=${D().selected}`);
+
+  // --- nothing found -------------------------------------------------------
+  await typeSearch("zzzz");
+  check("a name search with no matches says so",
+        rows().length === 0 && notes().length === 1
+        && notes()[0].textContent.includes("nothing called"),
+        notes().map((n) => n.textContent).join("|"));
 
   done("search");
 })();
