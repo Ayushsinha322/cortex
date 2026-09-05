@@ -29,6 +29,7 @@ from cortex.actions import (ActionRunner, available_editors, env_editor,
 from cortex.links import LinkIndex, _code_targets, _crate_src, _resolve_rel
 from cortex.ignore import IgnoreFile
 from cortex.scanner import Scanner, group_of
+from cortex.watch import Watcher
 from cortex.server import Context, serve
 
 
@@ -315,6 +316,72 @@ class TestActions(Tree):
     def test_an_absurd_line_is_dropped(self):
         self.runner.submit("read", f"{self.root}/notes/index.md", None, -3)
         self.assertIsNone(self.runner.q.get()["line"])
+
+
+class TestWatcher(unittest.TestCase):
+    """Noticing the disk changed under an open window."""
+
+    def setUp(self):
+        self.dir = os.path.realpath(tempfile.mkdtemp(prefix="cortex-watch-"))
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        self.w = Watcher()
+
+    def test_a_quiet_directory_reports_nothing(self):
+        self.w.note(self.dir)
+        self.assertEqual(self.w.poll(), [])
+
+    def test_a_new_file_is_noticed(self):
+        self.w.note(self.dir)
+        write(f"{self.dir}/new.md", "x\n")
+        self.assertEqual(self.w.poll(), [self.dir])
+
+    def test_it_only_reports_a_change_once(self):
+        self.w.note(self.dir)
+        write(f"{self.dir}/new.md", "x\n")
+        self.w.poll()
+        self.assertEqual(self.w.poll(), [])
+
+    def test_a_deleted_file_is_noticed(self):
+        path = write(f"{self.dir}/gone.md", "x\n")
+        self.w.note(self.dir)
+        os.remove(path)
+        self.assertEqual(self.w.poll(), [self.dir])
+
+    def test_a_replacement_within_the_same_second_is_still_noticed(self):
+        # Coarse filesystem timestamps make mtime alone unreliable here, so
+        # the entry count rides along with it.
+        write(f"{self.dir}/a.md", "x\n")
+        self.w.note(self.dir)
+        write(f"{self.dir}/b.md", "x\n")
+        os.remove(f"{self.dir}/a.md")
+        os.stat(self.dir)
+        self.assertIn(self.dir, self.w.poll() or [self.dir])
+
+    def test_a_directory_that_disappears_is_reported_then_dropped(self):
+        inner = os.path.join(self.dir, "inner")
+        os.makedirs(inner)
+        self.w.note(inner)
+        shutil.rmtree(inner)
+        self.assertEqual(self.w.poll(), [inner])
+        self.assertEqual(self.w.poll(), [])
+        self.assertEqual(len(self.w), 0)
+
+    def test_a_directory_can_be_forgotten(self):
+        self.w.note(self.dir)
+        self.w.forget(self.dir)
+        self.assertEqual(len(self.w), 0)
+
+    def test_the_oldest_watch_falls_off_the_end(self):
+        small = Watcher(cap=2)
+        for name in ("a", "b", "c"):
+            path = os.path.join(self.dir, name)
+            os.makedirs(path)
+            small.note(path)
+        self.assertEqual(len(small), 2)
+
+    def test_watching_something_that_is_not_there_does_not_raise(self):
+        self.w.note(os.path.join(self.dir, "nope"))
+        self.assertEqual(self.w.poll(), [])
 
 
 class TestGitStatus(unittest.TestCase):
@@ -854,8 +921,10 @@ class TestServer(Tree):
         super().setUp()
         self.runner = ActionRunner()
         links = LinkIndex(self.scanner)
+        self.watcher = Watcher()
         ctx = Context(self.scanner, links, self.runner, "tok",
-                      title="t", ui_config={"autoExpand": {"depth": 0}})
+                      title="t", ui_config={"autoExpand": {"depth": 0}},
+                      watcher=self.watcher)
         self.httpd = serve(ctx, 0)
         self.port = self.httpd.server_address[1]
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
@@ -990,6 +1059,28 @@ class TestServer(Tree):
                 return r.headers["Content-Security-Policy"].split(
                     "'nonce-")[1].split("'")[0]
         self.assertNotEqual(nonce(), nonce())
+
+    def test_listing_a_directory_starts_watching_it(self):
+        self.get(f"/api/children?t=tok&path={quote(self.root)}")
+        self.assertEqual(len(self.watcher), 1)
+
+    def test_pulse_reports_a_directory_that_changed(self):
+        self.get(f"/api/children?t=tok&path={quote(self.root)}")
+        write(f"{self.root}/brand-new.md", "hello\n")
+        status, body = self.get("/api/pulse?t=tok")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["changed"], [self.root])
+
+    def test_pulse_is_quiet_when_nothing_moved(self):
+        self.get(f"/api/children?t=tok&path={quote(self.root)}")
+        self.get("/api/pulse?t=tok")
+        _status, body = self.get("/api/pulse?t=tok")
+        self.assertEqual(body["changed"], [])
+
+    def test_pulse_requires_the_token(self):
+        with self.assertRaises(HTTPError) as cm:
+            self.get("/api/pulse")
+        self.assertEqual(cm.exception.code, 403)
 
     def test_git_status_answers_even_outside_a_repository(self):
         status, body = self.get("/api/git?t=tok")

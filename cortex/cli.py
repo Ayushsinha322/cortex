@@ -16,6 +16,7 @@ from . import __version__
 from .actions import ActionRunner, available_editors, C
 from .links import LinkIndex
 from .scanner import Scanner
+from .watch import Watcher
 from .server import Context, serve
 
 VERSION = __version__
@@ -207,9 +208,12 @@ def main(argv=None) -> int:
     runner = ActionRunner()
     token = secrets.token_urlsafe(24)
 
+    watcher = None if args.no_watch else Watcher()
     ctx = Context(scanner, links, runner, token, title=_short(root),
                   ui_config={"autoExpand": {"depth": depth,
-                                            "budget": max(0, args.max_nodes)}})
+                                            "budget": max(0, args.max_nodes)},
+                             "pulseMs": 0 if args.no_watch else 2500},
+                  watcher=watcher)
     try:
         httpd = serve(ctx, args.port)
     except OSError as exc:

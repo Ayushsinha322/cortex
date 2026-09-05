@@ -188,6 +188,8 @@ function harness(opts = {}) {
     (() => [{ id: "nvim", label: "Neovim", gui: false, env: false }]);
   const grepOf = opts.grep ||
     (() => ({ hits: [], engine: "python", truncated: false }));
+  const pulseOf = opts.pulse || (() => ({ changed: [], reindexed: false }));
+  const gitOf = opts.git || (() => ({ repo: null, branch: null, states: {} }));
   const searchOf = opts.search || (() => ({ results: [], count: 0 }));
 
   global.fetch = async (url, init) => {
@@ -201,6 +203,8 @@ function harness(opts = {}) {
       : u.includes("/api/editors") ? { editors: editorsOf() }
       : u.includes("/api/links") ? linksOf()
       : u.includes("/api/grep") ? grepOf(q)
+      : u.includes("/api/pulse") ? pulseOf()
+      : u.includes("/api/git") ? gitOf()
       : u.includes("/api/search") ? searchOf(q)
       : u.includes("/api/action") ? { ok: true, terminal: true }
       : {};

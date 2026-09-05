@@ -26,6 +26,11 @@ MAX_PARSE_FILES = 120_000        # ceiling on files we actually read
 TIME_BUDGET = 150.0              # seconds; a huge home should not spin forever
 PROGRESS_EVERY = 400             # publish partial results this often
 
+# Rebuilding when files change is only sane for a project. A home directory
+# takes seconds to index and would be re-indexing forever.
+REBUILD_EVERY = 15.0             # seconds between rebuilds, at the most
+REBUILD_CEILING = 2.5            # only re-index what indexed this fast
+
 # Generated or vendored bundles: parsing them yields noise, not structure.
 SKIP_SUFFIX = (".min.js", ".min.css", ".bundle.js", ".pack.js", "-lock.json",
                ".d.ts")
@@ -78,6 +83,27 @@ class LinkIndex:
         self.elapsed = 0.0
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
+        self._partial = True         # publish as we go on the first build only
+        self._last_build = 0.0
+
+    def maybe_rebuild(self) -> bool:
+        """Re-index because files changed, if that is cheap enough to do.
+
+        Refuses on anything that took a while to index the first time, and
+        never more than once every REBUILD_EVERY seconds, so a busy directory
+        cannot put the machine in a loop.
+        """
+        with self._lock:
+            if not self.ready or self.elapsed > REBUILD_CEILING:
+                return False
+            now = time.monotonic()
+            if now - self._last_build < REBUILD_EVERY:
+                return False
+            self._last_build = now
+            self.ready = False
+            self._partial = False    # keep the old edges until the new ones land
+        self.start()
+        return True
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._build, daemon=True,
@@ -94,6 +120,7 @@ class LinkIndex:
 
     def _build(self) -> None:
         started = time.monotonic()
+        self._last_build = started
         _GO_MODULES.clear()          # go.mod contents may have changed
         note_paths: list[str] = []
         code_paths: list[str] = []
@@ -158,8 +185,9 @@ class LinkIndex:
                     if target:
                         emit(path, target, "note")
             if i % PROGRESS_EVERY == 0:
-                with self._lock:
-                    self.edges = list(edges)
+                if self._partial:
+                    with self._lock:
+                        self.edges = list(edges)
                 if over_budget():
                     break
 
@@ -170,14 +198,16 @@ class LinkIndex:
                 for target in _code_targets(path, text, all_files):
                     emit(path, target, "code")
             if i % PROGRESS_EVERY == 0:
-                with self._lock:
-                    self.edges = list(edges)
+                if self._partial:
+                    with self._lock:
+                        self.edges = list(edges)
                 if over_budget():
                     break
 
         with self._lock:
             self.edges = edges
             self.ready = True
+            self._partial = True
             self.elapsed = round(time.monotonic() - started, 1)
 
 
