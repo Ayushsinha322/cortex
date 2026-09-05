@@ -640,6 +640,25 @@ class TestServer(Tree):
         self.assertTrue(body["ok"])
         self.assertEqual(self.runner.q.qsize(), 1)
 
+    def test_the_page_carries_a_content_security_policy(self):
+        with urlopen(f"http://127.0.0.1:{self.port}/", timeout=5) as r:
+            policy = r.headers["Content-Security-Policy"]
+            page = r.read().decode()
+        self.assertIn("default-src 'none'", policy)
+        self.assertIn("script-src 'self' 'nonce-", policy)
+        self.assertIn("frame-ancestors 'none'", policy)
+        # the one inline script must carry the nonce the header just declared
+        nonce = policy.split("'nonce-")[1].split("'")[0]
+        self.assertIn(f'<script nonce="{nonce}">', page)
+        self.assertNotIn("__NONCE__", page)
+
+    def test_the_nonce_is_fresh_on_every_request(self):
+        def nonce():
+            with urlopen(f"http://127.0.0.1:{self.port}/", timeout=5) as r:
+                return r.headers["Content-Security-Policy"].split(
+                    "'nonce-")[1].split("'")[0]
+        self.assertNotEqual(nonce(), nonce())
+
     def test_unknown_routes_404(self):
         with self.assertRaises(HTTPError) as cm:
             self.get("/api/nope?t=tok")
