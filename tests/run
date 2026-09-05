@@ -63,6 +63,7 @@ if command -v node >/dev/null; then
   step "search" node tests/search.test.js
   step "refresh" node tests/refresh.test.js
   step "tags" node tests/tags.test.js
+  step "view" node tests/view.test.js
 else
   printf '%s\n\n' "${dim}   node not installed - skipping the UI tests${off}"
 fi

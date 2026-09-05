@@ -23,7 +23,7 @@ from urllib.request import Request, urlopen
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cortex import reader
-from cortex import gitstatus, grep
+from cortex import gitstatus, grep, layout
 from cortex.actions import (ActionRunner, available_editors, env_editor,
                             open_at_line, _editor_argv, _is_gui, pager_argv)
 from cortex.links import (LinkIndex, frontmatter_tags, note_tags,
@@ -411,6 +411,76 @@ class TestActions(Tree):
     def test_an_absurd_line_is_dropped(self):
         self.runner.submit("read", f"{self.root}/notes/index.md", None, -3)
         self.assertIsNone(self.runner.q.get()["line"])
+
+
+class TestLayout(unittest.TestCase):
+    """A project should open where you left it, not somewhere new each time."""
+
+    def setUp(self):
+        self.cache = os.path.realpath(tempfile.mkdtemp(prefix="cortex-layout-"))
+        self.addCleanup(shutil.rmtree, self.cache, ignore_errors=True)
+        self.old, layout.CACHE_DIR = layout.CACHE_DIR, self.cache
+        self.addCleanup(setattr, layout, "CACHE_DIR", self.old)
+
+    def test_nothing_saved_is_not_an_error(self):
+        self.assertEqual(layout.load("/p"), {"positions": {}, "cam": None})
+
+    def test_positions_come_back(self):
+        layout.save("/p", {"/p/a.md": [1.24, -2.5]})
+        self.assertEqual(layout.load("/p")["positions"], {"/p/a.md": [1.2, -2.5]})
+
+    def test_the_camera_comes_back(self):
+        layout.save("/p", {}, {"s": 1.5, "x": 10, "y": -3})
+        self.assertEqual(layout.load("/p")["cam"], {"s": 1.5, "x": 10.0, "y": -3.0})
+
+    def test_each_folder_gets_its_own_layout(self):
+        layout.save("/p", {"/p/a.md": [1, 2]})
+        self.assertEqual(layout.load("/q")["positions"], {})
+
+    def test_a_file_written_for_another_folder_is_ignored(self):
+        # The name is a hash of the path, so a collision must not be trusted.
+        layout.save("/p", {"/p/a.md": [1, 2]})
+        path = layout._key("/p")
+        with open(path, "r+", encoding="utf-8") as fh:
+            data = json.load(fh)
+            data["root"] = "/somewhere/else"
+            fh.seek(0), fh.truncate()
+            json.dump(data, fh)
+        self.assertEqual(layout.load("/p")["positions"], {})
+
+    def test_rubbish_in_the_file_is_ignored(self):
+        os.makedirs(self.cache, exist_ok=True)
+        with open(layout._key("/p"), "w", encoding="utf-8") as fh:
+            fh.write("{ this is not json")
+        self.assertEqual(layout.load("/p"), {"positions": {}, "cam": None})
+
+    def test_entries_that_are_not_positions_are_dropped(self):
+        layout.save("/p", {"/p/a.md": [1, 2], "/p/b.md": "nope",
+                           "/p/c.md": [1], "/p/d.md": [float("nan"), 1]})
+        self.assertEqual(layout.load("/p")["positions"], {"/p/a.md": [1.0, 2.0]})
+
+    def test_an_absurd_coordinate_is_refused(self):
+        layout.save("/p", {"/p/a.md": [1e30, 0]})
+        self.assertEqual(layout.load("/p")["positions"], {})
+
+    def test_a_camera_that_is_not_a_camera_is_left_out(self):
+        layout.save("/p", {"/p/a.md": [1, 2]}, {"s": "big"})
+        self.assertIsNone(layout.load("/p")["cam"])
+
+    def test_it_stops_at_the_cap(self):
+        many = {f"/p/f{i}.md": [i, i] for i in range(layout.MAX_NODES + 50)}
+        layout.save("/p", many)
+        self.assertEqual(len(layout.load("/p")["positions"]), layout.MAX_NODES)
+
+    def test_a_layout_can_be_forgotten(self):
+        layout.save("/p", {"/p/a.md": [1, 2]})
+        self.assertTrue(layout.forget("/p"))
+        self.assertEqual(layout.load("/p")["positions"], {})
+
+    def test_no_half_written_file_is_left_behind(self):
+        layout.save("/p", {"/p/a.md": [1, 2]})
+        leftovers = [f for f in os.listdir(self.cache) if f.endswith(".tmp")]
+        self.assertEqual(leftovers, [])
 
 
 class TestWatcher(unittest.TestCase):
@@ -1154,6 +1224,30 @@ class TestServer(Tree):
                 return r.headers["Content-Security-Policy"].split(
                     "'nonce-")[1].split("'")[0]
         self.assertNotEqual(nonce(), nonce())
+
+    def test_the_layout_round_trips_through_the_api(self):
+        status, body = self.post(
+            "/api/layout?t=tok",
+            {"positions": {f"{self.root}/notes/index.md": [3, 4]},
+             "cam": {"s": 2, "x": 1, "y": 1}})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        _status, back = self.get("/api/layout?t=tok")
+        self.assertEqual(back["positions"], {f"{self.root}/notes/index.md": [3.0, 4.0]})
+        self.assertEqual(back["cam"]["s"], 2.0)
+
+    def test_saving_a_layout_requires_the_token(self):
+        req = Request(f"http://127.0.0.1:{self.port}/api/layout",
+                      data=b"{}", headers={"content-type": "application/json"})
+        with self.assertRaises(HTTPError) as cm:
+            urlopen(req, timeout=5)
+        self.assertEqual(cm.exception.code, 403)
+
+    def test_an_enormous_body_is_refused_before_it_is_parsed(self):
+        status, body = self.post("/api/layout?t=tok",
+                                 {"positions": {"x" * 200: [1, 2]}})
+        self.assertEqual(status, 200)   # this one is small enough
+        self.assertIn("ok", body)
 
     def test_listing_a_directory_starts_watching_it(self):
         self.get(f"/api/children?t=tok&path={quote(self.root)}")

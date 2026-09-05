@@ -47,6 +47,9 @@ function descend(node, sel, out, first) {
   return out;
 }
 
+/* Anchors with a download attribute, so a test can see what was saved. */
+const downloads = [];
+
 function element(id, ctx2d) {
   const el = {
     id, tagName: "DIV", value: "",
@@ -69,10 +72,14 @@ function element(id, ctx2d) {
       (this._ev[e.type] || []).forEach((fn) => fn(e));
       return true;
     },
-    click() {
-      this.dispatchEvent({ type: "click", target: this, currentTarget: this,
-                           stopPropagation() {} });
+    click(init) {
+      if (el.download) downloads.push({ name: el.download, href: el.href });
+      this.dispatchEvent(Object.assign(
+        { type: "click", target: this, currentTarget: this,
+          stopPropagation() {}, shiftKey: false }, init || {}));
     },
+    remove() {},
+    toBlob(cb, type) { cb(new global.Blob(["stub-canvas-bytes"], { type })); },
     getContext: () => ctx2d,
     appendChild(c) { this.children.push(c); return c; },
     append(...c) { this.children.push(...c); },
@@ -161,13 +168,25 @@ function harness(opts = {}) {
   };
 
   global.window = {
-    CORTEX: { token: "T", root: ROOT,
-              autoExpand: opts.autoExpand || { depth: 0, budget: 0 } },
+    CORTEX: Object.assign({
+      token: "T", root: ROOT,
+      autoExpand: opts.autoExpand || { depth: 0, budget: 0 },
+    }, opts.config || {}),
     innerWidth: 1600, innerHeight: 900, devicePixelRatio: 2,
     addEventListener() {},
     requestAnimationFrame: global.requestAnimationFrame,
   };
   global.location = { origin: "http://127.0.0.1:9999" };
+  global.Blob = class {
+    constructor(parts, opts) { this.parts = parts; this.type = (opts || {}).type; }
+    text() { return this.parts.join(""); }
+  };
+  // node has URL; it does not have the object-url half of it
+  global.URL.createObjectURL = (blob) => {
+    blobs.push(blob);
+    return "blob:stub/" + blobs.length;
+  };
+  global.URL.revokeObjectURL = () => {};
   global.navigator = { clipboard: { writeText: async () => {} } };
   global.Event = class { constructor(t) { this.type = t; } };
   global.MouseEvent = class {
@@ -179,6 +198,8 @@ function harness(opts = {}) {
   /* Every request the app makes, so a test can assert what it asked for as
      well as what it did with the answer. */
   const sent = [];
+  const blobs = [];       // everything handed to URL.createObjectURL
+  const saved = [];       // every <a download> that was clicked
 
   const children = opts.children || (() => []);
   const rootNode = opts.rootNode || (() => null);
@@ -190,6 +211,7 @@ function harness(opts = {}) {
     (() => ({ hits: [], engine: "python", truncated: false }));
   const pulseOf = opts.pulse || (() => ({ changed: [], reindexed: false }));
   const gitOf = opts.git || (() => ({ repo: null, branch: null, states: {} }));
+  const layoutOf = opts.layout || (() => ({ positions: {}, cam: null }));
   const searchOf = opts.search || (() => ({ results: [], count: 0 }));
 
   global.fetch = async (url, init) => {
@@ -205,6 +227,7 @@ function harness(opts = {}) {
       : u.includes("/api/grep") ? grepOf(q)
       : u.includes("/api/pulse") ? pulseOf()
       : u.includes("/api/git") ? gitOf()
+      : u.includes("/api/layout") ? layoutOf()
       : u.includes("/api/search") ? searchOf(q)
       : u.includes("/api/action") ? { ok: true, terminal: true }
       : {};
@@ -234,7 +257,7 @@ function harness(opts = {}) {
   }
 
   return {
-    ROOT, byId, pump, boot, sent, typeSearch, key,
+    ROOT, byId, pump, boot, sent, blobs, downloads, typeSearch, key,
     el: (id) => global.document.getElementById(id),
   };
 }

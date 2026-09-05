@@ -45,6 +45,8 @@ let searchMode = "names";       // or "text" -- search inside files
 let selLine = null;             // line to open the selection at, from a hit
 let gitStates = new Map();      // path -> modified | staged | untracked | ...
 let gitBranch = null, showGit = true;
+let savedPos = new Map();       // path -> [x, y] from the last time you looked
+let savedCam = null, layoutDirty = false;
 let cam = { s: 1, x: 0, y: 0 };
 let needsFit = false;
 
@@ -61,8 +63,13 @@ const sidebarInset = () => (sidebarOpen ? SIDEBAR_W : 0);
    forever, which reads as flicker: labels keep crossing the collision
    threshold and blink on and off. Anything that changes the graph reheats it. */
 let alpha = 1, dirty = true, shownLabels = new Set();
+let labelPlan = [];             // what the last frame's label pass placed
 const COOL = 0.982, ALPHA_MIN = 0.004;
-const reheat = (a = 0.75) => { alpha = Math.max(alpha, a); dirty = true; };
+const reheat = (a = 0.75) => {
+  alpha = Math.max(alpha, a);
+  dirty = true;
+  layoutDirty = true;
+};
 const repaint = () => { dirty = true; };
 
 const $ = (id) => document.getElementById(id);
@@ -124,11 +131,14 @@ function addNode(raw, near) {
     if (raw.kids !== undefined) { found.kids = raw.kids; found.r = radiusOf(found); }
     return found;
   }
+  // where it sat last time, if we have been here before; otherwise a ring
+  // around whatever it grew out of
+  const remembered = savedPos.get(raw.id);
   const angle = Math.random() * Math.PI * 2;
   const dist = 50 + Math.random() * 70;
   const n = Object.assign({}, raw, {
-    x: (near ? near.x : 0) + Math.cos(angle) * dist,
-    y: (near ? near.y : 0) + Math.sin(angle) * dist,
+    x: remembered ? remembered[0] : (near ? near.x : 0) + Math.cos(angle) * dist,
+    y: remembered ? remembered[1] : (near ? near.y : 0) + Math.sin(angle) * dist,
     vx: 0, vy: 0,
     fresh: raw.mtime ? (NOW - raw.mtime) < 7 * 86400 : false,
     depth: raw.id === viewRoot
@@ -271,6 +281,34 @@ async function pulse() {
 
 const parentOf = (p) => p.slice(0, p.lastIndexOf("/"));
 
+/* ---------------------------------------------------------------- layout
+
+   A force-directed graph settles somewhere different every run, so a project
+   you open daily looks different daily and the spatial memory that makes a map
+   worth having never forms. Positions are saved per mapped folder, with the
+   camera, and restored on the next launch. It is a cache: deleting it costs one
+   re-settle. */
+async function loadLayout() {
+  if (!CFG.rememberLayout) return;
+  try {
+    const saved = await api("/api/layout");
+    savedPos = new Map(Object.entries(saved.positions || {}));
+    savedCam = saved.cam || null;
+  } catch (err) { savedPos = new Map(); savedCam = null; }
+}
+
+async function saveLayout() {
+  if (!CFG.rememberLayout || !layoutDirty || !nodes.size) return;
+  layoutDirty = false;
+  const positions = {};
+  for (const n of nodes.values()) {
+    if (!n.tag) positions[n.id] = [n.x, n.y];   // a tag has nowhere to belong
+  }
+  try {
+    await post("/api/layout", { positions, cam: { s: cam.s, x: cam.x, y: cam.y } });
+  } catch (err) { layoutDirty = true; }
+}
+
 async function applySemantic() {
   if (!semanticEdges) {
     try {
@@ -297,7 +335,9 @@ async function applySemantic() {
     }
     addLink(a, b, kind);
   }
-  if (links.length !== before) reheat(0.4);
+  // a restored layout is where you left it; late links nudge, they do not
+  // get to throw the whole thing back in the air
+  if (links.length !== before) reheat(savedPos.size ? 0.12 : 0.4);
   buildConnIndex();
   if (sel) renderConnections(sel);
   updateStats();
@@ -795,6 +835,7 @@ function draw() {
 
   // labels, in a separate pass, with cheap collision avoidance
   const boxes = [];
+  labelPlan = [];
   const fits = (bx, by, bw, bh) => {
     for (let i = boxes.length - 1, seen = 0; i >= 0 && seen < 220; i--, seen++) {
       const o = boxes[i];
@@ -828,6 +869,7 @@ function draw() {
     if (!bypass && !fits(bx, by, w, bh)) continue;
     boxes.push([bx, by, w, bh]);
     nextShown.add(n.id);
+    labelPlan.push({ text, x, y: by, size, active, dir: n.dir, w, bh, bx });
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
     if (active) {
@@ -865,7 +907,7 @@ CFG.debug = () => ({
   alpha: Number(alpha.toFixed(4)), frozen: alpha < ALPHA_MIN, dirty,
   frames: frameCount, draws: drawCount,
   nodes: nodes.size, links: links.length, labels: shownLabels.size,
-  selected: sel ? sel.id : null,
+  selected: sel ? sel.id : null, cam: { s: cam.s, x: cam.x, y: cam.y },
 });
 
 /* A test seam. The stub-DOM suites drive the real app.js, and selecting a node
@@ -873,6 +915,11 @@ CFG.debug = () => ({
    than the thing under test. Returns false when that path is not in the graph,
    which is itself worth asserting. */
 CFG.debug.pulse = () => pulse();
+CFG.debug.saveLayout = () => { layoutDirty = true; return saveLayout(); };
+CFG.debug.at = (id) => nodes.get(id);
+CFG.debug.key = (name) =>
+  keyHandler({ key: name, target: null, preventDefault() {},
+               metaKey: false, ctrlKey: false, altKey: false, shiftKey: false });
 CFG.debug.select = (id) => {
   const n = nodes.get(id);
   if (n) select(n);
@@ -1500,6 +1547,134 @@ async function runSearch() {
   }
 }
 
+/* Step to the next node in a direction. Linked neighbours win, because that is
+   the graph you are reading; anything else visible is the fallback, so the
+   arrows never simply stop working. */
+function step(dirX, dirY) {
+  if (!sel) return;
+  let best = null, bestScore = Infinity;
+
+  const consider = (m) => {
+    if (m === sel || !visible(m)) return;
+    const dx = m.x - sel.x, dy = m.y - sel.y;
+    const along = dx * dirX + dy * dirY;
+    if (along <= 0) return;                       // behind us
+    const across = Math.abs(dx * dirY - dy * dirX);
+    if (across > along) return;                   // outside a 45-degree cone
+    const score = along + across * 1.6;
+    if (score < bestScore) { bestScore = score; best = m; }
+  };
+
+  for (const id of neighbours) {
+    const m = nodes.get(id);
+    if (m) consider(m);
+  }
+  if (!best) for (const m of nodes.values()) consider(m);
+  if (best) { select(best); centerOn(best); }
+}
+
+/* ----------------------------------------------------------------- export
+
+   The graph is worth showing to people, and a screenshot of a browser window
+   is not the way. PNG is the canvas exactly as drawn; SVG is redrawn from the
+   same numbers so it stays sharp at any size, which is what a slide or a print
+   wants. Both take the view as it stands -- pan, zoom and filters included. */
+const XML_ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
+const xesc = (s) => String(s).replace(/[&<>"]/g, (c) => XML_ESC[c]);
+const round = (v) => Math.round(v * 10) / 10;
+
+function sceneSVG() {
+  const out = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" ` +
+    `viewBox="0 0 ${W} ${H}" font-family="ui-sans-serif, system-ui, sans-serif">`,
+    `<rect width="${W}" height="${H}" fill="#070910"/>`,
+  ];
+
+  for (const l of links) {
+    const a = nodes.get(l.a), b = nodes.get(l.b);
+    if (!a || !b || !visible(a) || !visible(b)) continue;
+    const semantic = l.kind !== "tree";
+    if (semantic && !showSemantic) continue;
+    const stroke = !semantic ? "#1e293b"
+      : l.kind === "code" ? "#60a5fa" : l.kind === "tag" ? "#c084fc" : "#34d399";
+    const opacity = semantic ? 0.18 : 1;
+    out.push(`<line x1="${round(toScreenX(a.x))}" y1="${round(toScreenY(a.y))}" ` +
+             `x2="${round(toScreenX(b.x))}" y2="${round(toScreenY(b.y))}" ` +
+             `stroke="${stroke}" stroke-opacity="${opacity}" stroke-width="1"/>`);
+  }
+
+  for (const n of nodes.values()) {
+    if (!visible(n)) continue;
+    const x = toScreenX(n.x), y = toScreenY(n.y);
+    if (x < -60 || x > W + 60 || y < -60 || y > H + 60) continue;
+    const r = Math.max(1.8, n.r * cam.s);
+    const c = COLOR[n.group] || COLOR.other;
+    const hollow = n.tag || (n.dir && expanded.has(n.id));
+    out.push(`<circle cx="${round(x)}" cy="${round(y)}" r="${round(r)}" ` +
+             (hollow
+               ? `fill="#0b1120" stroke="${c}" stroke-width="${round(Math.max(1.2, r * 0.26))}"/>`
+               : `fill="${c}"/>`));
+    if (n.tag) {
+      out.push(`<circle cx="${round(x)}" cy="${round(y)}" ` +
+               `r="${round(Math.max(1, r * 0.3))}" fill="${c}"/>`);
+    }
+    const state = showGit && gitStates.get(n.id);
+    if (state && r > 2.4) {
+      const gr = Math.max(1.8, r * (state === "inside" ? 0.24 : 0.34));
+      out.push(`<circle cx="${round(x + r * 0.72)}" cy="${round(y - r * 0.72)}" ` +
+               `r="${round(gr)}" fill="${GIT_COLOR[state]}" ` +
+               `stroke="#070910" stroke-width="1.1"/>`);
+    }
+  }
+
+  if (showLabels) {
+    for (const lab of labelPlan) {
+      const fill = lab.active ? "#f4f7fc" : lab.dir ? "#c4d0e4" : "#7f8da6";
+      out.push(`<text x="${round(lab.x)}" y="${round(lab.y)}" ` +
+               `text-anchor="middle" dominant-baseline="hanging" ` +
+               `font-size="${round(lab.size)}" ` +
+               `font-weight="${lab.active || lab.dir ? 600 : 400}" ` +
+               `fill="${fill}">${xesc(lab.text)}</text>`);
+    }
+  }
+
+  out.push("</svg>");
+  return out.join("\n");
+}
+
+function exportName(ext) {
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+  const where = (viewRoot.split("/").pop() || "cortex").replace(/[^\w.-]/g, "_");
+  return `${where}-${stamp}.${ext}`;
+}
+
+function offerDownload(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+function exportScene(kind) {
+  draw();                       // the canvas may be mid-freeze; make it current
+  if (kind === "svg") {
+    offerDownload(new Blob([sceneSVG()], { type: "image/svg+xml" }),
+                  exportName("svg"));
+    toast("saved an svg of this view");
+    return;
+  }
+  if (!stage.toBlob) { toast("this browser cannot export a png", true); return; }
+  stage.toBlob((blob) => {
+    if (!blob) { toast("could not make a png", true); return; }
+    offerDownload(blob, exportName("png"));
+    toast("saved a png of this view");
+  }, "image/png");
+}
+
 // ------------------------------------------------------------------ filters
 function buildFilters() {
   const nav = $("filters");
@@ -1541,7 +1716,9 @@ function updateStats() {
 }
 
 // ----------------------------------------------------------------- keyboard
-window.addEventListener("keydown", (e) => {
+window.addEventListener("keydown", (e) => keyHandler(e));
+
+function keyHandler(e) {
   if (e.target === qbox || e.target === $("sb-filter")) return;
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   switch (e.key) {
@@ -1589,8 +1766,18 @@ window.addEventListener("keydown", (e) => {
       $("help").classList.toggle("open"); break;
     case "0":
       fit(); break;
+    case "ArrowLeft":
+      e.preventDefault(); step(-1, 0); break;
+    case "ArrowRight":
+      e.preventDefault(); step(1, 0); break;
+    case "ArrowUp":
+      e.preventDefault(); step(0, -1); break;
+    case "ArrowDown":
+      e.preventDefault(); step(0, 1); break;
+    case "x":
+      exportScene(e.shiftKey ? "svg" : "png"); break;
   }
-});
+}
 
 // --------------------------------------------------------------------- wire
 $("p-close").addEventListener("click", closePanel);
@@ -1617,6 +1804,7 @@ document.addEventListener("click", (e) => {
   }
 });
 $("btn-fit").addEventListener("click", () => fit());
+$("btn-save").addEventListener("click", (e) => exportScene(e.shiftKey ? "svg" : "png"));
 $("btn-help").addEventListener("click", () => $("help").classList.toggle("open"));
 $("help-close").addEventListener("click", () => $("help").classList.remove("open"));
 $("help").addEventListener("click", (e) => {
@@ -1643,17 +1831,35 @@ $("z-out").addEventListener("click", () => zoomAt(W / 2, H / 2, 0.8));
                  || editors.find((e) => !e.gui) || editors[0] || null;
   } catch (err) { /* actions degrade gracefully */ }
 
+  await loadLayout();
   try {
     await setScope(await api("/api/root"));
   } catch (err) {
     toast("cortex backend not reachable", true);
   }
 
-  applySemantic();
+  await applySemantic();
   loadGit();
   const every = CFG.pulseMs || 0;
   if (every > 0) setInterval(pulse, every);
-  needsFit = true;
+
+  /* A remembered layout opens exactly where you left it: the camera is
+     restored and the simulation starts frozen, rather than fitting to screen
+     and settling into somewhere new. Anything that arrives later -- a file
+     created since, a folder you expand -- reheats it in the ordinary way. */
+  if (savedCam && savedPos.size) {
+    cam = { s: savedCam.s, x: savedCam.x, y: savedCam.y };
+    needsFit = false;
+    alpha = 0;
+    showZoom();
+  } else {
+    needsFit = true;
+  }
+  if (CFG.rememberLayout) {
+    layoutDirty = true;
+    setInterval(() => saveLayout(), 10000);
+    window.addEventListener("pagehide", () => saveLayout());
+  }
   frame();
 })();
 

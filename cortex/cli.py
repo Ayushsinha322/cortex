@@ -212,8 +212,9 @@ def main(argv=None) -> int:
     ctx = Context(scanner, links, runner, token, title=_short(root),
                   ui_config={"autoExpand": {"depth": depth,
                                             "budget": max(0, args.max_nodes)},
-                             "pulseMs": 0 if args.no_watch else 2500},
-                  watcher=watcher)
+                             "pulseMs": 0 if args.no_watch else 2500,
+                             "rememberLayout": not args.no_layout},
+                  watcher=watcher, remember_layout=not args.no_layout)
     try:
         httpd = serve(ctx, args.port)
     except OSError as exc:
