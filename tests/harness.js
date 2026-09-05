@@ -29,6 +29,24 @@ function makeCtx2d(stageRef) {
   });
 }
 
+function selectorMatches(node, sel) {
+  if (sel.startsWith(".")) return node.classList.contains(sel.slice(1));
+  if (sel.startsWith("#")) return node.id === sel.slice(1);
+  return node.tagName === sel.toUpperCase();
+}
+
+function descend(node, sel, out, first) {
+  for (const child of node.children) {
+    if (selectorMatches(child, sel)) {
+      out.push(child);
+      if (first) return out;
+    }
+    descend(child, sel, out, first);
+    if (first && out.length) return out;
+  }
+  return out;
+}
+
 function element(id, ctx2d) {
   const el = {
     id, tagName: "DIV", value: "",
@@ -60,6 +78,9 @@ function element(id, ctx2d) {
     append(...c) { this.children.push(...c); },
     replaceChildren() { this.children = []; },
     closest: () => null,
+    /* Enough of a selector engine for the class and tag lookups app.js does. */
+    querySelectorAll(sel) { return descend(el, sel, []); },
+    querySelector(sel) { return descend(el, sel, [], true)[0] || null; },
     focus() {}, blur() {}, select() {}, scrollTo() {},
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 1600, height: 900 }),
   };
@@ -119,6 +140,12 @@ function harness(opts = {}) {
       e.tagName = String(tag).toUpperCase();
       return e;
     },
+    createTextNode(text) {
+      const e = element("text", ctx2d);
+      e.tagName = "#text";
+      e.textContent = String(text);
+      return e;
+    },
     addEventListener() {},
     body: element("body", ctx2d),
   };
@@ -149,22 +176,33 @@ function harness(opts = {}) {
   global.WheelEvent = global.MouseEvent;
   global.KeyboardEvent = global.MouseEvent;
 
+  /* Every request the app makes, so a test can assert what it asked for as
+     well as what it did with the answer. */
+  const sent = [];
+
   const children = opts.children || (() => []);
   const rootNode = opts.rootNode || (() => null);
   const linksOf = opts.links || (() => ({ ready: true, edges: [], notes: 0,
                                           sources: 0, elapsed: 0 }));
   const editorsOf = opts.editors ||
     (() => [{ id: "nvim", label: "Neovim", gui: false, env: false }]);
+  const grepOf = opts.grep ||
+    (() => ({ hits: [], engine: "python", truncated: false }));
+  const searchOf = opts.search || (() => ({ results: [], count: 0 }));
 
-  global.fetch = async (url) => {
+  global.fetch = async (url, init) => {
     const u = String(url);
+    sent.push({ url: u, init, body: init && init.body ? JSON.parse(init.body) : null });
+    const q = decodeURIComponent((u.split("q=")[1] || "").split("&")[0]);
     const body =
         u.includes("/api/root") ? rootNode()
       : u.includes("/api/children")
           ? children(decodeURIComponent((u.split("path=")[1] || "").split("&")[0]))
       : u.includes("/api/editors") ? { editors: editorsOf() }
       : u.includes("/api/links") ? linksOf()
-      : u.includes("/api/search") ? { results: [], count: 0 }
+      : u.includes("/api/grep") ? grepOf(q)
+      : u.includes("/api/search") ? searchOf(q)
+      : u.includes("/api/action") ? { ok: true, terminal: true }
       : {};
     return { ok: true, json: async () => body };
   };
@@ -178,7 +216,23 @@ function harness(opts = {}) {
     return global.window.CORTEX.debug;
   }
 
-  return { ROOT, byId, pump, boot, el: (id) => global.document.getElementById(id) };
+  /* Type into the search box and let its debounce fire. */
+  async function typeSearch(text) {
+    const q = global.document.getElementById("q");
+    q.value = text;
+    q.dispatchEvent({ type: "input", target: q });
+    await new Promise((r) => setTimeout(r, 380));
+  }
+
+  function key(el, name) {
+    el.dispatchEvent({ type: "keydown", key: name, target: el,
+                       preventDefault() {}, stopPropagation() {} });
+  }
+
+  return {
+    ROOT, byId, pump, boot, sent, typeSearch, key,
+    el: (id) => global.document.getElementById(id),
+  };
 }
 
 /* A plain filesystem node, shaped the way /api/children answers. */

@@ -22,6 +22,7 @@ it is about 3,600 lines of Python standard library and vanilla JavaScript.
 - [First run](#first-run)
 - [Reading files](#reading-files)
 - [Following the links](#following-the-links)
+- [Searching](#searching)
 - [Opening files in your editor](#opening-files-in-your-editor)
 - [Working on one project](#working-on-one-project)
 - [Reading the graph](#reading-the-graph)
@@ -188,6 +189,38 @@ one file, read what calls it, jump, repeat.
 
 Press <kbd>c</kbd> to collapse the list when you want the height back. It is
 hidden in full screen, where you are there to read the file.
+
+---
+
+## Searching
+
+Press <kbd>/</kbd> and the box searches **file names**, anywhere under the root,
+however deep. Matches are grafted into the graph with their real folder lineage,
+so you see where a file lives rather than a flat list.
+
+Press <kbd>tab</kbd>, or click the small **names** button in the box, and it
+searches **inside** files instead:
+
+```
+  plan.md:2       the budget is fixed
+  old.md:7        an old budget note
+  costs.py:41     BUDGET = 10
+```
+
+That is the question you usually have about your own notes — not "where did I
+put it" but "where did I say that". Click a result and cortex opens the folders
+it needs to, selects the file, and remembers the line.
+
+**The line then follows you into your editor.** With a hit selected,
+<kbd>Enter</kbd> opens the file at that line rather than at the top —
+`nvim +41`, `hx file:41`, `code -g file:41`, whichever you use. <kbd>r</kbd>
+pages to it too. An editor cortex does not have a rule for is opened at the top
+of the file, because guessing a flag would stop it opening at all.
+
+Content search uses `rg` when you have it installed, and falls back to a plain
+walk when you do not, so it is faster if you have ripgrep and still works if you
+do not. Either way it reads only text files, and never anything `.gitignore`
+excludes.
 
 ---
 
@@ -386,6 +419,7 @@ cortex [folder] [options]
 | Key | Does |
 | --- | ---- |
 | <kbd>/</kbd> | search everything under the root |
+| <kbd>tab</kbd> | in the search box: file names, or inside files |
 | <kbd>Enter</kbd> | open the selection in your editor, in the terminal |
 | <kbd>r</kbd> | page through the selection in the terminal |
 | <kbd>m</kbd> | full screen the reader |
@@ -400,8 +434,8 @@ cortex [folder] [options]
 | <kbd>?</kbd> | the shortcut list |
 | <kbd>esc</kbd> | leave full screen, then close the reader |
 
-Optional extras, if you have them: `bat` for nicer terminal reading,
-`pdftotext` to page a PDF in the terminal.
+Optional extras, if you have them: `rg` for faster content search, `bat` for
+nicer terminal reading, `pdftotext` to page a PDF in the terminal.
 
 ---
 
@@ -457,6 +491,7 @@ cortex/
 │   ├── scanner.py        lazy folder scanning, ignore rules, node building
 │   ├── ignore.py         .gitignore parsing, the way git reads it
 │   ├── links.py          the semantic index: wikilinks and code imports
+│   ├── grep.py           content search, through ripgrep or a plain walk
 │   ├── reader.py         per-filetype preview extraction
 │   ├── actions.py        editor detection, terminal handoff
 │   ├── server.py         local HTTP API, token check, path guards
@@ -472,7 +507,8 @@ cortex/
     ├── harness.js           the stub DOM the browser-side tests run against
     ├── markdown.test.js     the markdown renderer
     ├── render-loop.test.js  cooling and repaint gating
-    └── connections.test.js  backlinks, and following one into the graph
+    ├── connections.test.js  backlinks, and following one into the graph
+    └── search.test.js       both searches, and the line reaching the editor
 ```
 
 ---
@@ -485,9 +521,10 @@ python3 tests/test_cortex.py       # python only
 node tests/markdown.test.js
 node tests/render-loop.test.js
 node tests/connections.test.js
+node tests/search.test.js
 ```
 
-143 tests, no framework to install — `unittest` and plain `node`. They run on
+207 tests, no framework to install — `unittest` and plain `node`. They run on
 every push against Python 3.9 and 3.13 on Linux, and 3.13 on macOS. `tests/run`
 also byte-checks every source file, because raw NUL bytes once got into two UI
 files and made git treat them as binary, silently breaking diffs and `grep`.

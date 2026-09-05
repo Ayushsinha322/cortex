@@ -16,7 +16,7 @@ import secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
-from . import reader
+from . import grep, reader
 
 UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
 
@@ -124,6 +124,10 @@ class Handler(BaseHTTPRequestHandler):
             hits = self.ctx.scanner.search(term)
             return self._json({"results": hits, "count": len(hits)})
 
+        if route == "/api/grep":
+            term = (params.get("q") or [""])[0]
+            return self._json(grep.search(self.ctx.scanner, term))
+
         if route == "/api/preview":
             path = self._safe_path(params)
             if not path or not os.path.isfile(path):
@@ -161,7 +165,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": False, "error": "path outside root"}, 400)
 
         result = self.ctx.runner.submit(body.get("kind", ""), path,
-                                        body.get("editor"))
+                                        body.get("editor"), body.get("line"))
         return self._json(result)
 
     # -- helpers -----------------------------------------------------------
