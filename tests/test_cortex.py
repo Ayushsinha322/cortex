@@ -10,6 +10,7 @@ real home directory.
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -22,7 +23,7 @@ from urllib.request import Request, urlopen
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cortex import reader
-from cortex import grep
+from cortex import gitstatus, grep
 from cortex.actions import (ActionRunner, available_editors, env_editor,
                             open_at_line, _editor_argv, _is_gui, pager_argv)
 from cortex.links import LinkIndex, _code_targets, _crate_src, _resolve_rel
@@ -314,6 +315,116 @@ class TestActions(Tree):
     def test_an_absurd_line_is_dropped(self):
         self.runner.submit("read", f"{self.root}/notes/index.md", None, -3)
         self.assertIsNone(self.runner.q.get()["line"])
+
+
+class TestGitStatus(unittest.TestCase):
+    """git already knows what you changed; the graph should show it."""
+
+    def setUp(self):
+        self.repo = os.path.realpath(tempfile.mkdtemp(prefix="cortex-git-"))
+        self.addCleanup(shutil.rmtree, self.repo, ignore_errors=True)
+
+    def test_it_finds_the_repository_above_a_folder(self):
+        os.makedirs(f"{self.repo}/.git")
+        write(f"{self.repo}/a/b/c.py", "x\n")
+        self.assertEqual(gitstatus.repo_root(f"{self.repo}/a/b"), self.repo)
+
+    def test_a_folder_in_no_repository_answers_none(self):
+        self.assertIsNone(gitstatus.repo_root(self.repo))
+
+    def test_reading_a_folder_outside_a_repository_is_blank_not_an_error(self):
+        got = gitstatus.read(self.repo)
+        self.assertIsNone(got["repo"])
+        self.assertEqual(got["states"], {})
+
+    def test_status_codes_map_to_states(self):
+        for code, want in [("??", "untracked"), (" M", "modified"),
+                           ("M ", "staged"), ("MM", "modified"),
+                           ("A ", "staged"), ("UU", "conflict"),
+                           ("AA", "conflict"), (" D", "modified"),
+                           ("R ", "staged")]:
+            self.assertEqual(gitstatus._classify(code), want, code)
+
+    def test_porcelain_output_is_parsed(self):
+        payload = " M src/a.py\0?? new.txt\0"
+        self.assertEqual(gitstatus._parse(payload, "/r"),
+                         {"/r/src/a.py": "modified", "/r/new.txt": "untracked"})
+
+    def test_a_filename_with_a_space_survives(self):
+        payload = " M my notes.md\0"
+        self.assertEqual(gitstatus._parse(payload, "/r"),
+                         {"/r/my notes.md": "modified"})
+
+    def test_a_rename_reports_the_destination_once(self):
+        payload = "R  new.py\0old.py\0?? other.txt\0"
+        self.assertEqual(gitstatus._parse(payload, "/r"),
+                         {"/r/new.py": "staged", "/r/other.txt": "untracked"})
+
+    def test_an_untracked_directory_is_reported_without_its_slash(self):
+        self.assertEqual(gitstatus._parse("?? build/\0", "/r"),
+                         {"/r/build": "untracked"})
+
+    def test_folders_above_a_change_are_marked(self):
+        rolled = gitstatus._roll_up({"/r/a/b/c.py": "modified"}, "/r")
+        self.assertEqual(rolled["/r/a"], "inside")
+        self.assertEqual(rolled["/r/a/b"], "inside")
+        self.assertEqual(rolled["/r/a/b/c.py"], "modified")
+
+    def test_a_folder_with_a_state_of_its_own_keeps_it(self):
+        rolled = gitstatus._roll_up(
+            {"/r/a": "untracked", "/r/a/b/c.py": "modified"}, "/r")
+        self.assertEqual(rolled["/r/a"], "untracked")
+
+    def test_the_repository_root_itself_is_never_marked(self):
+        rolled = gitstatus._roll_up({"/r/a.py": "modified"}, "/r")
+        self.assertNotIn("/r", rolled)
+
+    def git(self, *args):
+        subprocess.run(["git", "-C", self.repo,
+                        "-c", "user.email=t@t", "-c", "user.name=t"] + list(args),
+                       check=True, capture_output=True)
+
+    def test_it_reports_nothing_from_outside_the_mapped_folder(self):
+        # A repository usually starts above the folder you mapped, so without
+        # the boundary test this would name files the user cannot reach.
+        if not shutil.which("git"):
+            self.skipTest("git not installed")
+        r = self.repo
+        subprocess.run(["git", "init", "-q", r], check=True, capture_output=True)
+        write(f"{r}/top.txt", "outside the mapped folder\n")
+        write(f"{r}/inner/kept.txt", "inside it\n")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "first")
+        write(f"{r}/top.txt", "changed out here\n")
+        write(f"{r}/inner/kept.txt", "changed in here\n")
+
+        scanner = Scanner(f"{r}/inner")
+        got = gitstatus.read(f"{r}/inner", scanner.inside)
+        self.assertEqual(got["repo"], r)
+        self.assertEqual(got["states"].get(f"{r}/inner/kept.txt"), "modified")
+        self.assertNotIn(f"{r}/top.txt", got["states"])
+
+    def test_an_untracked_folder_is_reported_instead_of_its_contents(self):
+        # This is git's own behaviour, and it is what we want: one mark on the
+        # folder rather than a mark on every file nobody has added yet.
+        if not shutil.which("git"):
+            self.skipTest("git not installed")
+        r = self.repo
+        subprocess.run(["git", "init", "-q", r], check=True, capture_output=True)
+        write(f"{r}/fresh/a.txt", "x\n")
+        got = gitstatus.read(r)
+        self.assertEqual(got["states"].get(f"{r}/fresh"), "untracked")
+
+    def test_a_real_repository_reports_a_branch_and_a_change(self):
+        if not shutil.which("git"):
+            self.skipTest("git not installed")
+        r = self.repo
+        subprocess.run(["git", "init", "-q", "-b", "trunk", r], check=True,
+                       capture_output=True)
+        write(f"{r}/fresh.md", "new\n")
+        got = gitstatus.read(r)
+        self.assertEqual(got["branch"], "trunk")
+        self.assertEqual(got["states"].get(f"{r}/fresh.md"), "untracked")
 
 
 class TestContentSearch(unittest.TestCase):
@@ -879,6 +990,16 @@ class TestServer(Tree):
                 return r.headers["Content-Security-Policy"].split(
                     "'nonce-")[1].split("'")[0]
         self.assertNotEqual(nonce(), nonce())
+
+    def test_git_status_answers_even_outside_a_repository(self):
+        status, body = self.get("/api/git?t=tok")
+        self.assertEqual(status, 200)
+        self.assertEqual(set(body), {"repo", "branch", "states"})
+
+    def test_git_status_refuses_a_path_outside_the_root(self):
+        with self.assertRaises(HTTPError) as cm:
+            self.get("/api/git?t=tok&path=/etc")
+        self.assertEqual(cm.exception.code, 400)
 
     def test_grep_searches_inside_files(self):
         status, body = self.get(f"/api/grep?t=tok&q=Index")

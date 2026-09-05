@@ -11,6 +11,12 @@ const ROOT = CFG.root;
 const AUTO = CFG.autoExpand || { depth: 0, budget: 0 };
 
 const GROUPS = ["dir", "note", "code", "config", "doc", "media", "archive", "other"];
+/* What git thinks of a file, as a dot on its node. Amber for work in progress,
+   green for work already staged, red for something you have to resolve. */
+const GIT_COLOR = {
+  modified: "#f5a524", staged: "#34d399", untracked: "#8fa3c4",
+  conflict: "#f43f5e", inside: "#f5a5247a",
+};
 const COLOR = {
   dir: "#f5a524", note: "#34d399", code: "#60a5fa", config: "#a78bfa",
   doc: "#f472b6", media: "#fb7185", archive: "#94a3b8", other: "#64748b",
@@ -32,6 +38,8 @@ let semanticEdges = null, editors = [], primaryEditor = null;
 let connIndex = null, connOpen = true;
 let searchMode = "names";       // or "text" -- search inside files
 let selLine = null;             // line to open the selection at, from a hit
+let gitStates = new Map();      // path -> modified | staged | untracked | ...
+let gitBranch = null, showGit = true;
 let cam = { s: 1, x: 0, y: 0 };
 let needsFit = false;
 
@@ -197,6 +205,34 @@ async function applySemantic() {
   updateStats();
 }
 
+/* Ask git what it thinks of the folder now in view. Cheap on a project, and
+   skipped entirely when there is no repository above it -- a home directory
+   full of repositories gets nothing until you narrow to one. */
+async function loadGit() {
+  try {
+    const g = await api("/api/git", { path: viewRoot });
+    gitStates = new Map(Object.entries(g.states || {}));
+    gitBranch = g.branch || null;
+  } catch (err) {
+    gitStates = new Map();
+    gitBranch = null;
+  }
+  if (sel) renderGitChip(sel);
+  updateStats();
+  dirty = true;
+}
+
+function renderGitChip(n) {
+  const chip = $("p-git");
+  if (!chip) return;
+  const state = gitStates.get(n.id);
+  chip.hidden = !state || state === "inside";
+  if (chip.hidden) return;
+  chip.textContent = state;
+  chip.style.color = GIT_COLOR[state];
+  chip.style.borderColor = GIT_COLOR[state] + "55";
+}
+
 /* ------------------------------------------------------------- connections
 
    Backlinks. The index holds every semantic edge under the root, whether or
@@ -302,6 +338,7 @@ async function autoGrow(maxDepth, budget) {
 /* Throw away the graph and rebuild it around one folder. Nothing outside it is
    drawn, searched, or reachable until you come back out. */
 async function setScope(rawRoot) {
+  if (nodes.size) loadGit();          // the new folder may be a different repo
   viewRoot = rawRoot.id;
   nodes.clear();
   links = [];
@@ -614,6 +651,20 @@ function draw() {
       ctx.arc(x, y, r + 5, 0, Math.PI * 2);
       ctx.stroke();
     }
+
+    const state = showGit && gitStates.get(n.id);
+    if (state && r > 2.4) {
+      const inside = state === "inside";
+      const gr = Math.max(1.8, r * (inside ? 0.24 : 0.34));
+      const off = r * 0.72;
+      ctx.beginPath();
+      ctx.arc(x + off, y - off, gr, 0, Math.PI * 2);
+      ctx.fillStyle = GIT_COLOR[state];
+      ctx.fill();
+      ctx.strokeStyle = "#070910";
+      ctx.lineWidth = 1.1;
+      ctx.stroke();
+    }
   }
   ctx.shadowBlur = 0;
 
@@ -852,6 +903,7 @@ function select(n) {
   $("p-meta").textContent =
     (n.dir ? `${n.kids || 0} item${n.kids === 1 ? "" : "s"}` : fmtSize(n.size)) +
     (n.mtime ? "  ·  " + new Date(n.mtime * 1000).toLocaleString() : "");
+  renderGitChip(n);
   buildActions(n);
   renderConnections(n);
   renderBody(n);
@@ -1293,6 +1345,14 @@ function updateStats() {
   let semantic = 0;
   for (const l of links) if (l.kind !== "tree") semantic++;
   $("stat-nodes").textContent = `${shown} node${shown === 1 ? "" : "s"}`;
+  const gitEl = $("stat-git");
+  if (gitEl) {
+    let changed = 0;
+    for (const st of gitStates.values()) if (st !== "inside") changed++;
+    gitEl.hidden = !gitBranch;
+    gitEl.textContent = gitBranch
+      ? `${gitBranch}${changed ? ` · ${changed} changed` : ""}` : "";
+  }
   const pool = semanticEdges ? semanticEdges.length : 0;
   $("stat-links").textContent = `${links.length - semantic} tree · ${semantic}`
     + (pool ? ` of ${pool} semantic` : " semantic");
@@ -1320,6 +1380,11 @@ window.addEventListener("keydown", (e) => {
       if (sel) { focusMode = !focusMode; recomputeNeighbours(); } break;
     case "c":
       if (sel) { connOpen = !connOpen; renderConnections(sel); } break;
+    case "g":
+      showGit = !showGit;
+      dirty = true;
+      toast(showGit ? "git marks on" : "git marks off");
+      break;
     case "m":
       if (sel) setMax(!maximized); break;
     case "o":
@@ -1400,6 +1465,7 @@ $("z-out").addEventListener("click", () => zoomAt(W / 2, H / 2, 0.8));
   }
 
   applySemantic();
+  loadGit();
   needsFit = true;
   frame();
 })();

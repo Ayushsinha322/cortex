@@ -356,6 +356,26 @@ archive — matching the chips along the top bar.
 **A ring instead of a dot** means an open folder. **A soft glow** means the file
 changed in the last week.
 
+**A small dot on the shoulder of a node is what git thinks of it:**
+
+| Dot | Meaning |
+| --- | ------- |
+| amber | modified, and not staged |
+| green | staged |
+| grey | untracked |
+| red | conflicted |
+| faint amber | a folder with one of the above somewhere inside it |
+
+The glow is a guess at what you are working on; this is the answer. The
+selected file says the same thing in words at the top of the reader, next to
+the branch name in the corner. <kbd>g</kbd> turns the marks off for a clean
+screenshot.
+
+Only the repository above the folder in view is consulted, so a home directory
+full of projects shows nothing until you narrow to one — the same moment the
+rest of the graph starts paying off. Nothing outside the folder you mapped is
+ever reported, even when the repository extends above it.
+
 **Edges** come in three kinds:
 
 | Edge | Meaning |
@@ -430,6 +450,7 @@ cortex [folder] [options]
 | <kbd>o</kbd> | only this folder — rebuild the graph around the selection |
 | <kbd>b</kbd> | back to the whole map |
 | <kbd>l</kbd> | show / hide semantic links |
+| <kbd>g</kbd> | show / hide what git thinks of each file |
 | <kbd>0</kbd> | fit the graph on screen |
 | <kbd>?</kbd> | the shortcut list |
 | <kbd>esc</kbd> | leave full screen, then close the reader |
@@ -492,6 +513,7 @@ cortex/
 │   ├── ignore.py         .gitignore parsing, the way git reads it
 │   ├── links.py          the semantic index: wikilinks and code imports
 │   ├── grep.py           content search, through ripgrep or a plain walk
+│   ├── gitstatus.py      what git thinks of each file
 │   ├── reader.py         per-filetype preview extraction
 │   ├── actions.py        editor detection, terminal handoff
 │   ├── server.py         local HTTP API, token check, path guards
@@ -524,7 +546,7 @@ node tests/connections.test.js
 node tests/search.test.js
 ```
 
-207 tests, no framework to install — `unittest` and plain `node`. They run on
+223 tests, no framework to install — `unittest` and plain `node`. They run on
 every push against Python 3.9 and 3.13 on Linux, and 3.13 on macOS. `tests/run`
 also byte-checks every source file, because raw NUL bytes once got into two UI
 files and made git treat them as binary, silently breaking diffs and `grep`.

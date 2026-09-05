@@ -16,7 +16,7 @@ import secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
-from . import grep, reader
+from . import gitstatus, grep, reader
 
 UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
 
@@ -136,6 +136,13 @@ class Handler(BaseHTTPRequestHandler):
 
         if route == "/api/raw":
             return self._raw(params)
+
+        if route == "/api/git":
+            raw = (params.get("path") or [None])[0]
+            path = self._safe_path(params) if raw else self.ctx.scanner.root
+            if not path:
+                return self._json({"error": "bad path"}, 400)
+            return self._json(gitstatus.read(path, self.ctx.scanner.inside))
 
         if route == "/api/links":
             return self._json(self.ctx.links.snapshot())
