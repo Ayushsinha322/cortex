@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from cortex import reader
 from cortex.actions import (ActionRunner, available_editors, env_editor,
                             _editor_argv, _is_gui, pager_argv)
-from cortex.links import LinkIndex, _code_targets, _resolve_rel
+from cortex.links import LinkIndex, _code_targets, _crate_src, _resolve_rel
 from cortex.scanner import Scanner, group_of
 from cortex.server import Context, serve
 
@@ -389,6 +389,130 @@ class TestEnvEditor(unittest.TestCase):
         self.env(EDITOR="code")
         self.assertTrue(env_editor()["gui"])
         self.assertTrue(_is_gui("env"))
+
+
+class TestGoLinks(unittest.TestCase):
+    """Go imports name a package directory, resolved through go.mod."""
+
+    def setUp(self):
+        self.root = os.path.realpath(tempfile.mkdtemp(prefix="cortex-go-"))
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        r = self.root
+        write(f"{r}/go.mod", "module example.com/app\n\ngo 1.22\n")
+        write(f"{r}/main.go", 'package main\n\nimport (\n'
+                              '    "fmt"\n'
+                              '    "example.com/app/internal/store"\n'
+                              '    "github.com/spf13/cobra"\n)\n')
+        write(f"{r}/internal/store/store.go", "package store\n")
+        write(f"{r}/internal/store/query.go", "package store\n")
+        write(f"{r}/internal/store/store_test.go", "package store\n")
+        write(f"{r}/cmd/tool/tool.go",
+              'package main\n\nimport "example.com/app/internal/store"\n')
+        self.universe = set()
+        for dirpath, _dirs, files in os.walk(r):
+            for f in files:
+                self.universe.add(os.path.join(dirpath, f))
+
+    def targets(self, rel):
+        path = f"{self.root}/{rel}"
+        with open(path) as fh:
+            return set(_code_targets(path, fh.read(), self.universe))
+
+    def test_an_internal_import_reaches_every_file_in_the_package(self):
+        got = self.targets("main.go")
+        self.assertIn(f"{self.root}/internal/store/store.go", got)
+        self.assertIn(f"{self.root}/internal/store/query.go", got)
+
+    def test_a_single_line_import_resolves_too(self):
+        self.assertIn(f"{self.root}/internal/store/store.go",
+                      self.targets("cmd/tool/tool.go"))
+
+    def test_test_files_are_not_linked(self):
+        self.assertNotIn(f"{self.root}/internal/store/store_test.go",
+                         self.targets("main.go"))
+
+    def test_third_party_imports_are_left_alone(self):
+        self.assertFalse([t for t in self.targets("main.go") if "cobra" in t])
+
+    def test_the_standard_library_is_left_alone(self):
+        self.assertFalse([t for t in self.targets("main.go") if "fmt" in t])
+
+    def test_without_a_go_mod_nothing_resolves(self):
+        loose = os.path.realpath(tempfile.mkdtemp(prefix="cortex-nogomod-"))
+        self.addCleanup(shutil.rmtree, loose, ignore_errors=True)
+        path = write(f"{loose}/x.go", 'import "a/b"\n')
+        self.assertEqual(_code_targets(path, 'import "a/b"\n', {path}), [])
+
+    def test_a_file_never_links_to_itself(self):
+        same = write(f"{self.root}/internal/store/more.go",
+                     'package store\n\nimport "example.com/app/internal/store"\n')
+        self.universe.add(same)
+        self.assertNotIn(same, self.targets("internal/store/more.go"))
+
+
+class TestRustLinks(unittest.TestCase):
+    """Rust declares its files with `mod` and walks them with `use`."""
+
+    def setUp(self):
+        self.root = os.path.realpath(tempfile.mkdtemp(prefix="cortex-rs-"))
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        r = self.root
+        write(f"{r}/Cargo.toml", '[package]\nname = "demo"\n')
+        write(f"{r}/src/lib.rs", "pub mod parser;\nmod util;\nmod absent;\n")
+        write(f"{r}/src/parser.rs", "mod lexer;\nuse crate::util::helper;\n")
+        write(f"{r}/src/parser/lexer.rs", "use crate::util;\n")
+        write(f"{r}/src/util.rs", "pub fn helper() {}\n")
+        write(f"{r}/src/engine/mod.rs",
+              "mod core;\nuse super::util;\nuse crate::parser::lexer;\n")
+        write(f"{r}/src/engine/core.rs", "")
+        self.universe = set()
+        for dirpath, _dirs, files in os.walk(r):
+            for f in files:
+                self.universe.add(os.path.join(dirpath, f))
+
+    def targets(self, rel):
+        path = f"{self.root}/{rel}"
+        with open(path) as fh:
+            return set(_code_targets(path, fh.read(), self.universe))
+
+    def test_mod_declares_a_sibling_file(self):
+        got = self.targets("src/lib.rs")
+        self.assertIn(f"{self.root}/src/parser.rs", got)
+        self.assertIn(f"{self.root}/src/util.rs", got)
+
+    def test_a_mod_with_no_file_yields_nothing(self):
+        self.assertFalse([t for t in self.targets("src/lib.rs")
+                          if "absent" in t])
+
+    def test_a_module_file_owns_the_directory_named_after_it(self):
+        self.assertIn(f"{self.root}/src/parser/lexer.rs",
+                      self.targets("src/parser.rs"))
+
+    def test_mod_rs_declares_its_own_siblings(self):
+        self.assertIn(f"{self.root}/src/engine/core.rs",
+                      self.targets("src/engine/mod.rs"))
+
+    def test_use_crate_resolves_from_the_crate_root(self):
+        self.assertIn(f"{self.root}/src/util.rs",
+                      self.targets("src/parser.rs"))
+
+    def test_use_crate_reaches_a_nested_module(self):
+        self.assertIn(f"{self.root}/src/parser/lexer.rs",
+                      self.targets("src/engine/mod.rs"))
+
+    def test_use_of_an_item_falls_back_to_the_module_holding_it(self):
+        # `use crate::util::helper` names a function, not a file; the edge
+        # should still land on util.rs rather than being dropped.
+        self.assertIn(f"{self.root}/src/util.rs",
+                      self.targets("src/parser.rs"))
+
+    def test_use_super_climbs_out_of_a_mod_rs(self):
+        self.assertIn(f"{self.root}/src/util.rs",
+                      self.targets("src/engine/mod.rs"))
+
+    def test_the_crate_root_is_found_from_a_cargo_toml(self):
+        self.assertEqual(_crate_src(f"{self.root}/src/engine"),
+                         f"{self.root}/src")
 
 
 class TestServer(Tree):

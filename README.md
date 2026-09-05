@@ -291,8 +291,17 @@ Code links are found by actually resolving the import:
 | -------- | --------- |
 | Python   | `import a.b`, `from .x import y` |
 | JS / TS  | `import … from './x'`, `require('./x')` |
+| Go       | `import "yourmodule/pkg"`, resolved through `go.mod` |
+| Rust     | `mod x;`, `use crate::a::b`, `use super::x` |
 | C / C++  | `#include "x.h"` |
 | Shell    | `source ./x.sh`, `. ./x.sh` |
+
+Go and Rust are resolved the way their compilers see them, not by guessing at
+filenames. A Go import names a package, so cortex reads `go.mod` for the module
+path and links to every source file in the imported directory — third-party and
+standard-library imports are left alone, because they are not on your disk under
+this root. Rust is the opposite shape: `mod` declares a file and `use` walks a
+path through those files, including `foo.rs` owning the `foo/` beside it.
 
 The index is built in the background as soon as you launch, and links appear as
 it goes. On a 133,000-file home directory it finishes in about three seconds.
