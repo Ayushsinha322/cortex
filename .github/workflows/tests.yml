@@ -1,0 +1,51 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} · python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, python: "3.9" }
+          - { os: ubuntu-latest, python: "3.13" }
+          - { os: macos-latest, python: "3.13" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      # No install step on purpose: cortex runs on the standard library, and a
+      # suite that needed anything else would be hiding a new dependency.
+      - name: run the suite
+        run: tests/run
+
+  package:
+    name: it installs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install .
+      # The UI is data files, not code, so a wheel that forgot them still
+      # imports cleanly and only fails when someone opens the window.
+      - name: the window's files came along
+        run: |
+          python -c "
+          import os, cortex.server as s
+          need = ['index.html', 'style.css', 'app.js', 'markdown.js', 'highlight.js']
+          missing = [f for f in need if not os.path.isfile(os.path.join(s.UI_DIR, f))]
+          raise SystemExit('missing from the wheel: ' + str(missing) if missing else 0)
+          "
+      - run: cortex --version

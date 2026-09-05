@@ -11,7 +11,7 @@ where you were.
 ![The cortex graph](docs/graph.jpg)
 
 No dependencies. No database. No import step. It reads your disk directly, and
-it is about 3,000 lines of Python standard library and vanilla JavaScript.
+it is about 3,600 lines of Python standard library and vanilla JavaScript.
 
 ---
 
@@ -60,6 +60,12 @@ back at the graph — still open, still where you left it.
 
 You need Python 3.9 or newer and a browser. That is all. Linux and macOS are
 both supported.
+
+```bash
+pipx install cortex-graph
+```
+
+Or from the source, which is the same thing without the packaging:
 
 ```bash
 git clone https://github.com/Ayushsinha322/cortex.git ~/cortex
@@ -432,6 +438,7 @@ every request. All of that is asserted in the tests.
 cortex/
 ├── cortex.py             run it without installing
 ├── install.sh
+├── pyproject.toml        so `pipx install` works; no dependencies to declare
 ├── cortex/
 │   ├── cli.py            arguments, saved projects, window launch, action loop
 │   ├── scanner.py        lazy folder scanning, ignore rules, node building
@@ -466,7 +473,8 @@ node tests/render-loop.test.js
 node tests/connections.test.js
 ```
 
-143 tests, no framework to install — `unittest` and plain `node`. `tests/run`
+143 tests, no framework to install — `unittest` and plain `node`. They run on
+every push against Python 3.9 and 3.13 on Linux, and 3.13 on macOS. `tests/run`
 also byte-checks every source file, because raw NUL bytes once got into two UI
 files and made git treat them as binary, silently breaking diffs and `grep`.
 
