@@ -9,11 +9,14 @@ real home directory.
 
 import json
 import os
+import pathlib
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import threading
+import inspect
 import unittest
 import zipfile
 from urllib.error import HTTPError
@@ -23,7 +26,8 @@ from urllib.request import Request, urlopen
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cortex import reader
-from cortex import gitstatus, grep, layout
+import cortex
+from cortex import cli, gitstatus, grep, layout
 from cortex.actions import (ActionRunner, available_editors, env_editor,
                             open_at_line, _editor_argv, _is_gui, pager_argv)
 from cortex.links import (LinkIndex, frontmatter_tags, note_tags,
@@ -411,6 +415,49 @@ class TestActions(Tree):
     def test_an_absurd_line_is_dropped(self):
         self.runner.submit("read", f"{self.root}/notes/index.md", None, -3)
         self.assertIsNone(self.runner.q.get()["line"])
+
+
+class TestCommandLine(unittest.TestCase):
+    """The options main() reads have to be options the parser defines.
+
+    They drifted apart once, silently: main() read args.no_watch, the flag was
+    never registered, every test passed and cortex died on the first launch.
+    """
+
+    def test_every_option_main_reads_is_defined(self):
+        used = set(re.findall(r"args\.(\w+)", inspect.getsource(cli.main)))
+        known = set(vars(cli.build_parser().parse_args([])))
+        self.assertEqual(used - known, set())
+
+    def test_every_flag_the_readme_documents_is_accepted(self):
+        readme = pathlib.Path(__file__).resolve().parent.parent / "README.md"
+        block = readme.read_text(encoding="utf-8").split("cortex [folder] [options]")
+        self.assertGreater(len(block), 1, "the usage block moved")
+        usage = block[1].split("```")[0]
+        flags = sorted(set(re.findall(r"(--[a-z][a-z-]+)", usage)))
+        self.assertGreater(len(flags), 6, flags)
+        parser = cli.build_parser()
+        known = set()
+        for action in parser._actions:
+            known.update(action.option_strings)
+        self.assertEqual([f for f in flags if f not in known], [])
+
+    def test_the_switches_all_parse(self):
+        for flag in ("--no-gitignore", "--no-links", "--no-watch",
+                     "--no-layout", "--hidden"):
+            with self.subTest(flag=flag):
+                cli.build_parser().parse_args([flag])
+
+    def test_a_folder_and_its_options_parse_together(self):
+        args = cli.build_parser().parse_args(
+            ["/tmp", "-d", "2", "--max-nodes", "50", "--no-watch"])
+        self.assertEqual(args.root, "/tmp")
+        self.assertEqual(args.depth, 2)
+        self.assertEqual(args.max_nodes, 50)
+        self.assertTrue(args.no_watch)
+
+    def test_the_version_matches_the_package(self):
+        self.assertEqual(cli.VERSION, cortex.__version__)
 
 
 class TestLayout(unittest.TestCase):
