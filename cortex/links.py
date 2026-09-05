@@ -44,6 +44,24 @@ RE_JS_REQUIRE = re.compile(r"""require\s*\(\s*['"](\.{1,2}/[^'"]+)['"]""")
 RE_C_INCLUDE = re.compile(r'^\s*#\s*include\s+"([^"]+)"', re.M)
 RE_SH_SOURCE = re.compile(r"^\s*(?:\.|source)\s+([^\s;#]+)", re.M)
 
+# Go imports name a package (a directory), not a file, and they are absolute
+# under the module path declared in go.mod -- so resolving one means reading
+# go.mod first and then listing the package directory.
+RE_GO_ONELINE = re.compile(r'^\s*import\s+(?:[\w.]+\s+|_\s+)?"([^"]+)"', re.M)
+RE_GO_BLOCK = re.compile(r"^\s*import\s*\(([^)]*)\)", re.M | re.S)
+RE_GO_QUOTED = re.compile(r'"([^"]+)"')
+RE_GO_MODULE = re.compile(r"^\s*module\s+(\S+)", re.M)
+
+# Rust splits it in two: `mod x;` declares a file, `use crate::a::b` names a
+# path through those files.
+RE_RS_MOD = re.compile(
+    r"^\s*(?:pub\s*(?:\([^)]*\)\s*)?)?mod\s+([A-Za-z_]\w*)\s*;", re.M)
+RE_RS_USE = re.compile(
+    r"^\s*(?:pub\s*(?:\([^)]*\)\s*)?)?use\s+(crate|super|self)"
+    r"((?:::[A-Za-z_]\w*)+)", re.M)
+
+GO_PACKAGE_CAP = 8               # files linked per imported package
+
 JS_TRY = ["", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
           "/index.ts", "/index.js", "/index.tsx", "/index.jsx"]
 
@@ -76,6 +94,7 @@ class LinkIndex:
 
     def _build(self) -> None:
         started = time.monotonic()
+        _GO_MODULES.clear()          # go.mod contents may have changed
         note_paths: list[str] = []
         code_paths: list[str] = []
         by_stem: dict[str, str] = {}       # note stem -> path (first wins)
@@ -206,6 +225,10 @@ def _code_targets(path: str, text: str, universe: set[str]):
             cand = os.path.normpath(os.path.join(base, ref))
             if cand in universe:
                 out.append(cand)
+    elif ext == ".go":
+        out.extend(_go_targets(path, text, universe))
+    elif ext == ".rs":
+        out.extend(_rust_targets(path, text, universe))
     elif ext in {".sh", ".bash"}:
         for ref in RE_SH_SOURCE.findall(text):
             if ref.startswith(("$", "-", "/")):
@@ -234,3 +257,148 @@ def _py_candidates(base: str, mod: str):
         stem = os.path.join(root, *parts)
         yield stem + ".py"
         yield os.path.join(stem, "__init__.py")
+
+
+# --- go ---------------------------------------------------------------------
+
+_GO_MODULES: dict[str, tuple[str, str] | None] = {}
+
+
+def _go_module(base: str) -> tuple[str, str] | None:
+    """(module path, module directory) from the nearest go.mod above `base`.
+
+    Cached per directory, including the misses, because most source files in a
+    repository share one answer and the walk up is otherwise repeated per file.
+    """
+    if base in _GO_MODULES:
+        return _GO_MODULES[base]
+
+    chain: list[str] = []
+    result: tuple[str, str] | None = None
+    cur = base
+    for _ in range(12):
+        if cur in _GO_MODULES:
+            result = _GO_MODULES[cur]
+            break
+        chain.append(cur)
+        try:
+            with open(os.path.join(cur, "go.mod"), "r", encoding="utf-8",
+                      errors="ignore") as fh:
+                match = RE_GO_MODULE.search(fh.read(8192))
+            if match:
+                result = (match.group(1), cur)
+            break
+        except OSError:
+            pass
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+
+    for d in chain:
+        _GO_MODULES[d] = result
+    return result
+
+
+def _go_package_files(pkg: str, universe: set[str]) -> list[str]:
+    """The source files of one Go package, which is just a directory."""
+    try:
+        with os.scandir(pkg) as it:
+            names = sorted(e.name for e in it
+                           if e.name.endswith(".go")
+                           and not e.name.endswith("_test.go")
+                           and e.is_file(follow_symlinks=False))
+    except OSError:
+        return []
+    hits = [os.path.join(pkg, n) for n in names]
+    return [h for h in hits if h in universe][:GO_PACKAGE_CAP]
+
+
+def _go_targets(path: str, text: str, universe: set[str]) -> list[str]:
+    module = _go_module(os.path.dirname(path))
+    if not module:
+        return []                       # no go.mod: every import is a stranger
+    name, moddir = module
+
+    refs = list(RE_GO_ONELINE.findall(text))
+    for block in RE_GO_BLOCK.findall(text):
+        refs.extend(RE_GO_QUOTED.findall(block))
+
+    out: list[str] = []
+    for ref in refs:
+        if ref == name:
+            rel = ""
+        elif ref.startswith(name + "/"):
+            rel = ref[len(name) + 1:]
+        else:
+            continue                    # a dependency, not code on this disk
+        pkg = os.path.normpath(os.path.join(moddir, rel)) if rel else moddir
+        if pkg != path and _inside(pkg, moddir):
+            out.extend(f for f in _go_package_files(pkg, universe) if f != path)
+    return out
+
+
+def _inside(path: str, root: str) -> bool:
+    return path == root or path.startswith(root + os.sep)
+
+
+# --- rust -------------------------------------------------------------------
+
+
+def _crate_src(base: str) -> str:
+    """The `src` directory that `crate::` counts from."""
+    cur = base
+    for _ in range(10):
+        if os.path.isfile(os.path.join(cur, "Cargo.toml")):
+            src = os.path.join(cur, "src")
+            return src if os.path.isdir(src) else cur
+        if os.path.basename(cur) == "src":
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    return base
+
+
+def _rs_module_file(directory: str, name: str, universe: set[str]) -> str | None:
+    for cand in (os.path.join(directory, name + ".rs"),
+                 os.path.join(directory, name, "mod.rs")):
+        if cand in universe:
+            return cand
+    return None
+
+
+def _rust_targets(path: str, text: str, universe: set[str]) -> list[str]:
+    base = os.path.dirname(path)
+    stem = os.path.splitext(os.path.basename(path))[0]
+    is_root = stem in ("mod", "lib", "main")
+    # A 2018-edition module file `foo.rs` keeps its children in `foo/`.
+    own = base if is_root else os.path.join(base, stem)
+    out: list[str] = []
+
+    for name in RE_RS_MOD.findall(text):
+        for directory in ([base] if is_root else [own, base]):
+            hit = _rs_module_file(directory, name, universe)
+            if hit:
+                out.append(hit)
+                break
+
+    for anchor, rest in RE_RS_USE.findall(text):
+        if anchor == "crate":
+            start = _crate_src(base)
+        elif anchor == "super":
+            start = os.path.dirname(base) if stem == "mod" else base
+        else:
+            start = own
+        parts = [p for p in rest.split("::") if p]
+        # `use a::b::c` may name a module or an item inside one, so walk the
+        # path back until something on disk answers to it.
+        while parts:
+            hit = _rs_module_file(os.path.join(start, *parts[:-1]), parts[-1],
+                                  universe)
+            if hit:
+                out.append(hit)
+                break
+            parts.pop()
+    return out
