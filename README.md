@@ -20,7 +20,7 @@ where you were.
 ![Clicking a node opens the file; pressing Enter opens it in Neovim in the terminal cortex was launched from](https://raw.githubusercontent.com/Ayushsinha322/cortex/main/docs/demo.gif)
 
 No dependencies. No database. No import step. It reads your disk directly, and
-it is about 5,200 lines of Python standard library and vanilla JavaScript.
+it is about 5,400 lines of Python standard library and vanilla JavaScript.
 
 ---
 
