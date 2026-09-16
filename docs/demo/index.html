@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>cortex — ~/cortex · live demo</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<canvas id="stage"></canvas>
+
+<!-- left sidebar: every folder in the root, as a project switcher -->
+<aside id="sidebar" hidden>
+  <div class="sb-head">
+    <span class="sb-title">Directories</span>
+    <button id="sb-close" class="ghost sm"
+            title="Close — back to the whole map (s)">&#10005;</button>
+  </div>
+  <input id="sb-filter" type="text" spellcheck="false" autocomplete="off"
+         placeholder="filter folders">
+  <div id="sb-list"></div>
+  <div class="sb-foot">Closing brings the whole map back</div>
+</aside>
+
+<!-- top command bar -->
+<header id="bar">
+  <button id="sb-toggle" class="ghost icon" title="Directories (s)">&#9776;</button>
+  <div class="brand"><span class="dot"></span>cortex</div>
+  <button id="scope" class="scope" hidden>
+    <span id="scope-name"></span><span class="x">&#10005;</span>
+  </button>
+  <div class="searchwrap">
+    <svg class="mag" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16.5 16.5 21 21"/></svg>
+    <input id="q" type="text" spellcheck="false" autocomplete="off"
+           placeholder="search everything under ~/cortex · live demo">
+    <button id="mode" class="mode"
+            title="Search names, or search inside files (tab)">names</button>
+    <kbd class="slash">/</kbd>
+    <!-- content-search results: file, line, and the line itself -->
+    <div id="hits" hidden></div>
+  </div>
+  <nav id="filters"></nav>
+  <div class="spacer"></div>
+  <button id="btn-links" class="ghost on" title="Toggle semantic links">links</button>
+  <button id="btn-fit" class="ghost" title="Fit graph to screen">fit</button>
+  <button id="btn-save" class="ghost"
+          title="Save this view as a PNG (shift-click for SVG) — x">save</button>
+  <button id="btn-help" class="ghost" title="Keyboard shortcuts">?</button>
+</header>
+
+<!-- bottom left: what you are looking at -->
+<div id="stats" class="glass">
+  <span id="stat-nodes">0 nodes</span>
+  <span class="sep"></span>
+  <span id="stat-links">0 links</span>
+  <span class="sep"></span>
+  <span id="stat-index" class="muted">indexing…</span>
+  <span class="sep"></span>
+  <span id="stat-git" class="muted" hidden></span>
+</div>
+
+<!-- bottom right: zoom -->
+<div id="zoomer" class="glass">
+  <button id="z-out" title="Zoom out">−</button>
+  <span id="z-level">100%</span>
+  <button id="z-in" title="Zoom in">+</button>
+</div>
+
+<!-- right: the reader -->
+<aside id="panel">
+  <div id="p-head">
+    <div class="row">
+      <span id="p-kind" class="chip"></span>
+      <span id="p-git" class="chip git" hidden></span>
+      <span class="rowbtns">
+        <button id="p-max" class="ghost sm" title="Full screen (m)">full &#10530;</button>
+        <button id="p-close" class="ghost sm">esc</button>
+      </span>
+    </div>
+    <h1 id="p-name"></h1>
+    <div id="p-path"></div>
+    <div id="p-meta"></div>
+  </div>
+
+  <div id="p-acts"></div>
+
+  <!-- backlinks: every semantic edge touching this file, in or out -->
+  <section id="p-links" hidden></section>
+
+  <div id="p-body"></div>
+</aside>
+
+<!-- overlays -->
+<div id="toast"></div>
+
+<div id="help" class="modal">
+  <div class="sheet glass">
+    <h2>cortex</h2>
+    <dl>
+      <dt><kbd>click</kbd></dt><dd>select a node and open the reader</dd>
+      <dt><kbd>double-click</kbd></dt><dd>grow a folder into the graph / collapse it</dd>
+      <dt><kbd>drag</kbd></dt><dd>move a node, or pan the empty canvas</dd>
+      <dt><kbd>wheel</kbd></dt><dd>zoom toward the cursor</dd>
+      <dt><kbd>/</kbd></dt><dd>jump to search</dd>
+      <dt><kbd>tab</kbd></dt><dd>in the search box: file names, or inside files</dd>
+      <dt><kbd>↑ ↓</kbd></dt><dd>in the search box: move through the results</dd>
+      <dt><kbd>enter</kbd></dt><dd>in the search box: go to the highlighted result</dd>
+      <dt><kbd>enter</kbd></dt><dd>open selection in your default editor</dd>
+      <dt><kbd>r</kbd></dt><dd>read selection in the terminal</dd>
+      <dt><kbd>e</kbd></dt><dd>expand / collapse the selected folder</dd>
+      <dt><kbd>f</kbd></dt><dd>focus mode — hide everything not connected</dd>
+      <dt><kbd>c</kbd></dt><dd>show / hide the connections list in the reader</dd>
+      <dt><kbd>o</kbd></dt><dd>only this folder — drop everything else from the graph</dd>
+      <dt><kbd>b</kbd></dt><dd>back to the whole map</dd>
+      <dt><kbd>s</kbd></dt><dd>open / close the directory sidebar</dd>
+      <dt><kbd>t</kbd></dt><dd>hide the labels — for screenshots and demos</dd>
+      <dt><kbd>m</kbd></dt><dd>full screen the reader — for PDFs, images, long notes</dd>
+      <dt><kbd>esc</kbd></dt><dd>leave full screen, or close the reader</dd>
+    </dl>
+    <p class="muted">Editor actions run in the terminal you launched cortex from.
+       Quit the editor and the graph is still there, still live.</p>
+    <button id="help-close" class="ghost">got it</button>
+  </div>
+</div>
+
+<script>window.CORTEX = {"token": "demo", "root": "/home/dev/cortex", "title": "~/cortex", "autoExpand": {"depth": 3, "budget": 700}, "pulseMs": 0, "rememberLayout": true};</script>
+<script src="demo-shim.js"></script>
+<script src="markdown.js"></script>
+<script src="highlight.js"></script>
+<script src="app.js"></script>
+
+<style>
+/* Demo-only chrome: the shipped UI has none of this. */
+#demo-note {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: 14px; z-index: 40; max-width: min(760px, calc(100vw - 32px));
+  display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap;
+  padding: 9px 14px; border-radius: 9px;
+  background: rgba(16, 20, 28, 0.93); border: 1px solid rgba(255,255,255,0.11);
+  box-shadow: 0 6px 22px rgba(0,0,0,0.45);
+  font: 12.5px/1.5 ui-sans-serif, system-ui, sans-serif; color: #b9c2d0;
+}
+#demo-note b { color: #e7ecf3; font-weight: 600; }
+#demo-note code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: rgba(255,255,255,0.07); padding: 1px 6px; border-radius: 4px;
+  color: #dfe6ef;
+}
+#demo-note a { color: #7fb2ff; text-decoration: none; }
+#demo-note a:hover { text-decoration: underline; }
+#demo-note button {
+  margin-left: auto; background: none; border: 0; cursor: pointer;
+  color: #7c8697; font-size: 15px; line-height: 1; padding: 2px 4px;
+}
+#demo-note button:hover { color: #e7ecf3; }
+@media (max-width: 560px) { #demo-note { font-size: 12px; bottom: 8px; } }
+</style>
+<div id="demo-note">
+  <span><b>Live demo.</b> The real cortex UI, on a frozen copy of its own
+  repository. Click a node, follow the links, search inside the files.
+  Opening your editor is the one thing that needs it running locally.</span>
+  <span><code>pipx install cortex-fs</code> ·
+  <a href="https://github.com/Ayushsinha322/cortex">GitHub</a></span>
+  <button id="demo-note-x" title="dismiss">&times;</button>
+</div>
+<script>
+document.getElementById("demo-note-x").addEventListener("click", () => {
+  document.getElementById("demo-note").remove();
+});
+</script>
+</body>
+</html>

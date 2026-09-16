@@ -9,6 +9,9 @@
 **See your files as a graph. Read them. Open them in your editor — in the
 terminal you started from.**
 
+**[Try it in your browser →](https://ayushsinha322.github.io/cortex/demo/)** —
+the real UI on a frozen copy of this repository, nothing to install.
+
 Point `cortex` at a folder and it draws everything inside as a living map:
 folders, notes, code, PDFs, and the links between them. Click a node to read
 the file. Press <kbd>Enter</kbd> and it opens in Neovim, in your terminal, right
