@@ -1,0 +1,87 @@
+name: publish
+
+# A release is cut by pushing a tag. cortex/__init__.py is the one place the
+# version lives, so the tag has to agree with it before anything is built —
+# a wheel whose name disagrees with its code cannot be taken back off PyPI.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  check:
+    name: the tag says what the code says
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: the version agrees with the tag
+        run: |
+          python - <<'PY'
+          import os, re
+          src = open("cortex/__init__.py").read()
+          version = re.search(r'__version__ = "([^"]+)"', src).group(1)
+          tag = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          if version != tag:
+              raise SystemExit(
+                  f"tag says {tag!r}, cortex/__init__.py says {version!r}"
+              )
+          print("releasing", version)
+          PY
+      # tests.yml watches main and pull requests, and a tag push is neither,
+      # so the suite runs here rather than being assumed to have run.
+      - name: run the suite
+        run: tests/run
+
+  build:
+    name: build what gets uploaded
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install build twine
+      - run: python -m build
+      # The UI is data files, not code, so a wheel that forgot them still
+      # imports cleanly and only fails when someone opens the window.
+      - name: the window's files came along
+        run: |
+          python - <<'PY'
+          import glob, zipfile
+          names = zipfile.ZipFile(glob.glob("dist/*.whl")[0]).namelist()
+          need = ['index.html', 'style.css', 'app.js', 'markdown.js', 'highlight.js']
+          missing = [f for f in need if 'cortex/ui/' + f not in names]
+          raise SystemExit('missing from the wheel: ' + str(missing) if missing else 0)
+          PY
+      - name: the README will render on PyPI
+        run: twine check --strict dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # Named so PyPI can be told to trust this job in particular, and so the
+    # upload can be held for review from the repository's settings.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/cortex-graph/
+    # Trusted Publishing: PyPI trades this short-lived OIDC token for the
+    # upload, so there is no API token stored here to leak or rotate.
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
