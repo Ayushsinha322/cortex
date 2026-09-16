@@ -72,6 +72,10 @@ both supported.
 pipx install cortex-fs
 ```
 
+It installs as `cortex-fs` and runs as `cortex`. PyPI would not take the
+shorter name — something unrelated already has it — and the command is the
+one you type every day, so that is the one that kept the name.
+
 Or from the source, which is the same thing without the packaging:
 
 ```bash
