@@ -1,5 +1,11 @@
 # cortex
 
+[![tests](https://github.com/Ayushsinha322/cortex/actions/workflows/tests.yml/badge.svg)](https://github.com/Ayushsinha322/cortex/actions/workflows/tests.yml)
+[![PyPI](https://img.shields.io/pypi/v/cortex-graph.svg)](https://pypi.org/project/cortex-graph/)
+[![Python](https://img.shields.io/pypi/pyversions/cortex-graph.svg)](https://pypi.org/project/cortex-graph/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Ayushsinha322/cortex/blob/main/LICENSE)
+[![No dependencies](https://img.shields.io/badge/dependencies-none-brightgreen.svg)](https://github.com/Ayushsinha322/cortex/blob/main/pyproject.toml)
+
 **See your files as a graph. Read them. Open them in your editor — in the
 terminal you started from.**
 
@@ -8,7 +14,7 @@ folders, notes, code, PDFs, and the links between them. Click a node to read
 the file. Press <kbd>Enter</kbd> and it opens in Neovim, in your terminal, right
 where you were.
 
-![The cortex graph](docs/graph.jpg)
+![The cortex graph](https://raw.githubusercontent.com/Ayushsinha322/cortex/main/docs/graph.jpg)
 
 No dependencies. No database. No import step. It reads your disk directly, and
 it is about 5,200 lines of Python standard library and vanilla JavaScript.
@@ -143,7 +149,7 @@ big yours is.
 
 Select a file and it is rendered in the panel on the right.
 
-![Reading a note](docs/reader.jpg)
+![Reading a note](https://raw.githubusercontent.com/Ayushsinha322/cortex/main/docs/reader.jpg)
 
 | File type | What you get |
 | --------- | ------------ |
@@ -338,7 +344,7 @@ You do not have to decide up front. Click **☰** in the top left, or press
 graph is rebuilt around just that folder — everything else is not dimmed or
 filtered, it is gone:
 
-![The directory sidebar](docs/scope.jpg)
+![The directory sidebar](https://raw.githubusercontent.com/Ayushsinha322/cortex/main/docs/scope.jpg)
 
 Click another folder to jump straight to it. **Close the sidebar and the whole
 map comes back**, exactly as it looked when you launched — closing is always the
