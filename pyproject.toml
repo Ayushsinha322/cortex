@@ -6,7 +6,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cortex-graph"
+name = "cortex-fs"
 dynamic = ["version"]
 description = "Your filesystem as a graph you can read, with terminal handoff to your editor."
 readme = "README.md"

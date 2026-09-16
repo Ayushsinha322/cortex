@@ -74,7 +74,7 @@ jobs:
     # upload can be held for review from the repository's settings.
     environment:
       name: pypi
-      url: https://pypi.org/project/cortex-graph/
+      url: https://pypi.org/project/cortex-fs/
     # Trusted Publishing: PyPI trades this short-lived OIDC token for the
     # upload, so there is no API token stored here to leak or rotate.
     permissions:

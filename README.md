@@ -1,8 +1,8 @@
 # cortex
 
 [![tests](https://github.com/Ayushsinha322/cortex/actions/workflows/tests.yml/badge.svg)](https://github.com/Ayushsinha322/cortex/actions/workflows/tests.yml)
-[![PyPI](https://img.shields.io/pypi/v/cortex-graph.svg)](https://pypi.org/project/cortex-graph/)
-[![Python](https://img.shields.io/pypi/pyversions/cortex-graph.svg)](https://pypi.org/project/cortex-graph/)
+[![PyPI](https://img.shields.io/pypi/v/cortex-fs.svg)](https://pypi.org/project/cortex-fs/)
+[![Python](https://img.shields.io/pypi/pyversions/cortex-fs.svg)](https://pypi.org/project/cortex-fs/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Ayushsinha322/cortex/blob/main/LICENSE)
 [![No dependencies](https://img.shields.io/badge/dependencies-none-brightgreen.svg)](https://github.com/Ayushsinha322/cortex/blob/main/pyproject.toml)
 
@@ -69,7 +69,7 @@ You need Python 3.9 or newer and a browser. That is all. Linux and macOS are
 both supported.
 
 ```bash
-pipx install cortex-graph
+pipx install cortex-fs
 ```
 
 Or from the source, which is the same thing without the packaging:
