@@ -14,7 +14,7 @@ folders, notes, code, PDFs, and the links between them. Click a node to read
 the file. Press <kbd>Enter</kbd> and it opens in Neovim, in your terminal, right
 where you were.
 
-![The cortex graph](https://raw.githubusercontent.com/Ayushsinha322/cortex/main/docs/graph.jpg)
+![Clicking a node opens the file; pressing Enter opens it in Neovim in the terminal cortex was launched from](https://raw.githubusercontent.com/Ayushsinha322/cortex/main/docs/demo.gif)
 
 No dependencies. No database. No import step. It reads your disk directly, and
 it is about 5,200 lines of Python standard library and vanilla JavaScript.
