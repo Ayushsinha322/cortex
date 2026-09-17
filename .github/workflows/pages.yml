@@ -31,7 +31,11 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      # enablement lets the workflow turn Pages on itself, rather than
+      # failing when the repository has not had it switched on by hand.
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - name: the demo is there to publish
         run: |
           test -f docs/index.html || { echo "docs/index.html missing"; exit 1; }
