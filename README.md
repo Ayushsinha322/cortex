@@ -149,7 +149,7 @@ Your terminal stays where it is and prints what it is doing:
 ```
    ___ ___  ___ _____ _____  __
   / __/ _ \| _ \_   _| ____|\ \/ /   your filesystem as a brain
- | (_| (_) |   / | | | _|    >  <    v0.1.0
+ | (_| (_) |   / | | | _|    >  <    v0.2.0
   \___\___/|_|_\ |_| |___|  /_/\_\
 
   mapping   ~
