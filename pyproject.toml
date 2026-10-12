@@ -51,4 +51,5 @@ packages = ["cortex", "cortex.ui"]
 version = { attr = "cortex.__init__.__version__" }
 
 [tool.setuptools.package-data]
-cortex = ["ui/*.html", "ui/*.css", "ui/*.js"]
+# icon.svg is the window's favicon and the app-menu launcher's icon
+cortex = ["ui/*.html", "ui/*.css", "ui/*.js", "ui/*.svg"]

@@ -104,6 +104,7 @@ class LinkIndex:
         self._thread: threading.Thread | None = None
         self._partial = True         # publish as we go on the first build only
         self._last_build = 0.0
+        self._stop = threading.Event()
 
     def maybe_rebuild(self) -> bool:
         """Re-index because files changed, if that is cheap enough to do.
@@ -124,7 +125,17 @@ class LinkIndex:
         self.start()
         return True
 
+    def stop(self) -> None:
+        """Abandon a build in progress, for when the window maps somewhere else.
+
+        A home directory takes seconds to walk, and finishing that walk for a
+        folder nobody is looking at any more is seconds of disk for nothing.
+        """
+        self._stop.set()
+
     def start(self) -> None:
+        if self._stop.is_set():
+            return
         self._thread = threading.Thread(target=self._build, daemon=True,
                                         name="cortex-linkindex")
         self._thread.start()
@@ -149,6 +160,8 @@ class LinkIndex:
         sc = self.scanner
         walked = 0
         for dirpath, dirnames, filenames in os.walk(sc.root, followlinks=False):
+            if self._stop.is_set():
+                return
             dirnames[:] = [d for d in dirnames if not sc.skip(d, True)
                            and not sc.gitignored(os.path.join(dirpath, d), True)]
             for fn in filenames:
@@ -189,7 +202,8 @@ class LinkIndex:
             edges.append([a, b, kind])
 
         def over_budget() -> bool:
-            return time.monotonic() - started > TIME_BUDGET
+            return (time.monotonic() - started > TIME_BUDGET
+                    or self._stop.is_set())
 
         # Notes first: they are what a "second brain" is mostly made of, and
         # there are far fewer of them than source files.
@@ -229,6 +243,8 @@ class LinkIndex:
                 if over_budget():
                     break
 
+        if self._stop.is_set():
+            return
         with self._lock:
             self.edges = edges
             self.tags = sorted(tag_names)

@@ -4,6 +4,10 @@ The graph runs in a window, but the *work* happens in the terminal you launched
 from.  The UI posts an action, it lands on this queue, and the main thread runs
 it in the foreground so nvim/nano/less inherit your real TTY.  Quit the editor
 and you are back at the graph, still live.
+
+Launched from an app menu there is no terminal to return to. Windowed editors
+are unaffected, and a terminal editor is given a terminal window of its own,
+which closes when the editor quits.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from urllib.parse import quote
 
 # Editors that live in the terminal -- run in the foreground, on our TTY.
 TUI_EDITORS = [
@@ -47,6 +52,41 @@ ENV_EDITOR_ID = "env"
 
 # What `open ⧉` and `reveal` hand a path to, per platform.
 OPENER = ["open"] if sys.platform == "darwin" else ["xdg-open"]
+
+# How each terminal is told "run this command". They do not agree, and a wrong
+# guess opens an empty terminal, so only programs whose syntax is known are
+# here. x-terminal-emulator is Debian's configured default, and its policy
+# requires it to take -e.
+TERMINALS = {
+    "x-terminal-emulator": ["-e"],
+    "gnome-terminal": ["--"],
+    "kgx": ["--"],
+    "konsole": ["-e"],
+    "xfce4-terminal": ["-x"],
+    "mate-terminal": ["-x"],
+    "terminator": ["-x"],
+    "kitty": [],
+    "foot": [],
+    "alacritty": ["-e"],
+    "wezterm": ["start", "--"],
+    "xterm": ["-e"],
+    "urxvt": ["-e"],
+    "st": ["-e"],
+}
+# The desktop's own terminal is the one people expect to see, so it goes ahead
+# of whichever the distribution happened to make the default.
+DESKTOP_TERMINALS = {
+    "KDE": ["konsole"], "GNOME": ["gnome-terminal", "kgx"],
+    "XFCE": ["xfce4-terminal"], "MATE": ["mate-terminal"],
+    "X-CINNAMON": ["gnome-terminal"], "UNITY": ["gnome-terminal"],
+}
+# Run inside the terminal window: start in the right folder, and if the program
+# fails, keep the window open long enough to read why instead of flashing an
+# error and vanishing.
+HOLD = ('cd "$1" 2>/dev/null; shift; "$@"; s=$?; '
+        'if [ "$s" -ne 0 ]; then '
+        'printf "\\n[%s exited with status %s - press enter to close]" "$1" "$s"; '
+        'read -r _; fi')
 
 # How each editor is told to jump to a line. Anything not listed is opened at
 # the top of the file rather than guessed at: an unknown flag would stop the
@@ -101,20 +141,32 @@ def env_editor() -> dict | None:
     return None
 
 
-def available_editors() -> list[dict]:
-    """Editors we can offer, best first. $VISUAL / $EDITOR always leads."""
+def available_editors(tty: bool = True, terminal: bool = True) -> list[dict]:
+    """Editors we can offer, best first. $VISUAL / $EDITOR always leads.
+
+    Without a terminal of our own, windowed editors come next: someone who
+    launched cortex from an app menu is better served by one than by a terminal
+    window. Without even a terminal window to open, terminal editors are not
+    offered at all, because choosing one could only fail.
+    """
     found: list[dict] = []
     seen_labels: set[str] = set()
     seen_binaries: set[str] = set()
 
+    usable = tty or terminal
     chosen = env_editor()
-    if chosen:
+    if chosen and (chosen["gui"] or usable):
         seen_labels.add(chosen["label"])
         seen_binaries.add(chosen["binary"])
         found.append({"id": chosen["id"], "label": chosen["label"],
                       "gui": chosen["gui"], "env": True})
 
-    for group, gui in ((TUI_EDITORS, False), (GUI_EDITORS, True)):
+    groups = [(TUI_EDITORS, False), (GUI_EDITORS, True)]
+    if not tty:
+        groups.reverse()
+    for group, gui in groups:
+        if not gui and not usable:
+            continue
         for eid, label, argv in group:
             if label in seen_labels or argv[0] in seen_binaries:
                 continue
@@ -179,14 +231,80 @@ def pager_argv(path: str, line: int | None = None) -> list[str]:
     return ["cat", path]
 
 
+def has_tty() -> bool:
+    """True when there is a terminal to hand programs to."""
+    try:
+        return sys.stdin.isatty() and sys.stdout.isatty()
+    except (AttributeError, ValueError):      # closed, or None under some launchers
+        return False
+
+
+def find_terminal() -> list[str] | None:
+    """The command that opens a terminal window running the rest of argv."""
+    if sys.platform == "darwin":
+        return ["osascript"] if shutil.which("osascript") else None
+
+    chosen = (os.environ.get("TERMINAL") or "").strip()
+    if chosen:
+        try:
+            argv = shlex.split(chosen)
+        except ValueError:
+            argv = []
+        if argv and shutil.which(argv[0]):
+            return argv + TERMINALS.get(os.path.basename(argv[0]), ["-e"])
+
+    desktops = (os.environ.get("XDG_CURRENT_DESKTOP") or "").upper().split(":")
+    order = [t for d in desktops for t in DESKTOP_TERMINALS.get(d, [])]
+    order += [t for t in TERMINALS if t not in order]
+    for name in order:
+        exe = shutil.which(name)
+        if exe:
+            return [exe] + TERMINALS[name]
+    return None
+
+
+def terminal_argv(terminal: list[str], argv: list[str], cwd: str,
+                  hold: bool = True) -> list[str]:
+    """`argv`, run in a new terminal window that starts in `cwd`."""
+    if os.path.basename(terminal[0]) == "osascript":
+        line = f"cd {shlex.quote(cwd)} && clear && {shlex.join(argv)}; exit"
+        script = ["on run argv", 'tell application "Terminal"', "activate",
+                  "do script (item 1 of argv)", "end tell", "end run"]
+        out = list(terminal)
+        for row in script:
+            out += ["-e", row]
+        return out + [line]
+    if hold:
+        return terminal + ["sh", "-c", HOLD, "cortex", cwd] + argv
+    return terminal + ["sh", "-c", 'cd "$1" 2>/dev/null; shift; exec "$@"',
+                       "cortex", cwd] + argv
+
+
 class ActionRunner:
     """Queue of terminal actions, drained on the main thread."""
 
     VALID = {"edit", "read", "shell", "open", "reveal"}
 
-    def __init__(self) -> None:
+    def __init__(self, tty: bool | None = None,
+                 terminal: list[str] | None = None) -> None:
         self.q: queue.Queue[dict] = queue.Queue()
         self.stop = threading.Event()
+        self.tty = has_tty() if tty is None else tty
+        self.terminal = terminal if terminal is not None or self.tty \
+            else find_terminal()
+        # where a terminal window opens for an editor: the project, the way
+        # `cd project && nvim file` would have it. Set by whoever maps a folder.
+        self.home: str | None = None
+
+    @property
+    def mode(self) -> str | None:
+        """Where terminal programs end up: "here", a "window", or nowhere."""
+        if self.tty:
+            return "here"
+        return "window" if self.terminal else None
+
+    def editors(self) -> list[dict]:
+        return available_editors(tty=self.tty, terminal=bool(self.terminal))
 
     # called from the HTTP thread
     def submit(self, kind: str, path: str, editor: str | None = None,
@@ -200,6 +318,11 @@ class ActionRunner:
                 return {"ok": False, "error": "no editor given"}
             if _editor_argv(editor) is None:
                 return {"ok": False, "error": f"{editor} is not installed"}
+        gui = kind in ("open", "reveal") or (kind == "edit" and _is_gui(editor or ""))
+        if not gui and self.mode is None:
+            return {"ok": False,
+                    "error": "there is no terminal to run that in - pick a "
+                             "windowed editor, or edit it here"}
         try:
             line = int(line) if line is not None else None
         except (TypeError, ValueError):
@@ -207,12 +330,15 @@ class ActionRunner:
         if line is not None and not 1 <= line <= 10_000_000:
             line = None
         self.q.put({"kind": kind, "path": path, "editor": editor, "line": line})
-        gui = kind == "open" or (kind == "edit" and _is_gui(editor or ""))
-        return {"ok": True, "terminal": not gui}
+        how = "app" if gui else self.mode
+        return {"ok": True, "terminal": how == "here", "how": how}
 
     # main thread
-    def run_forever(self) -> None:
+    def run_forever(self, until=None) -> None:
+        """Run actions as they arrive, until stopped or `until()` says so."""
         while not self.stop.is_set():
+            if until is not None and until():
+                return
             try:
                 job = self.q.get(timeout=0.4)
             except queue.Empty:
@@ -234,8 +360,8 @@ class ActionRunner:
             print(f"{C['grey']}  opened externally  {short}{C['off']}")
             return
         if kind == "reveal":
-            self._detach(OPENER + [cwd])
-            print(f"{C['grey']}  revealed  {cwd.replace(os.path.expanduser('~'), '~', 1)}{C['off']}")
+            self._reveal(path, is_dir)
+            print(f"{C['grey']}  revealed  {short}{C['off']}")
             return
 
         if kind == "edit":
@@ -250,28 +376,68 @@ class ActionRunner:
                 self._detach(argv)
                 print(f"{C['grey']}  handed to {name}  {where}{C['off']}")
                 return
-            self._foreground(argv, f"{name} {where}")
+            self._foreground(argv, f"{name} {where}", start=self.home or cwd)
             return
 
         if kind == "read":
             if is_dir:
+                # BSD ls has no --color; it colours with -G when told to
+                listing = ('CLICOLOR_FORCE=1 ls -lAhG "$1"' if sys.platform == "darwin"
+                           else 'ls -lAh --color=always "$1"')
                 self._foreground(
-                    ["sh", "-c", 'ls -lAh --color=always "$1" | ${PAGER:-less} -R',
-                     "sh", path],
-                    f"list {short}")
+                    ["sh", "-c", listing + ' | ${PAGER:-less} -R', "sh", path],
+                    f"list {short}", start=cwd)
             else:
                 self._foreground(pager_argv(path, line),
-                                 f"read {short}" + (f":{line}" if line else ""))
+                                 f"read {short}" + (f":{line}" if line else ""),
+                                 start=cwd)
             return
 
         if kind == "shell":
             shell = os.environ.get("SHELL", "/bin/bash")
             self._foreground([shell], f"shell in {cwd.replace(os.path.expanduser('~'), '~', 1)}",
-                             cwd=cwd)
+                             cwd=cwd, hold=False)
 
     # -- process helpers ---------------------------------------------------
 
-    def _foreground(self, argv: list[str], label: str, cwd: str | None = None) -> None:
+    def _reveal(self, path: str, is_dir: bool) -> None:
+        """Show it in the file manager, selected where the platform allows."""
+        if sys.platform == "darwin":
+            self._detach(["open", "-R", path])
+            return
+        # FileManager1 is how Dolphin, Nautilus, Nemo and Thunar are asked to
+        # open a folder with one item selected; xdg-open can only open the folder
+        if shutil.which("dbus-send"):
+            try:
+                done = subprocess.run(
+                    ["dbus-send", "--session", "--print-reply",
+                     "--dest=org.freedesktop.FileManager1", "--type=method_call",
+                     "/org/freedesktop/FileManager1",
+                     "org.freedesktop.FileManager1.ShowItems",
+                     f"array:string:file://{quote(path)}", "string:"],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, timeout=4)
+                if done.returncode == 0:
+                    return
+            except (OSError, subprocess.SubprocessError):
+                pass
+        self._detach(OPENER + [path if is_dir else os.path.dirname(path)])
+
+    def _foreground(self, argv: list[str], label: str, cwd: str | None = None,
+                    hold: bool = True, start: str | None = None) -> None:
+        """Run in the terminal we were launched from, or failing that, a new one.
+
+        `cwd` is where the program runs in either case; `start` is only where a
+        new terminal window opens, since one has no folder of its own to inherit.
+        """
+        if not self.tty:
+            if not self.terminal:
+                print(f"{C['red']}  no terminal to run {label} in{C['off']}")
+                return
+            where = cwd or start or os.path.expanduser("~")
+            self._detach(terminal_argv(self.terminal, argv, where, hold), cwd=where)
+            print(f"{C['grey']}  {label}  (in a terminal window){C['off']}")
+            return
         print(f"\n{C['blue']}┌─ {C['b']}{label}{C['off']}"
               f"{C['dim']}  (quit to return to the graph){C['off']}")
         sys.stdout.flush()
@@ -285,9 +451,10 @@ class ActionRunner:
         print(f"{C['blue']}└─ {C['off']}{C['dim']}back at the graph{C['off']}\n")
         sys.stdout.flush()
 
-    def _detach(self, argv: list[str]) -> None:
+    def _detach(self, argv: list[str], cwd: str | None = None) -> None:
         try:
-            subprocess.Popen(argv, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
-        except FileNotFoundError:
-            print(f"{C['red']}  {argv[0]} not found{C['off']}")
+            subprocess.Popen(argv, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True, cwd=cwd)
+        except OSError as exc:
+            print(f"{C['red']}  could not start {argv[0]}: {exc}{C['off']}")

@@ -9,6 +9,11 @@ const CFG = window.CORTEX;
 const TOKEN = CFG.token;
 const ROOT = CFG.root;
 const AUTO = CFG.autoExpand || { depth: 0, budget: 0 };
+const READ_ONLY = !!CFG.readOnly;
+/* Where a terminal program ends up: "here", in the terminal cortex was
+   launched from; a "window" of its own, when it was launched from an app
+   menu; or nowhere, when there is no terminal to be had. */
+const TERMINAL = CFG.terminal === undefined ? "here" : CFG.terminal;
 
 const GROUPS = ["dir", "note", "code", "config", "doc", "media", "archive",
                 "other", "tag"];
@@ -99,16 +104,41 @@ resize();
 cam = { s: 1, x: W / 2, y: H / 2 };
 
 // --------------------------------------------------------------------- api
-async function api(path, params = {}) {
+/* Every request goes through here, so that the program behind the window
+   going away is noticed once and said plainly, instead of as a scatter of
+   "could not read that folder" toasts from whatever happened to ask next. */
+let unreachable = 0, gone = false;
+async function reach(url, init) {
+  let res;
+  try {
+    res = await fetch(url, init);
+  } catch (err) {
+    if (++unreachable >= 2) serverGone();
+    throw err;
+  }
+  unreachable = 0;
+  return res;
+}
+
+function apiURL(path, params = {}) {
   const url = new URL(path, location.origin);
   url.searchParams.set("t", TOKEN);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-  const res = await fetch(url);
+  return url;
+}
+async function api(path, params = {}) {
+  const res = await reach(apiURL(path, params));
   if (!res.ok) throw new Error(`${path} -> ${res.status}`);
   return res.json();
 }
-async function post(path, body) {
-  const res = await fetch(`${path}?t=${encodeURIComponent(TOKEN)}`, {
+/* Like api(), but a refusal is an answer: the server says why in the body,
+   and that is what the toast should say. */
+async function query(path, params = {}) {
+  const res = await reach(apiURL(path, params));
+  return res.json();
+}
+async function post(path, body, params = {}) {
+  const res = await reach(apiURL(path, params), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -198,7 +228,7 @@ function dropDescendants(ids) {
   return doomed;
 }
 
-function forget(doomed) {
+function forget(doomed, vanished = false) {
   if (!doomed.size) return false;
   for (const d of doomed) {
     nodes.delete(d); expanded.delete(d); matches.delete(d);
@@ -208,7 +238,17 @@ function forget(doomed) {
     if (drop) linkKeys.delete(l.key);
     return !drop;
   });
-  if (sel && doomed.has(sel.id)) closePanel();
+  if (sel && doomed.has(sel.id)) {
+    // An open editor stays open: its text exists nowhere else. If the file
+    // left the disk -- a git checkout, another program -- it says so and
+    // offers to put it back; if only its folder was collapsed, nothing is
+    // wrong at all.
+    if (editing && editing.path === sel.id) {
+      if (vanished) fileVanished();
+    } else {
+      closePanel();
+    }
+  }
   return true;
 }
 
@@ -236,7 +276,7 @@ async function refreshDir(path) {
   const vanished = [...nodes.values()]
     .filter((n) => n.parent === path && !want.has(n.id))
     .map((n) => n.id);
-  let touched = forget(new Set([...vanished, ...dropDescendants(vanished)]));
+  let touched = forget(new Set([...vanished, ...dropDescendants(vanished)]), true);
 
   const parent = nodes.get(path);
   for (const k of kids) {
@@ -259,12 +299,15 @@ async function refreshDir(path) {
 
 let pulseBusy = false;
 async function pulse() {
-  if (pulseBusy) return;
+  if (pulseBusy || gone) return;
   if (typeof document.visibilityState === "string"
       && document.visibilityState === "hidden") return;
   pulseBusy = true;
   try {
     const r = await api("/api/pulse");
+    // another window on this cortex opened a different folder; this one is
+    // now looking at a map the server no longer serves
+    if (r && r.root && r.root !== ROOT) { followRoot(r.root); return; }
     const changed = (r && r.changed) || [];
     if (!changed.length) return;
 
@@ -302,12 +345,15 @@ async function loadLayout() {
 }
 
 async function saveLayout() {
-  if (!CFG.rememberLayout || !layoutDirty || !nodes.size) return;
+  if (!CFG.rememberLayout || !layoutDirty || !nodes.size || gone) return;
   layoutDirty = false;
   const positions = {};
   for (const n of nodes.values()) positions[n.id] = [n.x, n.y];
   try {
-    await post("/api/layout", { positions, cam: { s: cam.s, x: cam.x, y: cam.y } });
+    // the folder rides along, so a save that arrives after the window has
+    // opened another folder is refused instead of filed under the new one
+    await post("/api/layout", { root: ROOT, positions,
+                                cam: { s: cam.s, x: cam.x, y: cam.y } });
   } catch (err) { layoutDirty = true; }
 }
 
@@ -854,6 +900,17 @@ function draw() {
       ctx.stroke();
     }
 
+    if (drafts.has(n.id)) {
+      // unsaved changes: a dashed ring, so a draft set aside is not forgotten
+      ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = "#ffd166";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(x, y, r + (n === sel ? 9 : 4), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
     const state = showGit && gitStates.get(n.id);
     if (state && r > 2.4) {
       const inside = state === "inside";
@@ -1067,10 +1124,21 @@ stage.addEventListener("dblclick", async (e) => {
 
 stage.addEventListener("wheel", (e) => {
   e.preventDefault();
+  closeMenu();
   zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0013));
 }, { passive: false });
 
-stage.addEventListener("contextmenu", (e) => e.preventDefault());
+/* Right-click is where people look for what can be done to a thing. */
+stage.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  const n = pick(e.clientX, e.clientY);
+  if (n) {
+    select(n);
+    openMenu(e.clientX, e.clientY, n.name, menuFor(n));
+  } else {
+    openMenu(e.clientX, e.clientY, null, backgroundMenu());
+  }
+});
 
 // -------------------------------------------------------------------- panel
 const panel = $("panel");
@@ -1081,6 +1149,7 @@ const fmtSize = (b) =>
   : (b / 1073741824).toFixed(2) + " GB";
 
 function closePanel() {
+  closeEditor(false);
   setMax(false);
   panel.classList.remove("open");
   $("p-links").hidden = true;
@@ -1103,6 +1172,9 @@ function setMax(on) {
 }
 
 function select(n) {
+  // leaving a file mid-edit keeps the draft; it is not lost, only set aside
+  if (editing && editing.path !== n.id) closeEditor(false);
+  if (heldDraft !== n.id) heldDraft = null;   // coming back resumes the draft
   sel = n;
   selLine = null;
   focusMode = false;
@@ -1112,18 +1184,26 @@ function select(n) {
     : n.dir ? "folder" : (n.group === "other" ? "file" : n.group);
   $("p-name").textContent = n.name;
   $("p-path").textContent = n.tag ? "a tag, not a file" : n.id.replace(ROOT, "~");
-  $("p-meta").textContent = n.tag ? ""
-    : (n.dir ? `${n.kids || 0} item${n.kids === 1 ? "" : "s"}` : fmtSize(n.size)) +
-      (n.mtime ? "  ·  " + new Date(n.mtime * 1000).toLocaleString() : "");
+  describe(n);
   renderGitChip(n);
   buildActions(n);
   renderConnections(n);
   renderBody(n);
 }
 
+let editBtn = null;               // the reader's "edit", shown once we know it is text
+let openDropdown = null;          // the one action menu that may be open
+
+function describe(n) {
+  $("p-meta").textContent = n.tag ? ""
+    : (n.dir ? `${n.kids || 0} item${n.kids === 1 ? "" : "s"}` : fmtSize(n.size)) +
+      (n.mtime ? "  ·  " + new Date(n.mtime * 1000).toLocaleString() : "");
+}
+
 function buildActions(n) {
   const bar = $("p-acts");
   bar.textContent = "";
+  editBtn = null;
 
   if (n.tag) {
     // nothing on disk to edit, page or open
@@ -1150,46 +1230,38 @@ function buildActions(n) {
     return b;
   };
 
-  if (primaryEditor) {
-    mk(primaryEditor.label, "primary",
-       () => act("edit", n.id, primaryEditor.id, selLine),
-       `open in ${primaryEditor.label} in your terminal`);
+  if (!n.dir && !READ_ONLY) {
+    editBtn = mk("edit", "ghost", () => startEdit(n),
+                 "edit it here (i) — ctrl-s saves");
+    editBtn.hidden = !drafts.has(n.id);   // shown once the preview says it is text
   }
-  if (!n.dir) {
+  if (primaryEditor) {
+    mk(primaryEditor.label + (primaryEditor.gui ? " ⧉" : ""), "primary",
+       () => act("edit", n.id, primaryEditor.id, selLine),
+       editorTitle(primaryEditor));
+  }
+  if (!n.dir && TERMINAL === "here") {
     mk("read", "ghost", () => act("read", n.id, null, selLine),
        "page through it in the terminal");
   }
 
   const others = editors.filter((e) => !primaryEditor || e.id !== primaryEditor.id);
   if (others.length) {
-    const wrap = document.createElement("div");
-    wrap.className = "more";
-    const trigger = document.createElement("button");
-    trigger.className = "ghost";
-    trigger.textContent = "editor ▾";
-    const menu = document.createElement("div");
-    menu.className = "menu";
-    for (const ed of others) {
-      const item = document.createElement("button");
-      item.textContent = ed.label + (ed.gui ? "  ⧉" : "");
-      item.addEventListener("click", () => {
-        menu.classList.remove("open");
-        act("edit", n.id, ed.id, selLine);
-      });
-      menu.appendChild(item);
-    }
-    trigger.addEventListener("click", (e) => {
-      e.stopPropagation();
-      menu.classList.toggle("open");
-    });
-    document.addEventListener("click", () => menu.classList.remove("open"));
-    wrap.append(trigger, menu);
-    bar.appendChild(wrap);
+    dropdown(bar, "editor ▾", others.map((ed) => ({
+      label: ed.label + (ed.gui ? "  ⧉" : ""),
+      title: editorTitle(ed),
+      run: () => act("edit", n.id, ed.id, selLine),
+    })));
   }
 
-  mk("shell here", "ghost", () => act("shell", n.id),
-     "drop a shell into this directory, in your terminal");
+  if (TERMINAL) {
+    mk(TERMINAL === "here" ? "shell here" : "terminal here", "ghost",
+       () => act("shell", n.id),
+       TERMINAL === "here" ? "drop a shell into this directory, in your terminal"
+                           : "open a terminal window in this folder");
+  }
   mk("open ⧉", "ghost", () => act("open", n.id), "hand to the desktop default app");
+  dropdown(bar, "file ▾", fileItems(n).filter((it) => it !== "-"));
   if (n.dir) {
     mk(expanded.has(n.id) ? "collapse" : "expand", "ghost", () => {
       expanded.has(n.id) ? collapse(n.id) : expand(n.id);
@@ -1210,7 +1282,58 @@ function buildActions(n) {
   }, "hide everything not connected to this node");
 }
 
+function editorTitle(ed) {
+  if (ed.gui) return `open in ${ed.label}`;
+  return TERMINAL === "here" ? `open in ${ed.label} in your terminal`
+                             : `open in ${ed.label} in a terminal window`;
+}
+
+/* A button that opens a short menu, for the actions that would otherwise
+   crowd the bar. Only one is ever open, and one listener closes it. */
+function dropdown(bar, label, items) {
+  const wrap = document.createElement("div");
+  wrap.className = "more";
+  const trigger = document.createElement("button");
+  trigger.className = "ghost";
+  trigger.textContent = label;
+  const menu = document.createElement("div");
+  menu.className = "menu";
+  for (const it of items) {
+    const item = document.createElement("button");
+    item.textContent = it.label;
+    if (it.title) item.title = it.title;
+    item.addEventListener("click", () => {
+      menu.classList.remove("open");
+      openDropdown = null;
+      it.run();
+    });
+    menu.appendChild(item);
+  }
+  trigger.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const opening = !menu.classList.contains("open");
+    if (openDropdown && openDropdown !== menu) openDropdown.classList.remove("open");
+    menu.classList.toggle("open", opening);
+    openDropdown = opening ? menu : null;
+  });
+  wrap.append(trigger, menu);
+  bar.appendChild(wrap);
+  return menu;
+}
+
+/* Whether the reader can also be the editor: text it can show is text it can
+   edit, except where what it shows is a conversion of the file. */
+const editable = (p) => !READ_ONLY && (p.kind === "markdown" || p.kind === "text")
+  && p.ext !== ".ipynb" && p.ext !== ".docx";
+
+function setEditable(n, ok) {
+  if (editBtn && sel === n) editBtn.hidden = !ok;
+  if (sel === n) sel.editable = ok;
+}
+
 async function renderBody(n) {
+  // the editor is the body while it is open; a refresh must not wipe it
+  if (editing && editing.path === n.id) return;
   const body = $("p-body");
   body.classList.remove("fill");     // reset before any early return below
   if (n.tag) return renderTagBody(n, body);
@@ -1244,36 +1367,26 @@ async function renderBody(n) {
     return;
   }
 
+  // a file left mid-edit opens straight back into the editor, draft and all --
+  // unless the editor was closed on purpose and this is only a refresh
+  if (drafts.has(n.id) && !READ_ONLY) {
+    if (heldDraft !== n.id) return startEdit(n);
+    body.textContent = "";
+    body.appendChild(hint("<b>Unsaved changes.</b> Press <b>i</b> to keep editing."));
+    return;
+  }
+
   body.innerHTML = '<div class="empty">reading…</div>';
   let p;
   try { p = await api("/api/preview", { path: n.id }); }
   catch (err) { body.innerHTML = '<div class="empty">could not read this file</div>'; return; }
-  if (sel !== n) return;                          // selection moved on
+  if (sel !== n || (editing && editing.path === n.id)) return;   // moved on
+  setEditable(n, editable(p));
 
-  const dirOf = n.id.slice(0, n.id.lastIndexOf("/"));
   body.textContent = "";
 
   if (p.kind === "markdown") {
-    const div = document.createElement("div");
-    div.className = "md";
-    div.innerHTML = window.MD.render(p.text || "", {
-      wiki: () => true,
-      resolve: (u) => /^(https?:|data:)/.test(u) ? u
-        : rawURL(u.startsWith("/") ? u : dirOf + "/" + u),
-    });
-    div.addEventListener("click", (e) => {
-      const a = e.target.closest("a");
-      if (!a) return;
-      if (a.dataset.rel) {
-        e.preventDefault();
-        const rel = a.dataset.rel.split("#")[0];
-        revealPath(rel.startsWith("/") ? rel : normalize(dirOf + "/" + rel));
-      } else if (a.dataset.wiki) {
-        e.preventDefault();
-        jumpToWiki(a.dataset.wiki);
-      }
-    });
-    body.appendChild(div);
+    body.appendChild(markdownView(p.text || "", n.id));
     if (p.truncated) body.appendChild(hint("truncated — open it in your editor for the rest"));
     return;
   }
@@ -1341,6 +1454,33 @@ async function renderBody(n) {
     error: "Could not read this file.",
   };
   body.appendChild(hint(msgs[p.kind] || "No preview for this type."));
+}
+
+/* Rendered markdown whose links lead somewhere: a relative link or a
+   [[wikilink]] grows the graph to its target instead of navigating the
+   window. Shared by the reader and the editor's preview. */
+function markdownView(text, path) {
+  const dirOf = path.slice(0, path.lastIndexOf("/"));
+  const div = document.createElement("div");
+  div.className = "md";
+  div.innerHTML = window.MD.render(text, {
+    wiki: () => true,
+    resolve: (u) => /^(https?:|data:)/.test(u) ? u
+      : rawURL(u.startsWith("/") ? u : dirOf + "/" + u),
+  });
+  div.addEventListener("click", (e) => {
+    const a = e.target.closest("a");
+    if (!a) return;
+    if (a.dataset.rel) {
+      e.preventDefault();
+      const rel = a.dataset.rel.split("#")[0];
+      revealPath(rel.startsWith("/") ? rel : normalize(dirOf + "/" + rel));
+    } else if (a.dataset.wiki) {
+      e.preventDefault();
+      jumpToWiki(a.dataset.wiki);
+    }
+  });
+  return div;
 }
 
 /* A tag's "contents" are the notes carrying it. */
@@ -1425,7 +1565,9 @@ async function act(kind, path, editor, line) {
   try {
     const r = await post("/api/action", { kind, path, editor, line });
     if (!r.ok) { toast(r.error || "action failed", true); return; }
-    toast(r.terminal ? "→ switch to your terminal" : "opening…");
+    const how = r.how || (r.terminal ? "here" : "app");
+    toast(how === "here" ? "→ switch to your terminal"
+        : how === "window" ? "opening a terminal window…" : "opening…");
   } catch (err) { toast("could not reach cortex", true); }
 }
 
@@ -1437,6 +1579,983 @@ function toast(msg, warn) {
   t.classList.add("show");
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.remove("show"), 2800);
+}
+
+/* ----------------------------------------------------------------- editing
+
+   The reader can also be the editor, so a note can be changed without a
+   terminal or another app. It is a plain textarea on purpose: what it saves
+   is exactly what was typed, byte for byte, with the file's own line endings
+   put back.
+
+   Nothing is written until you save, and a save never lands on top of a
+   change it did not see: the server compares the version the editor loaded
+   with what is on disk now and refuses if they differ. Unsaved text is never
+   thrown away either. Leave a file mid-edit and the draft is kept, marked on
+   its node, and the file opens straight back into it. */
+const drafts = new Map();          // path -> {text, version}, while unsaved
+let editing = null;                // the open editor, see startEdit
+let heldDraft = null;              // a draft left on purpose, with esc or close
+
+const isDirty = () => !!editing && editing.area.value !== editing.base;
+
+async function startEdit(n, opts = {}) {
+  if (READ_ONLY) { toast("cortex was started read-only", true); return; }
+  if (!n || n.dir || n.tag) return;
+  if (editing && editing.path === n.id) { editing.area.focus(); return; }
+  heldDraft = null;
+
+  let src;
+  try { src = await query("/api/source", { path: n.id }); }
+  catch (err) { toast("could not reach cortex", true); return; }
+  if (!src || !src.ok) { toast((src && src.error) || "cannot edit this here", true); return; }
+  if (sel !== n) return;                        // the selection moved on
+  if (!src.writable) { toast("this file is read-only on disk", true); return; }
+  if (editing) closeEditor(false);
+
+  const draft = drafts.get(n.id);
+  const note = /\.(md|markdown|mdx|txt)$/i.test(n.id);
+  const body = $("p-body");
+  body.classList.remove("fill");
+  body.textContent = "";
+  panel.classList.add("editing");
+
+  const bar = document.createElement("div");
+  bar.className = "ed-bar";
+  const state = document.createElement("span");
+  state.className = "ed-state";
+  const button = (label, title, fn, cls = "ghost sm") => {
+    const b = document.createElement("button");
+    b.className = cls;
+    b.textContent = label;
+    b.title = title;
+    b.addEventListener("click", fn);
+    return b;
+  };
+  const revert = button("revert", "throw away what you typed since the last save",
+                        () => revertEdit());
+  const preview = button("preview", "see it rendered", () => togglePreview());
+  const save = button("save", "write it to disk (ctrl-s)", () => saveEdit(), "primary sm");
+  const done = button("close", "back to reading (esc) — unsaved changes are kept",
+                      () => closeEditor());
+  preview.hidden = !/\.(md|markdown|mdx)$/i.test(n.id);
+  bar.append(state, revert, preview, save, done);
+
+  const notice = document.createElement("div");
+  notice.className = "ed-notice";
+  notice.hidden = true;
+
+  const area = document.createElement("textarea");
+  area.className = "ed-area";
+  area.spellcheck = note;
+  area.value = draft ? draft.text : src.text;
+  const view = document.createElement("div");
+  view.className = "ed-preview";
+  view.hidden = true;
+  body.append(bar, notice, area, view);
+
+  editing = {
+    path: n.id, base: src.text, version: draft ? draft.version : src.version,
+    unit: indentUnit(n.id, src.text), area, view, state, notice,
+    save, revert, preview, previewing: false,
+  };
+  area.addEventListener("input", () => refreshEditState());
+  area.addEventListener("keydown", (e) => editorKey(e));
+  refreshEditState();
+
+  if (src.mixed && !draft) {
+    showNotice(`This file mixes line endings. Saving will use ${src.eol.toUpperCase()} `
+               + "throughout.", []);
+  }
+  if (draft && draft.version !== src.version) {
+    showNotice("It changed on disk while you had unsaved changes.", [
+      ["keep mine", "save over it with what is here", () => saveEdit(true)],
+      ["take theirs", "throw away your changes and load what is on disk",
+       () => reloadEdit()],
+    ]);
+  } else if (draft) {
+    showNotice("Your unsaved changes are back.", []);
+  }
+
+  area.focus();
+  const at = opts.atEnd ? area.value.length
+    : selLine ? offsetOfLine(area.value, selLine) : 0;
+  area.setSelectionRange(at, at);
+  if (selLine) area.scrollTop = Math.max(0, (selLine - 6) * 20);
+}
+
+/* Bring the bar, the draft and the node's mark up to date with the text. */
+function refreshEditState() {
+  const ed = editing;
+  if (!ed) return;
+  const dirty = isDirty();
+  ed.state.textContent = dirty ? "● unsaved" : "editing";
+  ed.state.classList.toggle("dirty", dirty);
+  ed.save.disabled = !dirty;
+  ed.revert.hidden = !dirty;
+  const had = drafts.has(ed.path);
+  if (dirty) drafts.set(ed.path, { text: ed.area.value, version: ed.version });
+  else drafts.delete(ed.path);
+  if (had !== dirty) { updateDrafts(); repaint(); }
+}
+
+async function saveEdit(force = false) {
+  const ed = editing;
+  if (!ed || ed.saving) return false;
+  const text = ed.area.value;
+  if (!force && text === ed.base) return true;
+  ed.state.textContent = "saving…";
+  ed.saving = true;
+  let r;
+  try { r = await post("/api/save", { path: ed.path, text, version: ed.version, force }); }
+  catch (err) {
+    ed.saving = false;
+    refreshEditState();
+    toast("could not reach cortex — nothing was saved", true);
+    return false;
+  }
+  ed.saving = false;
+  if (!r.ok) {
+    refreshEditState();
+    if (r.conflict) {
+      showNotice("It changed on disk since you opened it.", [
+        ["keep mine", "save over it with what is here", () => saveEdit(true)],
+        ["take theirs", "throw away your changes and load what is on disk",
+         () => reloadEdit()],
+      ]);
+    } else if (r.gone) {
+      showNotice("It is no longer on the disk — deleted or moved.", [
+        ["save it again", "write it back where it was", () => saveEdit(true)],
+      ]);
+    } else {
+      toast(r.error || "could not save", true);
+    }
+    return false;
+  }
+  ed.version = r.version;
+  ed.base = text;
+  if (editing === ed) {
+    hideNotice();
+    refreshEditState();
+  } else {
+    // the editor closed while the save was on its way; anything typed after
+    // pressing save is still a draft, now based on the version just written
+    const d = drafts.get(ed.path);
+    if (d && d.text === text) drafts.delete(ed.path);
+    else if (d) d.version = r.version;
+    updateDrafts();
+    repaint();
+  }
+  if (!nodes.has(ed.path)) {
+    // saved back after it had vanished from the disk: bring its node back
+    await settle(parentOf(ed.path));
+    const back = nodes.get(ed.path);
+    if (back && editing === ed) select(back);
+  }
+  const n = nodes.get(ed.path);
+  if (n) {
+    n.size = r.size; n.mtime = Date.now() / 1000; n.fresh = true;
+    n.r = radiusOf(n);
+    if (sel === n) describe(n);
+  }
+  toast("saved");
+  return true;
+}
+
+function fileVanished() {
+  showNotice("It is no longer on the disk — deleted or moved by something else.", [
+    ["save it again", "write it back where it was", () => saveEdit(true)],
+    ["discard", "close it and forget what was typed", () => discardEdit()],
+  ]);
+}
+
+function discardEdit() {
+  if (!editing) return;
+  drafts.delete(editing.path);
+  updateDrafts();
+  repaint();
+  closeEditor(false);
+  closePanel();
+}
+
+function revertEdit() {
+  if (!editing) return;
+  editing.area.value = editing.base;
+  refreshEditState();
+  editing.area.focus();
+}
+
+/* Take what is on disk, dropping what was typed. */
+async function reloadEdit() {
+  const ed = editing;
+  if (!ed) return;
+  let src;
+  try { src = await query("/api/source", { path: ed.path }); }
+  catch (err) { toast("could not reach cortex", true); return; }
+  if (!src || !src.ok) { toast((src && src.error) || "could not reload it", true); return; }
+  if (editing !== ed) return;
+  ed.base = src.text;
+  ed.version = src.version;
+  ed.area.value = src.text;
+  hideNotice();
+  refreshEditState();
+}
+
+/* Leave the editor. Unsaved text stays behind as a draft, never lost. */
+function closeEditor(rerender = true) {
+  if (!editing) return;
+  const left = editing;
+  editing = null;
+  panel.classList.remove("editing");
+  if (drafts.has(left.path)) toast("unsaved changes kept — they are marked on the node");
+  if (rerender && sel && sel.id === left.path) {
+    heldDraft = left.path;
+    renderBody(sel);
+  }
+}
+
+function togglePreview() {
+  const ed = editing;
+  if (!ed) return;
+  ed.previewing = !ed.previewing;
+  ed.view.textContent = "";
+  if (ed.previewing) ed.view.appendChild(markdownView(ed.area.value, ed.path));
+  ed.view.hidden = !ed.previewing;
+  ed.area.hidden = ed.previewing;
+  ed.preview.textContent = ed.previewing ? "source" : "preview";
+  if (!ed.previewing) ed.area.focus();
+}
+
+function showNotice(text, choices) {
+  const box = editing && editing.notice;
+  if (!box) return;
+  box.textContent = "";
+  const msg = document.createElement("span");
+  msg.textContent = text;
+  box.appendChild(msg);
+  for (const [label, title, fn] of choices) {
+    const b = document.createElement("button");
+    b.className = "ghost sm";
+    b.textContent = label;
+    b.title = title;
+    b.addEventListener("click", fn);
+    box.appendChild(b);
+  }
+  box.hidden = false;
+}
+function hideNotice() {
+  if (editing) editing.notice.hidden = true;
+}
+
+function updateDrafts() {
+  const el = $("stat-drafts");
+  el.hidden = !drafts.size;
+  el.textContent = `${drafts.size} unsaved`;
+  el.title = [...drafts.keys()].map((p) => p.replace(ROOT, "~")).join("\n");
+}
+
+/* --------------------------------------------------- typing in the editor
+
+   A textarea knows nothing about code or lists. These few keys are the ones
+   whose absence is felt at once: tab indents, enter keeps the indentation and
+   carries a list on, ctrl-s saves, esc leaves. */
+function editorKey(e) {
+  const area = e.target;
+  const mod = e.ctrlKey || e.metaKey;
+  if (mod && (e.key === "s" || e.key === "S")) {
+    e.preventDefault();
+    if (e.stopPropagation) e.stopPropagation();   // the window would save it again
+    saveEdit();
+    return;
+  }
+  if (e.key === "Escape") {
+    e.preventDefault();
+    closeEditor();
+    return;
+  }
+  if (mod || e.altKey) return;
+  if (e.key === "Tab") {
+    e.preventDefault();
+    indentLines(area, editing ? editing.unit : "  ", e.shiftKey);
+    return;
+  }
+  if (e.key === "Enter" && !e.shiftKey && continueLine(area)) e.preventDefault();
+}
+
+/* What a tab inserts: whatever the file already indents with. */
+function indentUnit(path, text) {
+  if (/(^|\n)\t/.test(text) || /\.go$|(^|\/)makefile$/i.test(path)) return "\t";
+  const spaced = text.match(/^ +(?=\S)/gm) || [];
+  const widths = spaced.map((s) => s.length).filter((w) => w <= 8);
+  const step = widths.length ? Math.min(...widths) : 0;
+  if (step === 2 || step === 4) return " ".repeat(step);
+  return /\.(py|rs|java|c|h|cc|cpp|hpp|cs|kt|swift|php)$/i.test(path) ? "    " : "  ";
+}
+
+/* Insert as typing would, so ctrl-z can take it back. execCommand is the only
+   way into the undo history a script has; setRangeText is the fallback. */
+function insertText(area, text) {
+  const done = typeof document.execCommand === "function"
+    && document.execCommand(text ? "insertText" : "delete", false, text);
+  if (!done) {
+    area.setRangeText(text, area.selectionStart, area.selectionEnd, "end");
+    area.dispatchEvent(new Event("input"));
+  }
+}
+
+function replaceRange(area, start, end, text) {
+  area.setSelectionRange(start, end);
+  insertText(area, text);
+}
+
+function indentLines(area, unit, outdent) {
+  const v = area.value;
+  const s = area.selectionStart, e = area.selectionEnd;
+  if (!outdent && s === e) { insertText(area, unit); return; }
+  const start = v.lastIndexOf("\n", s - 1) + 1;
+  // a selection ending at the start of a line does not take that line along
+  const last = e > s && v[e - 1] === "\n" ? e - 1 : e;
+  const nl = v.indexOf("\n", last);
+  const stop = nl === -1 ? v.length : nl;
+  const width = unit === "\t" ? 4 : unit.length;
+  const strip = new RegExp(`^(\\t| {1,${width}})`);
+  const block = v.slice(start, stop).split("\n")
+    .map((ln) => outdent ? ln.replace(strip, "") : unit + ln).join("\n");
+  replaceRange(area, start, stop, block);
+  area.setSelectionRange(start, start + block.length);
+}
+
+/* Enter keeps the line's indentation, and carries a list on to its next item;
+   enter on an item with nothing in it ends the list instead. */
+function continueLine(area) {
+  const v = area.value, at = area.selectionStart;
+  if (at !== area.selectionEnd) return false;
+  const lineStart = v.lastIndexOf("\n", at - 1) + 1;
+  const line = v.slice(lineStart, at);
+  const m = /^([ \t]*)((?:[-*+]|\d{1,9}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?)?/.exec(line);
+  const indent = m[1], marker = m[2] || "";
+  if (!indent && !marker) return false;
+  if (marker && line.trim() === marker.trim()) {
+    replaceRange(area, lineStart, at, "");
+    return true;
+  }
+  let next = marker.replace(/\[[xX]\]/, "[ ]");
+  const num = /^(\d+)([.)])/.exec(next);
+  if (num) next = `${Number(num[1]) + 1}${num[2]}` + next.slice(num[0].length);
+  insertText(area, "\n" + indent + next);
+  return true;
+}
+
+function offsetOfLine(text, line) {
+  let at = 0;
+  for (let i = 1; i < line; i++) {
+    const nl = text.indexOf("\n", at);
+    if (nl === -1) return text.length;
+    at = nl + 1;
+  }
+  return at;
+}
+
+/* ------------------------------------------------------ files and folders
+
+   New, rename and trash, so that a note can be made, named and thrown away
+   without a file manager. Trash is the desktop's own, so anything thrown
+   away here can be restored from there. There is no permanent delete. */
+const parentOfNode = (n) => n.dir ? n.id : parentOf(n.id);
+
+/* The disk changed under `dir` because we changed it: show it now rather
+   than on the next pulse. */
+async function settle(dir) {
+  if (expanded.has(dir)) await refreshDir(dir);
+  updateStats();
+  reheat(0.3);
+}
+
+async function fileOp(body) {
+  let r;
+  try { r = await post("/api/fs", body); }
+  catch (err) { toast("could not reach cortex", true); return null; }
+  if (!r.ok) { toast(r.error || "that did not work", true); return null; }
+  return r;
+}
+
+async function newEntry(folder, kind = "file") {
+  if (READ_ONLY) { toast("cortex was started read-only", true); return; }
+  const where = folder === ROOT ? (CFG.title || "~") : folder.replace(ROOT, "~");
+  const name = await ask({
+    title: kind === "dir" ? "New folder" : "New note",
+    text: `in ${where}` + (kind === "dir" ? "" : " — a name without an extension becomes a .md note"),
+    value: kind === "dir" ? "" : "untitled.md",
+    select: kind === "dir" ? null : [0, "untitled".length],
+    ok: "create",
+  });
+  if (!name) return;
+  const r = await fileOp({ op: kind === "dir" ? "mkdir" : "new", path: folder, name });
+  if (!r) return;
+  await settle(folder);
+  await revealPath(r.path);
+  if (kind !== "dir" && sel && sel.id === r.path) startEdit(sel, { atEnd: true });
+}
+
+async function renameEntry(n) {
+  if (READ_ONLY) { toast("cortex was started read-only", true); return; }
+  if (!n || n.tag || n.id === ROOT) return;
+  const dot = n.dir ? -1 : n.name.lastIndexOf(".");
+  const name = await ask({
+    title: `Rename ${n.dir ? "folder" : "file"}`,
+    value: n.name,
+    select: [0, dot > 0 ? dot : n.name.length],
+    ok: "rename",
+  });
+  if (!name || name === n.name) return;
+  const r = await fileOp({ op: "rename", path: n.id, name });
+  if (!r) return;               // nothing moved, and the editor is untouched
+
+  // carry what belonged to the old name across to the new one; the draft is
+  // current, since the editor writes it on every keystroke
+  const under = (p) => p === n.id || p.startsWith(n.id + "/");
+  if (editing && under(editing.path)) closeEditor(false);
+  const was = { x: n.x, y: n.y, open: expanded.has(n.id) };
+  for (const [path, d] of [...drafts]) {
+    if (under(path)) {
+      drafts.delete(path);
+      drafts.set(r.path + path.slice(n.id.length), d);
+    }
+  }
+  updateDrafts();
+  if (n.id === viewRoot) await showFullMap();
+  await settle(parentOf(n.id));
+  const moved = nodes.get(r.path);
+  if (moved) { moved.x = was.x; moved.y = was.y; }
+  if (moved && was.open) await expand(r.path);
+  await revealPath(r.path);
+  toast(`renamed to ${name}`);
+}
+
+async function trashEntry(n) {
+  if (READ_ONLY) { toast("cortex was started read-only", true); return; }
+  if (!n || n.tag || n.id === ROOT) return;
+  const under = (p) => p === n.id || p.startsWith(n.id + "/");
+  const lost = [...drafts.keys()].filter(under).length;
+  const what = n.dir ? `the folder ${n.name} and everything in it` : n.name;
+  const yes = await ask({
+    title: "Move to the trash?",
+    text: `${what} will go to your desktop's trash, where it can be restored.`
+      + (!lost ? "" : n.dir
+          ? ` Unsaved changes to ${lost} file${lost === 1 ? "" : "s"} in it will be lost.`
+          : " Its unsaved changes will be lost."),
+    ok: "move to trash", danger: true,
+  });
+  if (!yes) return;
+  const r = await fileOp({ op: "trash", path: n.id });
+  if (!r) return;
+  if (editing && under(editing.path)) closeEditor(false);
+  for (const path of [...drafts.keys()]) {
+    if (under(path)) drafts.delete(path);
+  }
+  updateDrafts();
+  if (n.id === viewRoot || viewRoot.startsWith(n.id + "/")) await showFullMap();
+  await settle(parentOf(n.id));
+  toast(`moved ${n.name} to the trash`);
+}
+
+function copyPath(n) {
+  navigator.clipboard.writeText(n.id).then(() => toast("path copied"),
+                                           () => toast("copy blocked", true));
+}
+
+/* Everything that can be done to a node, for the right-click menu and the
+   reader's file menu alike. "-" separates groups. */
+function fileItems(n) {
+  if (n.tag) return [];
+  const items = [];
+  const write = !READ_ONLY;
+  if (n.dir && write) {
+    items.push({ label: "New note here…", key: "n", run: () => newEntry(n.id) });
+    items.push({ label: "New folder here…", run: () => newEntry(n.id, "dir") });
+    items.push("-");
+  }
+  items.push({ label: "Show in file manager", run: () => act("reveal", n.id) });
+  items.push({ label: "Copy path", run: () => copyPath(n) });
+  if (write && n.id !== ROOT) {
+    items.push("-");
+    items.push({ label: "Rename…", key: "F2", run: () => renameEntry(n) });
+    items.push({ label: "Move to trash", key: "del", danger: true,
+                 run: () => trashEntry(n) });
+  }
+  return items;
+}
+
+/* ------------------------------------------------------------ ask sheet
+
+   The browser's prompt() and confirm() block the page and look like an
+   error. This is the same question, in the window's own clothes. */
+let askResolve = null;
+
+function ask({ title, text = "", value = null, select = null, ok = "ok",
+               danger = false }) {
+  return new Promise((resolve) => {
+    if (askResolve) askResolve(null);
+    askResolve = resolve;
+    closeMenu();
+    $("ask-title").textContent = title;
+    $("ask-text").textContent = text;
+    $("ask-text").hidden = !text;
+    const input = $("ask-input");
+    input.hidden = value === null;
+    input.value = value || "";
+    $("ask-error").hidden = true;
+    const okBtn = $("ask-ok");
+    okBtn.textContent = ok;
+    okBtn.classList.toggle("danger", danger);
+    $("ask").classList.add("open");
+    if (value === null) { okBtn.focus(); return; }
+    input.focus();
+    if (select) input.setSelectionRange(select[0], select[1]);
+    else input.select();
+  });
+}
+
+function answerAsk(yes) {
+  const input = $("ask-input");
+  let answer = null;
+  if (yes) {
+    answer = input.hidden ? true : input.value.trim();
+    if (answer === "") {
+      $("ask-error").textContent = "give it a name";
+      $("ask-error").hidden = false;
+      return;
+    }
+  }
+  $("ask").classList.remove("open");
+  const resolve = askResolve;
+  askResolve = null;
+  if (resolve) resolve(answer);
+}
+
+/* --------------------------------------------------------- context menu */
+function openMenu(x, y, title, items) {
+  const m = $("ctx");
+  m.textContent = "";
+  if (title) {
+    const head = document.createElement("div");
+    head.className = "ctx-head";
+    head.textContent = title;
+    m.appendChild(head);
+  }
+  let rows = 0;
+  for (const it of items) {
+    if (it === "-") {
+      if (!m.lastChild || m.lastChild.className === "ctx-sep") continue;
+      const sep = document.createElement("div");
+      sep.className = "ctx-sep";
+      m.appendChild(sep);
+      continue;
+    }
+    const b = document.createElement("button");
+    b.className = "ctx-item" + (it.danger ? " danger" : "");
+    const label = document.createElement("span");
+    label.textContent = it.label;
+    b.appendChild(label);
+    if (it.key) {
+      const k = document.createElement("span");
+      k.className = "k";
+      k.textContent = it.key;
+      b.appendChild(k);
+    }
+    b.addEventListener("click", () => { closeMenu(); it.run(); });
+    m.appendChild(b);
+    rows++;
+  }
+  if (!rows) return;
+  m.hidden = false;
+  m.style.left = Math.max(8, Math.min(x, W - 250)) + "px";
+  m.style.top = Math.max(8, Math.min(y, H - 34 * rows - 60)) + "px";
+}
+
+function closeMenu() {
+  $("ctx").hidden = true;
+}
+
+function menuFor(n) {
+  if (n.tag) {
+    return [{ label: focusMode ? "Show everything" : "Focus on this tag", key: "f",
+              run: () => { focusMode = !focusMode; recomputeNeighbours(); } }];
+  }
+  const items = [];
+  if (!n.dir) {
+    if (!READ_ONLY) items.push({ label: "Edit here", key: "i", run: () => startEdit(n) });
+    if (primaryEditor) {
+      items.push({ label: `Open in ${primaryEditor.label}`, key: "⏎",
+                   run: () => act("edit", n.id, primaryEditor.id) });
+    }
+    items.push({ label: "Open with default app", run: () => act("open", n.id) });
+  } else {
+    items.push({ label: expanded.has(n.id) ? "Collapse" : "Expand", key: "e",
+                 run: () => { expanded.has(n.id) ? collapse(n.id) : expand(n.id);
+                              if (sel === n) buildActions(n); } });
+    if (n.id !== viewRoot) {
+      items.push({ label: "Only this folder", key: "o", run: () => isolate(n.id) });
+    }
+    if (TERMINAL) {
+      items.push({ label: "Open a terminal here", run: () => act("shell", n.id) });
+    }
+  }
+  items.push("-");
+  return items.concat(fileItems(n));
+}
+
+function backgroundMenu() {
+  const here = nodes.get(viewRoot);
+  const name = here ? here.name : (CFG.title || "~");
+  const items = [];
+  if (!READ_ONLY) {
+    items.push({ label: `New note in ${name}…`, key: "n", run: () => newEntry(viewRoot) });
+    items.push({ label: "New folder…", run: () => newEntry(viewRoot, "dir") });
+    items.push("-");
+  }
+  items.push({ label: "Open another folder…", key: "p", run: () => openPlaces() });
+  if (viewRoot !== ROOT) items.push({ label: "Whole map", key: "b", run: () => showFullMap() });
+  items.push({ label: "Fit to screen", key: "0", run: () => fit() });
+  return items;
+}
+
+/* ---------------------------------------------------------------- places
+
+   Opening a folder used to mean quitting and typing a path into a terminal.
+   Now it is this sheet: type a path (folders complete as you type), or pick
+   a saved project or a recent folder. The server swaps what it maps and the
+   window reloads around it -- the one way to be sure nothing from the old
+   folder lingers in the new one. */
+let placesData = null, completeRows = [], completeIndex = -1, completeTimer = null;
+let completedFor = null;          // what the suggestions on show were for
+
+async function openPlaces() {
+  closeMenu();
+  $("places").classList.add("open");
+  $("pl-path").value = "";
+  hideComplete();
+  $("pl-path").focus();
+  try { placesData = await api("/api/places"); }
+  catch (err) { toast("could not reach cortex", true); return; }
+  renderPlaces();
+}
+
+function closePlaces() {
+  $("places").classList.remove("open");
+  hideComplete();
+}
+
+const shortPath = (p) =>
+  CFG.home && (p === CFG.home || p.startsWith(CFG.home + "/"))
+    ? "~" + p.slice(CFG.home.length) : p;
+
+function renderPlaces() {
+  const d = placesData;
+  if (!d) return;
+
+  const quick = $("pl-quick");
+  quick.textContent = "";
+  const chip = (label, path, title) => {
+    const b = document.createElement("button");
+    b.className = "ghost sm";
+    b.textContent = label;
+    b.title = title || path;
+    b.addEventListener("click", () => openFolder(path));
+    quick.appendChild(b);
+  };
+  if (d.parent) chip("↑ up one level", d.parent, `open ${shortPath(d.parent)}`);
+  if (d.home && d.home !== d.root) chip("home", d.home);
+
+  const lists = $("pl-lists");
+  lists.textContent = "";
+  const section = (title, rows, empty) => {
+    const h = document.createElement("h3");
+    h.textContent = title;
+    lists.appendChild(h);
+    if (!rows.length) {
+      const e = document.createElement("div");
+      e.className = "pl-empty";
+      e.textContent = empty;
+      lists.appendChild(e);
+    }
+    for (const r of rows) lists.appendChild(r);
+  };
+
+  const row = (name, path, opts = {}) => {
+    const b = document.createElement("button");
+    b.className = "pl-row" + (path === d.root ? " here" : "");
+    b.title = path;
+    if (name) {
+      const nm = document.createElement("span");
+      nm.className = "nm";
+      nm.textContent = name;
+      b.appendChild(nm);
+    }
+    const pth = document.createElement("span");
+    pth.className = "pth";
+    pth.textContent = shortPath(path);
+    b.appendChild(pth);
+    const tag = opts.missing ? "missing" : path === d.root ? "open now" : "";
+    if (tag) {
+      const t = document.createElement("span");
+      t.className = "tag" + (opts.missing ? " bad" : "");
+      t.textContent = tag;
+      b.appendChild(t);
+    }
+    if (opts.forget) {
+      const x = document.createElement("span");
+      x.className = "x";
+      x.textContent = "✕";
+      x.title = "forget this project — the folder itself is not touched";
+      x.addEventListener("click", (e) => { e.stopPropagation(); opts.forget(); });
+      b.appendChild(x);
+    }
+    b.addEventListener("click", () => { if (!opts.missing) openFolder(path); });
+    return b;
+  };
+
+  section("Projects", d.projects.map((p) => row(p.name, p.path, {
+    missing: p.missing, forget: () => projectOp("forget", p.name),
+  })), "None saved yet. Name the folder you are in, below, to keep it here.");
+  section("Recent", d.recent.map((p) => row(p.split("/").pop() || "/", p)),
+          "Folders you open will be listed here.");
+
+  const named = d.projects.find((p) => p.path === d.root);
+  const nameBox = $("pl-name");
+  nameBox.value = named ? named.name : (d.root.split("/").pop() || "");
+  $("pl-save-btn").textContent = named ? "rename project" : "save as project";
+
+  const launcher = $("pl-launcher");
+  launcher.textContent = "";
+  const l = d.launcher || {};
+  if (l.supported) {
+    const msg = document.createElement("span");
+    msg.textContent = l.installed ? "cortex is in your app menu."
+                                  : "Start cortex without a terminal:";
+    const b = document.createElement("button");
+    b.className = "ghost sm";
+    b.textContent = l.installed ? "remove it" : "add it to the app menu";
+    b.addEventListener("click", () => launcherOp(l.installed ? "remove" : "install"));
+    launcher.append(msg, b);
+  }
+  $("pl-quit").hidden = !CFG.canQuit;
+}
+
+async function projectOp(op, name) {
+  let r;
+  try { r = await post("/api/project", { op, name }); }
+  catch (err) { toast("could not reach cortex", true); return; }
+  if (!r.ok) { toast(r.error || "that did not work", true); return; }
+  placesData = r;
+  renderPlaces();
+  toast(op === "save" ? `saved as ${name}` : `forgot ${name}`);
+}
+
+async function saveProject() {
+  const name = $("pl-name").value.trim();
+  if (!name) { toast("give it a name", true); return; }
+  const was = placesData && placesData.projects.find((p) => p.path === placesData.root);
+  if (was && was.name !== name) await projectOp("forget", was.name);
+  await projectOp("save", name);
+}
+
+async function launcherOp(op) {
+  let r;
+  try { r = await post("/api/launcher", { op }); }
+  catch (err) { toast("could not reach cortex", true); return; }
+  if (!r.ok) { toast(r.error || "that did not work", true); return; }
+  if (placesData) { placesData.launcher = r.launcher; renderPlaces(); }
+  toast(op === "install" ? "added — look for cortex in your app menu"
+                         : "removed from the app menu");
+}
+
+let reloading = false;
+async function openFolder(path) {
+  if (!path) return;
+  if (drafts.size) {
+    // asked, not refused: a draft whose file has gone would otherwise keep
+    // this window in this folder for good
+    const yes = await ask({
+      title: "Leave unsaved changes behind?",
+      text: `${drafts.size} file${drafts.size === 1 ? " has" : "s have"} unsaved `
+        + "changes, which will be lost if another folder is opened now.",
+      ok: "discard and open", danger: true,
+    });
+    if (!yes) return;
+    drafts.clear();
+    updateDrafts();
+  }
+  // the old folder's layout is saved while it is still the open one
+  await saveLayout();
+  let r;
+  try { r = await post("/api/open", { path }); }
+  catch (err) { toast("could not reach cortex", true); return; }
+  if (!r.ok) { toast(r.error || "could not open that", true); return; }
+  reloading = true;
+  if (location.reload) location.reload();
+}
+
+/* Another window on this cortex opened a different folder. */
+let followed = false;
+function followRoot() {
+  if (followed) return;
+  followed = true;
+  if (drafts.size) {
+    toast("another window opened a different folder — save is no longer possible here", true);
+    return;
+  }
+  reloading = true;
+  if (location.reload) location.reload();
+}
+
+function hideComplete() {
+  const box = $("pl-complete");
+  box.hidden = true;
+  box.textContent = "";
+  completeRows = [];
+  completeIndex = -1;
+}
+
+async function completePath() {
+  const typed = $("pl-path").value;
+  if (!typed.trim()) { hideComplete(); completedFor = typed; return; }
+  let r;
+  try { r = await api("/api/dirs", { path: typed }); }
+  catch (err) { return; }
+  if ($("pl-path").value !== typed) return;          // typing moved on
+  completedFor = typed;
+  const box = $("pl-complete");
+  box.textContent = "";
+  completeRows = [];
+  completeIndex = -1;
+  for (const dir of r.dirs || []) {
+    const b = document.createElement("button");
+    b.className = "pl-row";
+    const pth = document.createElement("span");
+    pth.className = "pth";
+    pth.textContent = shortPath(dir) + "/";
+    b.appendChild(pth);
+    b.addEventListener("click", () => openFolder(dir));
+    b._path = dir;
+    box.appendChild(b);
+    completeRows.push(b);
+  }
+  box.hidden = !completeRows.length;
+}
+
+function moveComplete(step) {
+  if (!completeRows.length) return;
+  if (completeIndex >= 0) completeRows[completeIndex].classList.remove("on");
+  completeIndex = (completeIndex + step + completeRows.length) % completeRows.length;
+  const row = completeRows[completeIndex];
+  row.classList.add("on");
+  if (row.scrollIntoView) row.scrollIntoView({ block: "nearest" });
+}
+
+function placesKey(e) {
+  const input = $("pl-path");
+  if (e.key === "Escape") {
+    e.preventDefault();
+    if (!$("pl-complete").hidden) hideComplete(); else closePlaces();
+    return;
+  }
+  if (e.key === "ArrowDown") { e.preventDefault(); moveComplete(1); return; }
+  if (e.key === "ArrowUp") { e.preventDefault(); moveComplete(-1); return; }
+  if (e.key === "Tab" && input.value.trim()) {
+    // complete the way a shell does, and never let tab walk out of the box
+    // just because the suggestions are a keystroke behind
+    e.preventDefault();
+    tabComplete();
+    return;
+  }
+  if (e.key === "Enter") {
+    e.preventDefault();
+    enterPath();
+  }
+}
+
+/* Make sure the suggestions are for what is in the box right now. */
+async function freshCompletions() {
+  clearTimeout(completeTimer);
+  if (completedFor !== $("pl-path").value) await completePath();
+  return completeRows.map((r) => r._path);
+}
+
+async function tabComplete() {
+  const input = $("pl-path");
+  const picked = completeIndex >= 0 ? completeRows[completeIndex]._path : null;
+  const dirs = picked ? [picked] : await freshCompletions();
+  if (!dirs.length) return;
+  // one folder: take it and go on into it; several: as far as they agree
+  let common = dirs[0];
+  for (const d of dirs.slice(1)) {
+    let i = 0;
+    while (i < common.length && i < d.length && common[i] === d[i]) i++;
+    common = common.slice(0, i);
+  }
+  const next = shortPath(common) + (dirs.length === 1 ? "/" : "");
+  if (next.length >= input.value.length) input.value = next;
+  completePath();
+}
+
+/* Enter opens what is highlighted, or what was typed -- or, when what was
+   typed is only the start of one folder's name, that folder. */
+async function enterPath() {
+  const input = $("pl-path");
+  if (completeIndex >= 0) { openFolder(completeRows[completeIndex]._path); return; }
+  const typed = input.value.trim();
+  const dirs = await freshCompletions();
+  const want = typed.replace(/\/+$/, "");
+  const exact = dirs.find((d) => d === want || shortPath(d) === want);
+  openFolder(exact || (dirs.length === 1 && !typed.endsWith("/") ? dirs[0] : typed));
+}
+
+/* -------------------------------------------------------------- lifecycle
+
+   Closing the window is how cortex is quit when there is no terminal to
+   press ctrl-c in, so the page says hello when it opens and goodbye when it
+   closes, and the server leaves once the last one has gone. A reload says
+   both, a moment apart, which the server allows for. */
+const CLIENT = Math.random().toString(36).slice(2, 12);
+
+function hello() {
+  post("/api/hello", {}, { c: CLIENT }).catch(() => {});
+}
+
+function goodbye() {
+  if (navigator.sendBeacon) {
+    navigator.sendBeacon(String(apiURL("/api/bye", { c: CLIENT })), "bye");
+  }
+}
+
+async function quitCortex() {
+  if (drafts.size) {
+    const yes = await ask({
+      title: "Quit with unsaved changes?",
+      text: `${drafts.size} file${drafts.size === 1 ? " has" : "s have"} unsaved changes, which will be lost.`,
+      ok: "quit anyway", danger: true,
+    });
+    if (!yes) return;
+    drafts.clear();
+  }
+  closePlaces();
+  try { await post("/api/quit", {}); } catch (err) { /* gone already */ }
+  serverGone(true);
+}
+
+/* The program behind the window has stopped: say so once, plainly, and stop
+   asking it things. */
+function serverGone(quit) {
+  if (gone) return;
+  gone = true;
+  $("gone-text").textContent = quit
+    ? "You quit it. Start it again from your app menu, or from a terminal with cortex."
+    : TERMINAL === "here"
+      ? "The program behind this window is no longer running — the terminal it was in may have been closed. Start it again with cortex."
+      : "The program behind this window is no longer running. Start it again from your app menu.";
+  $("gone").classList.add("open");
+  if (quit && window.close) window.close();
 }
 
 // ------------------------------------------------------------------- search
@@ -1871,7 +2990,27 @@ function updateStats() {
 window.addEventListener("keydown", (e) => keyHandler(e));
 
 function keyHandler(e) {
+  // ctrl-s saves the open editor wherever focus is, and never the page
+  if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+    e.preventDefault();
+    if (editing) saveEdit();
+    return;
+  }
+  if ($("ask").classList.contains("open")) {
+    if (e.key === "Escape") answerAsk(false);
+    else if (e.key === "Enter" && e.target !== $("ask-ok")
+             && e.target !== $("ask-cancel")) answerAsk(true);
+    return;
+  }
+  if ($("gone").classList.contains("open")) return;
+  const tag = e.target && e.target.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA") return;
   if (e.target === qbox || e.target === $("sb-filter")) return;
+  if ($("places").classList.contains("open")) {
+    if (e.key === "Escape") closePlaces();
+    return;
+  }
+  if (!$("ctx").hidden && e.key === "Escape") { closeMenu(); return; }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   switch (e.key) {
     case "/":
@@ -1887,7 +3026,26 @@ function keyHandler(e) {
       }
       break;
     case "r":
-      if (sel && !sel.dir && !sel.tag) act("read", sel.id, null, selLine); break;
+      if (sel && !sel.dir && !sel.tag && TERMINAL === "here") {
+        act("read", sel.id, null, selLine);
+      }
+      break;
+    case "i":
+      // preventDefault, or the i is typed into the editor it just opened
+      if (sel && !sel.dir && !sel.tag) { e.preventDefault(); startEdit(sel); }
+      break;
+    case "n":
+      e.preventDefault();
+      newEntry(sel && !sel.tag ? parentOfNode(sel) : viewRoot);
+      break;
+    case "F2":
+      if (sel && !sel.tag) { e.preventDefault(); renameEntry(sel); }
+      break;
+    case "Delete":
+      if (sel && !sel.tag) { e.preventDefault(); trashEntry(sel); }
+      break;
+    case "p":
+      e.preventDefault(); openPlaces(); break;
     case "e":
       if (sel && sel.dir) expanded.has(sel.id) ? collapse(sel.id) : expand(sel.id); break;
     case "f":
@@ -1969,18 +3127,71 @@ $("btn-links").addEventListener("click", (e) => {
 });
 $("z-in").addEventListener("click", () => zoomAt(W / 2, H / 2, 1.25));
 $("z-out").addEventListener("click", () => zoomAt(W / 2, H / 2, 0.8));
+document.addEventListener("click", () => {
+  if (openDropdown) { openDropdown.classList.remove("open"); openDropdown = null; }
+});
+window.addEventListener("mousedown", (e) => {
+  if (!$("ctx").hidden && !(e.target && e.target.closest && e.target.closest("#ctx"))) {
+    closeMenu();
+  }
+});
+
+$("ask-ok").addEventListener("click", () => answerAsk(true));
+$("ask-cancel").addEventListener("click", () => answerAsk(false));
+$("ask").addEventListener("click", (e) => {
+  if (e.target.id === "ask") answerAsk(false);
+});
+
+$("btn-places").addEventListener("click", () => openPlaces());
+$("pl-close").addEventListener("click", () => closePlaces());
+$("places").addEventListener("click", (e) => {
+  if (e.target.id === "places") closePlaces();
+  else if (!(e.target.closest && e.target.closest(".pl-pathwrap"))) hideComplete();
+});
+$("pl-path").addEventListener("input", () => {
+  clearTimeout(completeTimer);
+  completeTimer = setTimeout(completePath, 120);
+});
+$("pl-path").addEventListener("keydown", (e) => placesKey(e));
+$("pl-name").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); saveProject(); }
+  else if (e.key === "Escape") closePlaces();
+});
+$("pl-save-btn").addEventListener("click", () => saveProject());
+$("pl-quit").addEventListener("click", () => quitCortex());
+$("stat-drafts").addEventListener("click", () => {
+  const first = drafts.keys().next().value;
+  if (first) revealPath(first);
+});
+$("gone-close").addEventListener("click", () => window.close && window.close());
+$("gone-retry").addEventListener("click", () => location.reload && location.reload());
 
 // --------------------------------------------------------------------- boot
 (async () => {
   buildFilters();
   showZoom();
   toggleSearchMode("names");        // label, placeholder and list, in one place
+  // the name identifies a folder; the path is in the tooltip
+  $("place-name").textContent = ROOT === CFG.home ? "~" : (ROOT.split("/").pop() || "/");
+  $("btn-places").title = `${CFG.title || ROOT} — open another folder (p)`;
+  $("stat-ro").hidden = !READ_ONLY;
+
+  hello();
+  window.addEventListener("pagehide", () => goodbye());
+  // the browser's own "leave this page?" is the one prompt worth its
+  // interruption: closing now would lose typing that was never saved
+  window.addEventListener("beforeunload", (e) => {
+    if (!drafts.size || gone) return;
+    e.preventDefault();
+    e.returnValue = "";
+  });
 
   try {
     const list = await api("/api/editors");
     editors = list.editors || [];
-    primaryEditor = editors.find((e) => e.env)
-                 || editors.find((e) => !e.gui) || editors[0] || null;
+    // the server lists them best first for how cortex was started: terminal
+    // editors first from a terminal, windowed ones first from an app menu
+    primaryEditor = editors.find((e) => e.env) || editors[0] || null;
   } catch (err) { /* actions degrade gracefully */ }
 
   await loadLayout();
@@ -2012,7 +3223,7 @@ $("z-out").addEventListener("click", () => zoomAt(W / 2, H / 2, 0.8));
     // only once it has stopped moving: saving mid-settle posts every position
     // in the graph to write down somewhere it is about to leave
     setInterval(() => { if (alpha < ALPHA_MIN) saveLayout(); }, 10000);
-    window.addEventListener("pagehide", () => saveLayout());
+    window.addEventListener("pagehide", () => { if (!reloading) saveLayout(); });
   }
   frame();
 })();

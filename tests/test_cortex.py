@@ -369,7 +369,8 @@ class TestReader(Tree):
 class TestActions(Tree):
     def setUp(self):
         super().setUp()
-        self.runner = ActionRunner()
+        # as if launched from a terminal, which CI is not
+        self.runner = ActionRunner(tty=True)
 
     def test_unknown_action_is_refused(self):
         got = self.runner.submit("rm -rf", self.root)
@@ -1148,7 +1149,7 @@ class TestServer(Tree):
 
     def setUp(self):
         super().setUp()
-        self.runner = ActionRunner()
+        self.runner = ActionRunner(tty=True)
         links = LinkIndex(self.scanner)
         self.watcher = Watcher()
         ctx = Context(self.scanner, links, self.runner, "tok",
@@ -1156,7 +1157,8 @@ class TestServer(Tree):
                       watcher=self.watcher)
         self.httpd = serve(ctx, 0)
         self.port = self.httpd.server_address[1]
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        threading.Thread(target=self.httpd.serve_forever, args=(0.05,),
+                         daemon=True).start()
         self.addCleanup(self.httpd.shutdown)
 
     def get(self, path):
@@ -1199,7 +1201,7 @@ class TestServer(Tree):
         self.assertIn("notes", {n["name"] for n in body})
 
     def test_the_page_is_served_with_its_config_injected(self):
-        with urlopen(f"http://127.0.0.1:{self.port}/", timeout=5) as r:
+        with urlopen(f"http://127.0.0.1:{self.port}/?t=tok", timeout=5) as r:
             page = r.read().decode()
         self.assertIn("window.CORTEX =", page)
         self.assertNotIn("__CONFIG__", page)
@@ -1271,7 +1273,7 @@ class TestServer(Tree):
         self.assertEqual(self.runner.q.qsize(), 1)
 
     def test_the_page_carries_a_content_security_policy(self):
-        with urlopen(f"http://127.0.0.1:{self.port}/", timeout=5) as r:
+        with urlopen(f"http://127.0.0.1:{self.port}/?t=tok", timeout=5) as r:
             policy = r.headers["Content-Security-Policy"]
             page = r.read().decode()
         self.assertIn("default-src 'none'", policy)
@@ -1284,7 +1286,7 @@ class TestServer(Tree):
 
     def test_the_nonce_is_fresh_on_every_request(self):
         def nonce():
-            with urlopen(f"http://127.0.0.1:{self.port}/", timeout=5) as r:
+            with urlopen(f"http://127.0.0.1:{self.port}/?t=tok", timeout=5) as r:
                 return r.headers["Content-Security-Policy"].split(
                     "'nonce-")[1].split("'")[0]
         self.assertNotEqual(nonce(), nonce())

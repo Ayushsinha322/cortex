@@ -54,6 +54,7 @@ EOF
 
 # --- python behaviour -------------------------------------------------------
 step "python" python3 tests/test_cortex.py
+step "python: the app" python3 tests/test_app.py
 
 # --- browser-side logic -----------------------------------------------------
 if command -v node >/dev/null; then
@@ -64,6 +65,9 @@ if command -v node >/dev/null; then
   step "refresh" node tests/refresh.test.js
   step "tags" node tests/tags.test.js
   step "view" node tests/view.test.js
+  step "editing" node tests/edit.test.js
+  step "files and folders" node tests/files.test.js
+  step "read-only" node tests/readonly.test.js
   step "performance" node tests/perf.test.js
 else
   printf '%s\n\n' "${dim}   node not installed - skipping the UI tests${off}"

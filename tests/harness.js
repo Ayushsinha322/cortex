@@ -91,6 +91,15 @@ function element(id, ctx2d) {
     focus() { el.focused = true; },
     blur() { el.focused = false; el.blurs = (el.blurs || 0) + 1; },
     select() {}, scrollTo() {}, scrollIntoView() {},
+    /* Enough of a text field for the editor: a caret, a selection, and the
+       one way app.js edits the text when execCommand is not there. */
+    selectionStart: 0, selectionEnd: 0,
+    setSelectionRange(a, b) { el.selectionStart = a; el.selectionEnd = b; },
+    setRangeText(text, start, end, mode) {
+      el.value = el.value.slice(0, start) + text + el.value.slice(end);
+      const at = mode === "end" ? start + text.length : start;
+      el.selectionStart = el.selectionEnd = at;
+    },
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 1600, height: 900 }),
   };
 
@@ -129,7 +138,8 @@ function element(id, ctx2d) {
      children  (path) -> node[]        what /api/children answers
      rootNode  ()     -> node          what /api/root answers
      links     ()     -> snapshot      what /api/links answers
-     editors   ()     -> entry[]       what /api/editors answers            */
+     editors   ()     -> entry[]       what /api/editors answers
+     api       {"/api/x": (params, body) -> answer}   anything else        */
 function harness(opts = {}) {
   const ROOT = opts.root || "/home/u/proj";
 
@@ -169,16 +179,27 @@ function harness(opts = {}) {
     }
   };
 
+  /* Window listeners are kept, so a test can fire pagehide or beforeunload
+     and see what the page does on its way out. */
+  const winEv = {};
   global.window = {
     CORTEX: Object.assign({
       token: "T", root: ROOT,
       autoExpand: opts.autoExpand || { depth: 0, budget: 0 },
     }, opts.config || {}),
     innerWidth: 1600, innerHeight: 900, devicePixelRatio: 2,
-    addEventListener() {},
+    addEventListener(k, fn) { (winEv[k] = winEv[k] || []).push(fn); },
     requestAnimationFrame: global.requestAnimationFrame,
   };
-  global.location = { origin: "http://127.0.0.1:9999" };
+  const fire = (type, init = {}) => {
+    const ev = Object.assign({ type, defaultPrevented: false,
+                               preventDefault() { ev.defaultPrevented = true; } }, init);
+    (winEv[type] || []).forEach((fn) => fn(ev));
+    return ev;
+  };
+  const reloads = [];
+  global.location = { origin: "http://127.0.0.1:9999",
+                      reload: () => reloads.push(Date.now()) };
   global.Blob = class {
     constructor(parts, opts) { this.parts = parts; this.type = (opts || {}).type; }
     text() { return this.parts.join(""); }
@@ -189,7 +210,16 @@ function harness(opts = {}) {
     return "blob:stub/" + blobs.length;
   };
   global.URL.revokeObjectURL = () => {};
-  global.navigator = { clipboard: { writeText: async () => {} } };
+  const beacons = [];
+  // node 21 and later have a navigator of their own, which plain assignment
+  // silently fails to replace
+  Object.defineProperty(global, "navigator", {
+    configurable: true, writable: true,
+    value: {
+      clipboard: { writeText: async () => {} },
+      sendBeacon: (url, data) => { beacons.push({ url: String(url), data }); return true; },
+    },
+  });
   global.Event = class { constructor(t) { this.type = t; } };
   global.MouseEvent = class {
     constructor(t, o = {}) { Object.assign(this, o); this.type = t; }
@@ -216,9 +246,21 @@ function harness(opts = {}) {
   const layoutOf = opts.layout || (() => ({ positions: {}, cam: null }));
   const searchOf = opts.search || (() => ({ results: [], count: 0 }));
 
+  const routes = opts.api || {};
+  /* Set to make every request fail the way fetch does when the server has
+     gone: a rejected promise, not an error status. */
+  const net = { down: false };
+
   global.fetch = async (url, init) => {
     const u = String(url);
     sent.push({ url: u, init, body: init && init.body ? JSON.parse(init.body) : null });
+    if (net.down) throw new TypeError("Failed to fetch");
+    const route = new URL(u, "http://127.0.0.1:9999").pathname;
+    if (routes[route]) {
+      const params = Object.fromEntries(new URL(u, "http://127.0.0.1:9999").searchParams);
+      const answer = await routes[route](params, init && init.body ? JSON.parse(init.body) : null);
+      return { ok: true, status: 200, json: async () => answer };
+    }
     const q = decodeURIComponent((u.split("q=")[1] || "").split("&")[0]);
     const body =
         u.includes("/api/root") ? rootNode()
@@ -238,6 +280,10 @@ function harness(opts = {}) {
 
   /* Run app.js, then let its boot-time awaits resolve and paint once. */
   async function boot() {
+    // the page loads these two first, and the reader calls into both
+    for (const lib of ["markdown.js", "highlight.js"]) {
+      new Function(fs.readFileSync(path.join(path.dirname(SRC), lib), "utf8"))();
+    }
     new Function(fs.readFileSync(SRC, "utf8"))();     // app.js is an IIFE
     await new Promise((r) => setTimeout(r, 60));
     pump(1);
@@ -258,8 +304,28 @@ function harness(opts = {}) {
                        preventDefault() {}, stopPropagation() {} });
   }
 
+  /* A key pressed with focus on an element, as the element's own listeners
+     would see it; mods is {ctrlKey, shiftKey, ...}. Returns the event, so a
+     test can ask whether the default was prevented. */
+  function press(el, name, mods = {}) {
+    const ev = Object.assign({
+      type: "keydown", key: name, target: el, defaultPrevented: false,
+      ctrlKey: false, metaKey: false, altKey: false, shiftKey: false,
+      preventDefault() { ev.defaultPrevented = true; }, stopPropagation() {},
+    }, mods);
+    el.dispatchEvent(ev);
+    return ev;
+  }
+
+  /* Type into a field: replace the selection and say so, as a browser would. */
+  function type(el, text) {
+    el.setRangeText(text, el.selectionStart, el.selectionEnd, "end");
+    el.dispatchEvent({ type: "input", target: el });
+  }
+
   return {
-    ROOT, byId, pump, boot, sent, blobs, downloads, typeSearch, key,
+    ROOT, byId, pump, boot, sent, blobs, downloads, typeSearch, key, press, type,
+    reloads, beacons, net, fire,
     el: (id) => global.document.getElementById(id),
   };
 }

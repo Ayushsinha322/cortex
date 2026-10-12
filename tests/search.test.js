@@ -55,6 +55,7 @@ const hits = () => el("hits");
 const rows = () => hits().children.filter((c) => c.classList.contains("hit"));
 const lastPost = () => [...sent].reverse().find((s) => s.url.includes("/api/action"));
 const notes = () => hits().children.filter((c) => c.className === "hits-note");
+const primaryButton = () => el("p-acts").children.find((c) => c.className === "primary");
 const marked = () => rows().findIndex((r) => r.classList.contains("on"));
 
 (async () => {
@@ -106,7 +107,7 @@ const marked = () => rows().findIndex((r) => r.classList.contains("on"));
         el("p-meta").textContent);
 
   // --- the line reaches the editor ----------------------------------------
-  el("p-acts").children[0].click();
+  primaryButton().click();
   await new Promise((r) => setTimeout(r, 20));
   check("the editor is asked to open at that line",
         lastPost() && lastPost().body.line === 7 && lastPost().body.kind === "edit",
@@ -114,7 +115,7 @@ const marked = () => rows().findIndex((r) => r.classList.contains("on"));
 
   // --- the line does not outlive the selection -----------------------------
   D.select(OLD);                                  // a plain select, not a hit
-  el("p-acts").children[0].click();
+  primaryButton().click();
   await new Promise((r) => setTimeout(r, 20));
   check("selecting a file the ordinary way forgets the line",
         lastPost().body.line === null || lastPost().body.line === undefined,

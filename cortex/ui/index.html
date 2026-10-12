@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>cortex — __TITLE__</title>
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -27,6 +28,10 @@
 <header id="bar">
   <button id="sb-toggle" class="ghost icon" title="Directories (s)">&#9776;</button>
   <div class="brand"><span class="dot"></span>cortex</div>
+  <!-- the folder being mapped; click to open another one -->
+  <button id="btn-places" class="place" title="Open another folder (p)">
+    <span id="place-name"></span><span class="caret">&#9662;</span>
+  </button>
   <button id="scope" class="scope" hidden>
     <span id="scope-name"></span><span class="x">&#10005;</span>
   </button>
@@ -58,6 +63,8 @@
   <span id="stat-index" class="muted">indexing…</span>
   <span class="sep"></span>
   <span id="stat-git" class="muted" hidden></span>
+  <span id="stat-drafts" class="drafts" hidden></span>
+  <span id="stat-ro" class="muted" hidden>read-only</span>
 </div>
 
 <!-- bottom right: zoom -->
@@ -94,6 +101,61 @@
 <!-- overlays -->
 <div id="toast"></div>
 
+<!-- right-click on a node, or on empty canvas -->
+<div id="ctx" class="ctx" hidden></div>
+
+<!-- a name to type, or a yes/no -- never the browser's own prompt() -->
+<div id="ask" class="modal">
+  <div class="sheet glass ask">
+    <h2 id="ask-title"></h2>
+    <p id="ask-text"></p>
+    <input id="ask-input" type="text" spellcheck="false" autocomplete="off">
+    <div id="ask-error" hidden></div>
+    <div class="ask-btns">
+      <button id="ask-cancel" class="ghost">cancel</button>
+      <button id="ask-ok" class="primary">ok</button>
+    </div>
+  </div>
+</div>
+
+<!-- folders: open another, the saved projects, the recent ones -->
+<div id="places" class="modal">
+  <div class="sheet glass places">
+    <div class="pl-head">
+      <h2>Open a folder</h2>
+      <button id="pl-close" class="ghost sm">esc</button>
+    </div>
+    <div class="pl-pathwrap">
+      <input id="pl-path" type="text" spellcheck="false" autocomplete="off"
+             placeholder="type a path — ~/notes, /srv/project">
+      <div id="pl-complete" hidden></div>
+    </div>
+    <div id="pl-quick"></div>
+    <div id="pl-lists"></div>
+    <div class="pl-save">
+      <input id="pl-name" type="text" spellcheck="false" autocomplete="off"
+             placeholder="name this folder to keep it here">
+      <button id="pl-save-btn" class="ghost">save as project</button>
+    </div>
+    <div class="pl-foot">
+      <span id="pl-launcher"></span>
+      <button id="pl-quit" class="ghost sm" hidden>quit cortex</button>
+    </div>
+  </div>
+</div>
+
+<!-- shown when the program behind the window has gone -->
+<div id="gone" class="modal">
+  <div class="sheet glass">
+    <h2>cortex has stopped</h2>
+    <p id="gone-text"></p>
+    <div class="ask-btns">
+      <button id="gone-retry" class="ghost">try again</button>
+      <button id="gone-close" class="primary">close this window</button>
+    </div>
+  </div>
+</div>
+
 <div id="help" class="modal">
   <div class="sheet glass">
     <h2>cortex</h2>
@@ -107,7 +169,14 @@
       <dt><kbd>↑ ↓</kbd></dt><dd>in the search box: move through the results</dd>
       <dt><kbd>enter</kbd></dt><dd>in the search box: go to the highlighted result</dd>
       <dt><kbd>enter</kbd></dt><dd>open selection in your default editor</dd>
-      <dt><kbd>r</kbd></dt><dd>read selection in the terminal</dd>
+      <dt><kbd>i</kbd></dt><dd>edit the selected file right here</dd>
+      <dt><kbd>ctrl s</kbd></dt><dd>in the editor: save</dd>
+      <dt><kbd>n</kbd></dt><dd>new note in the selected folder</dd>
+      <dt><kbd>F2</kbd></dt><dd>rename the selection</dd>
+      <dt><kbd>delete</kbd></dt><dd>move the selection to the trash</dd>
+      <dt><kbd>p</kbd></dt><dd>open another folder, or a saved project</dd>
+      <dt><kbd>right-click</kbd></dt><dd>everything you can do to a node</dd>
+      <dt><kbd>r</kbd></dt><dd>read selection in the terminal cortex started in</dd>
       <dt><kbd>e</kbd></dt><dd>expand / collapse the selected folder</dd>
       <dt><kbd>f</kbd></dt><dd>focus mode — hide everything not connected</dd>
       <dt><kbd>c</kbd></dt><dd>show / hide the connections list in the reader</dd>
@@ -118,8 +187,10 @@
       <dt><kbd>m</kbd></dt><dd>full screen the reader — for PDFs, images, long notes</dd>
       <dt><kbd>esc</kbd></dt><dd>leave full screen, or close the reader</dd>
     </dl>
-    <p class="muted">Editor actions run in the terminal you launched cortex from.
-       Quit the editor and the graph is still there, still live.</p>
+    <p class="muted">Terminal editors run in the terminal you launched cortex
+       from, or in a terminal window of their own when it was started from
+       the app menu. Quit the editor and the graph is still there, still
+       live. Closing this window quits cortex.</p>
     <button id="help-close" class="ghost">got it</button>
   </div>
 </div>

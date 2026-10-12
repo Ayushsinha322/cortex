@@ -6,21 +6,21 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Ayushsinha322/cortex/blob/main/LICENSE)
 [![No dependencies](https://img.shields.io/badge/dependencies-none-brightgreen.svg)](https://github.com/Ayushsinha322/cortex/blob/main/pyproject.toml)
 
-**See your files as a graph. Read them. Open them in your editor — in the
-terminal you started from.**
+**See your files as a graph. Read them, write in them, and open them in your
+editor — from your app menu, or from the terminal you started in.**
 
 **[Try it in your browser →](https://ayushsinha322.github.io/cortex/demo/)** —
 the real UI on a frozen copy of this repository, nothing to install.
 
 Point `cortex` at a folder and it draws everything inside as a living map:
 folders, notes, code, PDFs, and the links between them. Click a node to read
-the file. Press <kbd>Enter</kbd> and it opens in Neovim, in your terminal, right
-where you were.
+the file. Press <kbd>i</kbd> and edit it right there. Press <kbd>Enter</kbd> and
+it opens in Neovim, in your terminal, right where you were.
 
 ![Clicking a node opens the file; pressing Enter opens it in Neovim in the terminal cortex was launched from](https://raw.githubusercontent.com/Ayushsinha322/cortex/main/docs/demo.gif)
 
 No dependencies. No database. No import step. It reads your disk directly, and
-it is about 5,400 lines of Python standard library and vanilla JavaScript.
+it is about 8,400 lines of Python standard library and vanilla JavaScript.
 
 ---
 
@@ -29,11 +29,15 @@ it is about 5,400 lines of Python standard library and vanilla JavaScript.
 - [What problem it solves](#what-problem-it-solves)
 - [Install](#install)
 - [First run](#first-run)
+- [Without a terminal](#without-a-terminal)
 - [Reading files](#reading-files)
+- [Editing files](#editing-files)
+- [New, rename, trash](#new-rename-trash)
 - [Following the links](#following-the-links)
 - [Searching](#searching)
 - [Opening files in your editor](#opening-files-in-your-editor)
 - [Working on one project](#working-on-one-project)
+- [Opening another folder](#opening-another-folder)
 - [Reading the graph](#reading-the-graph)
 - [Every command and key](#every-command-and-key)
 - [How it works](#how-it-works)
@@ -55,6 +59,7 @@ cortex maps what is really on your disk:
 | What it can see             | one vault you curate        | any folder, including your whole home directory |
 | Understands code            | no                          | yes — Python, JS/TS, Go, Rust, C, shell |
 | Links it draws              | `[[wikilinks]]`             | wikilinks **and** resolved code imports |
+| Edits a note in place       | yes                         | yes, and refuses to save over a change it did not see |
 | Opens a file in Neovim      | no                          | yes, in your real terminal |
 | Reads PDFs                  | via a plugin                | built in |
 | Setup before first use      | create and index a vault    | none |
@@ -63,6 +68,10 @@ cortex maps what is really on your disk:
 The part no note app can do: cortex is launched **from** a terminal and keeps
 it. Clicking "Neovim" runs `nvim` on your TTY. You edit, you quit, and you are
 back at the graph — still open, still where you left it.
+
+And the terminal is optional. Put cortex in your app menu and it is an app:
+open a folder, write a note, rename it, throw it away, all from the window.
+[Without a terminal](#without-a-terminal) says what changes.
 
 ---
 
@@ -100,6 +109,18 @@ Prefer not to install anything? Run it straight from the clone:
 python3 ~/cortex/cortex.py
 ```
 
+### In your app menu
+
+```bash
+cortex --install-launcher
+```
+
+That is the last time you need a terminal for it. cortex appears in your app
+menu (Linux) or in `~/Applications` (macOS), and starts like any other app.
+`install.sh` does this for you; with `pipx`, run it once yourself, or click
+**add it to the app menu** in the window's folder sheet (<kbd>p</kbd>).
+`cortex --remove-launcher` takes it out again.
+
 ---
 
 ## First run
@@ -124,11 +145,12 @@ Your terminal stays where it is and prints what it is doing:
   url       http://127.0.0.1:41277/?t=...
   window    opened with google-chrome
 
-  ready. click a node in the window; actions land here. ctrl-c to quit.
+  ready. click a node in the window; actions land here. close the window or ctrl-c to quit.
 ```
 
-Leave that terminal alone — it is where your editor will appear.
-<kbd>Ctrl-C</kbd> when you are done.
+Leave that terminal alone — it is where your editor will appear. Close the
+window when you are done, and cortex quits with it; <kbd>Ctrl-C</kbd> works
+too.
 
 **Getting around the graph:**
 
@@ -149,6 +171,37 @@ deleting it costs one re-settle, and `--no-layout` turns it off.
 Nothing is loaded until you ask for it. A home directory can be hundreds of
 gigabytes; cortex reads one folder per double-click, so it does not care how
 big yours is.
+
+---
+
+## Without a terminal
+
+Started from the app menu, cortex has no terminal of its own, and nothing about
+using it needs one:
+
+- **It opens where you left off.** With no folder named, it reopens the last
+  folder you had open. Press <kbd>p</kbd> for another one.
+- **You can write without leaving the window.** <kbd>i</kbd> edits the selected
+  file in place, and <kbd>n</kbd>, <kbd>F2</kbd> and <kbd>Delete</kbd> make,
+  rename and trash files — see [Editing files](#editing-files).
+- **Windowed editors come first.** The editor button is VS Code, Zed, Kate or
+  whichever windowed editor you have, unless `$EDITOR` says otherwise.
+- **Terminal editors still work.** Choose Neovim and it opens in a terminal
+  window of its own — your desktop's terminal, or `$TERMINAL` — which closes
+  when you quit the editor. If the editor fails, that window stays open long
+  enough to read why.
+- **Closing the window quits it.** A reload does not count; closing does.
+  There is also a **quit cortex** button in the folder sheet.
+- **If it stops, the window says so.** Rather than buttons that silently do
+  nothing.
+- **Errors go to a file**, `~/.cache/cortex/cortex.log`, since there is no
+  terminal to print them to.
+
+An app menu does not read your `~/.bashrc`, so a launcher would not normally
+know about editors installed in `~/.local/bin` or the `$EDITOR` you set there.
+`--install-launcher` writes down your `PATH`, `$EDITOR` and `$VISUAL` as they
+are in the shell you run it from, in a small script beside the menu entry.
+Install again after changing them, or edit the script.
 
 ---
 
@@ -182,6 +235,80 @@ back; a second <kbd>esc</kbd> closes the reader.
 The file is not re-rendered when you switch, so a PDF keeps its page and scroll
 position, and at full width your browser's viewer regains its page thumbnails,
 outline and zoom controls.
+
+---
+
+## Editing files
+
+Press <kbd>i</kbd>, or **edit** in the reader, and the reader becomes the
+editor. <kbd>Ctrl-S</kbd> saves; <kbd>esc</kbd> goes back to reading.
+
+```
+  ● unsaved                         revert  preview  save  close
+  ─────────────────────────────────────────────────────────────
+  # Plan
+
+  - ship the editor
+  - [ ] write the release notes
+  - [ ] |
+```
+
+It is a plain text box, on purpose: what it saves is exactly what you typed.
+The few keys whose absence you would feel at once are there — <kbd>tab</kbd>
+indents the way the file already does (tabs in a Go file, four spaces in
+Python), and <kbd>enter</kbd> keeps the indentation and carries a list on to
+its next item, or ends it on an empty one. **preview** renders a markdown file
+as it stands, unsaved changes and all. Opened from a content-search hit, the
+caret starts on that line.
+
+**Nothing you type is lost.**
+
+- Move to another file mid-edit and the draft is kept. Its node gets a dashed
+  ring, the corner says how many are unsaved, and the file opens straight back
+  into the draft when you return to it.
+- Closing the window with a draft open asks first.
+- The graph refreshing underneath you leaves the editor alone.
+
+**A save never lands on top of a change it did not see.** If the file changed
+on disk since you opened it — your editor, `git pull`, a sync client — the save
+is refused and you choose: **keep mine** or **take theirs**. If the file was
+deleted meanwhile, **save it again** puts it back.
+
+**A save keeps the file the way it was.** Windows line endings stay Windows
+line endings, a byte-order mark stays, and the file keeps its permissions, its
+owner, its hard links and its extended attributes. On Linux the new text is
+written beside the file and swapped in with one rename, so a full disk or a
+crash mid-save leaves the old file whole — unless swapping would lose one of
+those things, in which case it is written in place, as most editors write.
+A file that mixes line endings says so when you open it: saving evens them out
+to the one it mostly uses.
+
+It will not open what it could not save faithfully: binary files, text that is
+not UTF-8, and anything over 2 MB. Those go to your editor, as before.
+
+---
+
+## New, rename, trash
+
+| Key | Does |
+| --- | ---- |
+| <kbd>n</kbd> | new note in the selected folder (or beside the selected file) |
+| <kbd>F2</kbd> | rename the selection |
+| <kbd>Delete</kbd> | move the selection to the trash |
+| right-click | all of the above, and more, on any node or on empty space |
+
+A name without an extension becomes a `.md` note, which opens ready to write
+in. **Nothing is ever deleted.** "Delete" moves to your desktop's own trash —
+the one Dolphin, Nautilus and Finder show — so anything thrown away from cortex
+can be restored from there. It asks first.
+
+Rename and trash act on what you clicked: a symlink is renamed or trashed
+itself, never the file it points to. And as everywhere else in cortex, nothing
+outside the folder you opened can be touched.
+
+`cortex --read-only` takes all of this away — no editing, no new, rename or
+trash — for when you want the guarantee that a browsing session changes
+nothing.
 
 ---
 
@@ -279,12 +406,18 @@ Other actions on every file:
 
 | Button | What happens |
 | ------ | ------------ |
+| **edit** | edits it right here, in the reader — see [Editing files](#editing-files) |
 | **Neovim** (or your first editor) | opens it in your terminal |
 | **read** | pages through it with `bat` or `less` |
 | **editor ▾** | any other editor you have installed |
 | **shell here** | drops you into `$SHELL` in that folder; exit to return |
 | **open ⧉** | hands the file to your desktop's default app |
+| **file ▾** | show in your file manager, copy the path, rename, trash |
 | **focus** | hides every node not linked to this one |
+
+Started from the app menu, **read** is gone — the reader is right there — and
+**shell here** becomes **terminal here**, which opens a terminal window in that
+folder.
 
 **If you have set `$EDITOR` or `$VISUAL`, that is what <kbd>Enter</kbd> uses.**
 You have already told your system which editor you want; cortex is not going to
@@ -319,7 +452,8 @@ cortex --forget myproject             # remove one
 ```
 
 Saved as plain JSON in `~/.config/cortex/projects.json`, so you can edit it by
-hand.
+hand — or from the window, below. With cortex in your app menu, each saved
+project is also a right-click action on its icon.
 
 How much opens on launch:
 
@@ -378,6 +512,38 @@ security boundary, and narrowing never lets you reach outside it.
 most links have one end off-screen, so the graph looks like a plain tree. Inside
 one project nearly every link resolves at once. The screenshots above are a
 26-file project: 37 nodes and **22 of 22** semantic links drawn.
+
+---
+
+## Opening another folder
+
+Click the folder's name next to the logo, or press <kbd>p</kbd>:
+
+```
+  OPEN A FOLDER
+  ┌──────────────────────────────────────────┐
+  │ ~/projects/al                            │
+  └──────────────────────────────────────────┘
+    ~/projects/alpha/
+  ↑ up one level   home
+
+  PROJECTS
+    work      ~/code/work
+    thesis    ~/Documents/thesis              missing
+  RECENT
+    alpha     ~/projects/alpha                open now
+```
+
+Type a path and folders complete as you go — <kbd>tab</kbd> completes the way
+a shell does, <kbd>enter</kbd> opens. Or pick a saved project or a recent
+folder. The window reloads around the new folder; nothing from the old one
+comes along.
+
+**save as project** names the folder you are in, the same as `--save`. The ✕
+beside a project forgets its name; the folder itself is not touched.
+
+Unsaved edits keep you where you are until you save or revert them, so a
+switch can never quietly throw your typing away.
 
 ---
 
@@ -502,6 +668,10 @@ cortex [folder] [options]
       --no-links          skip the semantic index (instant start)
       --no-watch          do not notice files changing while the window is open
       --no-layout         do not remember where the nodes were last time
+      --read-only         never change a file: no editing, new, rename or trash
+
+      --install-launcher  put cortex in your app menu, then exit
+      --remove-launcher   take it out again, then exit
 
   -w, --window MODE       app (default) | tab | none
   -b, --browser BIN       force a particular browser
@@ -516,6 +686,14 @@ cortex [folder] [options]
 | <kbd>↑</kbd> <kbd>↓</kbd> | in the search box: move through the results |
 | <kbd>enter</kbd> | in the search box: go to the highlighted result |
 | <kbd>Enter</kbd> | open the selection in your editor, in the terminal |
+| <kbd>i</kbd> | edit the selection right here |
+| <kbd>ctrl</kbd> <kbd>s</kbd> | in the editor: save |
+| <kbd>esc</kbd> | in the editor: back to reading, keeping any draft |
+| <kbd>n</kbd> | new note in the selected folder |
+| <kbd>F2</kbd> | rename the selection |
+| <kbd>Delete</kbd> | move the selection to the trash |
+| <kbd>p</kbd> | open another folder, or a saved project |
+| right-click | everything you can do to a node |
 | <kbd>r</kbd> | page through the selection in the terminal |
 | <kbd>m</kbd> | full screen the reader |
 | <kbd>e</kbd> | expand / collapse the selected folder |
@@ -562,9 +740,10 @@ you type `cortex`
         window ──┤ "open this file in nvim"
                  ▼
         the terminal runs nvim in the foreground, on your TTY
+        (started from the app menu: a terminal window of its own)
 ```
 
-Four ideas worth knowing:
+Five ideas worth knowing:
 
 **Nothing is read until you ask.** One folder per expansion. Whether you point
 it at a 20-file project or a 140GB home directory, launch takes the same time.
@@ -589,10 +768,43 @@ threshold and blink. cortex cools the simulation to a freeze and then stops
 drawing entirely, so an idle graph costs no CPU and no battery. Touching
 anything wakes it.
 
-**Security.** This API can start editors and shells, so: it binds to
-`127.0.0.1` only, requires a random token regenerated every run, and resolves
-every path with `realpath` to prove it is genuinely inside the folder you mapped
-before touching it. Symlinks pointing out are refused.
+**Closing the window is quitting.** The page says hello as it opens and
+goodbye as it closes, and once the last goodbye has gone a few seconds without a
+new hello — a reload is both, a moment apart — cortex exits. There is
+deliberately no timeout on silence: a browser may freeze a minimised window for
+as long as it likes, and a cortex that quit under a minimised window would be
+found dead when you came back to it. `--window none` never quits by itself,
+since the page could be anywhere, even at the far end of an SSH tunnel.
+
+**Security.** This API can start editors and shells and write files, so: it
+binds to `127.0.0.1` only, and requires a random token, regenerated every run,
+for everything including the page itself. It answers only requests addressed to
+`127.0.0.1` or `localhost`, so a web page whose DNS has been pointed at your
+machine (DNS rebinding) is turned away before it can read the token out of the
+page. Every path is resolved with `realpath` to prove it is genuinely inside the
+folder you mapped before anything touches it, and symlinks pointing out are
+refused. Writing follows the same rule; rename and trash check the folder an
+item is in, so that a symlink is renamed or trashed itself rather than whatever
+it points at.
+
+The token is kept from other people on the same machine too. Any user can read
+another's command lines, so the browser is never handed the address itself: it
+is handed a page only you can read, which forwards to the address and is
+deleted as soon as the window has loaded. The log, which can record the
+address, is readable only by you. Changes must come from the window: a request
+from any other site is refused, as is anything that is not JSON, which a page
+elsewhere cannot send without asking first. A file shown raw — an SVG opened in
+a tab of its own, say — is sandboxed, so a script inside it cannot act as
+cortex.
+
+The token never appears on a command line, where `ps` would show it to every
+user on the machine: the browser is handed a page only you can read, which
+forwards it to the address and is deleted once the window has loaded. (A
+snap-packaged browser cannot read that page, so it is given the address
+instead.) Anything that changes something must arrive as JSON from this
+window's own origin, which another site's page cannot send. And a file from
+disk opened on its own — an SVG from a repository you cloned, in a new tab — is
+sandboxed, so whatever script it carries cannot reach the API.
 
 The page is served under a strict `Content-Security-Policy`, because a markdown
 file in a repository you cloned is untrusted input. The renderer escapes HTML;
@@ -617,17 +829,23 @@ cortex/
 │   ├── watch.py          noticing the disk change under an open window
 │   ├── layout.py         where the nodes were, per mapped folder
 │   ├── reader.py         per-filetype preview extraction
-│   ├── actions.py        editor detection, terminal handoff
-│   ├── server.py         local HTTP API, token check, path guards
+│   ├── files.py          saving, new, rename and trash
+│   ├── places.py         saved projects, recent folders, typing a path
+│   ├── actions.py        editor detection, terminal handoff, terminal windows
+│   ├── lifecycle.py      noticing the window has closed
+│   ├── desktop.py        the app-menu launcher
+│   ├── server.py         local HTTP API, token and host checks, path guards
 │   └── ui/
 │       ├── index.html
 │       ├── style.css
-│       ├── app.js        canvas force layout and the reader panel
+│       ├── app.js        the graph, the reader and editor, the sheets
 │       ├── markdown.js   markdown renderer, no dependencies
-│       └── highlight.js  syntax highlighter, no dependencies
+│       ├── highlight.js  syntax highlighter, no dependencies
+│       └── icon.svg      the favicon, and the launcher's icon
 └── tests/
     ├── run                  runs everything
     ├── test_cortex.py       scanner, links, reader, actions, HTTP surface
+    ├── test_app.py          saving, files, folders, quitting, the launcher
     ├── harness.js           the stub DOM the browser-side tests run against
     ├── markdown.test.js     the markdown renderer
     ├── render-loop.test.js  cooling and repaint gating
@@ -636,7 +854,10 @@ cortex/
     ├── refresh.test.js      the graph keeping up with the disk
     ├── perf.test.js         opening a folder staying cheap as links pile up
     ├── tags.test.js         tag nodes, and their refusal to act like files
-    └── view.test.js         remembered layout, arrow keys, saving a picture
+    ├── view.test.js         remembered layout, arrow keys, saving a picture
+    ├── edit.test.js         the editor, drafts and conflicts
+    ├── files.test.js        new, rename, trash, right-click, other folders
+    └── readonly.test.js     --read-only, and the window outliving cortex
 ```
 
 ---
@@ -646,6 +867,7 @@ cortex/
 ```bash
 tests/run                          # all of it
 python3 tests/test_cortex.py       # python only
+python3 tests/test_app.py
 node tests/markdown.test.js
 node tests/render-loop.test.js
 node tests/connections.test.js
@@ -653,10 +875,13 @@ node tests/search.test.js
 node tests/refresh.test.js
 node tests/tags.test.js
 node tests/view.test.js
+node tests/edit.test.js
+node tests/files.test.js
+node tests/readonly.test.js
 node tests/perf.test.js
 ```
 
-358 tests, no framework to install — `unittest` and plain `node`. They run on
+575 tests, no framework to install — `unittest` and plain `node`. They run on
 every push against Python 3.9 and 3.13 on Linux, and 3.13 on macOS. `tests/run`
 also byte-checks every source file, because raw NUL bytes once got into two UI
 files and made git treat them as binary, silently breaking diffs and `grep`.
@@ -673,32 +898,51 @@ answer.
 ## FAQ
 
 **Does it change my files?**
-No. cortex only ever reads. The only thing it writes is
-`~/.config/cortex/projects.json` when you use `--save`. Your editor can of
-course write, but that is your editor.
+Only when you ask it to: saving in the editor, or new, rename and trash. A save
+is refused if the file changed since you opened it, and nothing is ever deleted
+— trash is your desktop's trash. Start it with `--read-only` and it changes
+nothing at all. Of its own accord it writes only its own state: saved projects
+in `~/.config/cortex/`, and recent folders, layouts and a log in
+`~/.cache/cortex/`.
 
 **Does anything leave my machine?**
 No. The server binds to `127.0.0.1`, there are no external requests, and no CDN
 — the CSS and JavaScript are served from the folder you cloned.
 
 **Can other users on this machine see it?**
-No. It listens on loopback only and every request needs a token that is
-regenerated on each launch.
+No. It listens on loopback only, every request needs a token that is
+regenerated on each launch, and that token is kept off the command line and out
+of anything other users can read — see [Security](#how-it-works).
 
 **Why a browser window and not a terminal UI?**
 Because the graph needs to be pretty and PDFs need to be readable, and neither
-survives being drawn in text. The browser is the renderer; the terminal is still
-the place work happens.
+survives being drawn in text. The browser is the renderer; the terminal is
+there when you want it, and not needed when you do not.
 
 **Which editor does <kbd>Enter</kbd> open?**
 Whatever `$VISUAL` or `$EDITOR` says, if either is set and names something
-installed. Otherwise the first terminal editor found on your `PATH`. The
-**editor ▾** menu has the rest, and the reader's button always shows which one
-<kbd>Enter</kbd> will use.
+installed. Otherwise, from a terminal, the first terminal editor found on your
+`PATH`; from the app menu, the first windowed one. The **editor ▾** menu has the
+rest, and the reader's button always shows which one <kbd>Enter</kbd> will use.
+
+**My terminal editor opens in the wrong terminal app.**
+Set `$TERMINAL` to the one you want — `TERMINAL=kitty` — and install the
+launcher again so it picks the setting up. Otherwise cortex uses your desktop's
+own terminal (Konsole on KDE, GNOME Terminal or Console on GNOME), then
+whatever `x-terminal-emulator` is, then the first it can find. On macOS it is
+Terminal.app.
+
+**Where do errors go when there is no terminal?**
+`~/.cache/cortex/cortex.log`. From a terminal, cortex still logs its own
+internal errors there rather than printing them, because printing would land on
+top of an editor running in the same terminal.
 
 **Does it work on macOS?**
 Yes. Terminal handoff, the graph and the reader all behave the same; `open ⧉`
-uses `open` instead of `xdg-open`.
+uses `open` instead of `xdg-open`. The launcher is a small app bundle in
+`~/Applications`, terminal editors open in Terminal.app, and trash goes through
+Finder, so **Put Back** works — the first time, macOS asks whether your
+terminal may control Finder.
 
 **Can I use it over SSH?**
 Run `cortex -w none`, forward the port (`ssh -L 41277:127.0.0.1:41277`), and
