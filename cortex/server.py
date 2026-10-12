@@ -14,6 +14,7 @@ import mimetypes
 import os
 import posixpath
 import secrets
+import socketserver
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, quote
@@ -842,6 +843,13 @@ class Handler(BaseHTTPRequestHandler):
 
 class Server(ThreadingHTTPServer):
     daemon_threads = True
+
+    def server_bind(self):
+        # HTTPServer's own asks the resolver for 127.0.0.1's full name, which
+        # on some Macs waits seconds for a DNS answer before the window opens.
+        # Nothing here uses the name.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
     def handle_error(self, request, client_address):
         # The default prints a traceback to stderr, which is the terminal --

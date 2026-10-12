@@ -27,9 +27,16 @@ _LOCK = threading.Lock()
 
 
 def folder(root: str) -> str:
+    # matched against the listing, not by asking for each name: on a Mac's
+    # disk "journal" finds "Journal", and the note would be filed under a
+    # spelling that is not on screen
+    try:
+        present = set(os.listdir(root))
+    except OSError:
+        present = set()
     for name in FOLDERS:
         path = os.path.join(root, name)
-        if os.path.isdir(path):
+        if name in present and os.path.isdir(path):
             return path
     return os.path.join(root, DEFAULT_FOLDER)
 

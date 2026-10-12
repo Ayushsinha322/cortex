@@ -1117,6 +1117,23 @@ class TestPlaces(unittest.TestCase):
 
 # ------------------------------------------------- the whole thing, launched
 
+class TestStartingUp(Tree):
+    def test_the_server_does_not_wait_on_dns_for_its_own_name(self):
+        # HTTPServer looks 127.0.0.1 up by name as it binds; on some Macs
+        # that is seconds of nothing before the window can open
+        import socket
+
+        def slow(*_a):
+            raise AssertionError("asked the resolver")
+        patch(self, socket, "getfqdn", slow)
+        ctx = Context(self.scanner, LinkIndex(self.scanner), ActionRunner(tty=True),
+                      "tok", title="t", ui_config={})
+        httpd = serve(ctx, 0)
+        self.addCleanup(httpd.server_close)
+        self.assertEqual(httpd.server_name, "127.0.0.1")
+        self.assertGreater(httpd.server_port, 0)
+
+
 class TestLaunchedFromTheMenu(unittest.TestCase):
     """cortex started the way the app-menu entry starts it: no terminal, no
     folder named, a browser that only writes down the address it was given."""
@@ -1139,15 +1156,22 @@ class TestLaunchedFromTheMenu(unittest.TestCase):
             stderr=subprocess.PIPE, env=env)
         self.addCleanup(lambda: proc.poll() is None and proc.kill())
 
-        handed = None
-        for _ in range(100):
+        # generous: a cold interpreter on a busy CI Mac is slow to get here
+        handed, deadline = None, time.monotonic() + 30
+        while handed is None and time.monotonic() < deadline and proc.poll() is None:
             if os.path.exists(f"{home}/opened"):
                 handed = next((ln for ln in read(f"{home}/opened").split()
                                if ln.startswith("file://")), None)
-                if handed:
-                    break
-            time.sleep(0.05)
-        self.assertIsNotNone(handed, "the browser was never handed the page")
+            if handed is None:
+                time.sleep(0.05)
+        if handed is None:
+            if proc.poll() is None:
+                proc.kill()
+            out, err = proc.communicate(timeout=10)
+            logged = f"{home}/.cache/cortex/cortex.log"
+            self.fail("the browser was never handed the page\n"
+                      f"exit: {proc.returncode}\nstdout: {out!r}\nstderr: {err!r}\n"
+                      f"log: {read(logged) if os.path.exists(logged) else '(none)'}")
 
         # the token is in a file only this user can read, never on the
         # browser's command line, where any user on the machine could see it

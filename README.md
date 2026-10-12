@@ -1127,7 +1127,7 @@ node tests/snapshot.test.js
 node tests/perf.test.js
 ```
 
-858 tests, no framework to install — `unittest` and plain `node`. They run on
+859 tests, no framework to install — `unittest` and plain `node`. They run on
 every push against Python 3.9 and 3.13 on Linux, and 3.13 on macOS. `tests/run`
 also byte-checks every source file, because raw NUL bytes once got into two UI
 files and made git treat them as binary, silently breaking diffs and `grep`.
