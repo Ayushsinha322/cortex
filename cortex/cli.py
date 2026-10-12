@@ -159,7 +159,7 @@ def confined(exe: str) -> bool:
 
 
 def launch_window(url: str, mode: str, browser: str | None,
-                  forward: str | None = None) -> str | None:
+                  forward: str | None = None, size: str = "1560,960") -> str | None:
     """Open the UI. Returns the command name used, or None if nothing opened.
 
     `forward` is a private file that leads to `url`, given to the browser in
@@ -188,7 +188,7 @@ def launch_window(url: str, mode: str, browser: str | None,
             argv = [exe, f"--app={target}", f"--user-data-dir={profile}",
                     "--no-first-run", "--no-default-browser-check",
                     "--disable-features=Translate,MediaRouter",
-                    "--window-size=1560,960", "--class=Cortex"]
+                    f"--window-size={size}", "--class=Cortex"]
         else:
             argv = [exe, "--new-window", target]
         try:
@@ -260,6 +260,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="take it out of the app menu again, and exit")
     # what the app-menu entry runs: no terminal, so log to a file, and with no
     # folder named, reopen the last one rather than the whole home directory
+    d.add_argument("--capture", action="store_true",
+                   help="a small window that adds a line to today's note, "
+                        "then closes")
     d.add_argument("--launcher", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("-V", "--version", action="version",
                    version=f"cortex {VERSION}")
@@ -348,7 +351,8 @@ def main(argv=None) -> int:
         scanner = Scanner(folder, show_hidden=args.hidden, extra_ignores=extra,
                           use_gitignore=not args.no_gitignore)
         links = LinkIndex(scanner)
-        if not args.no_links:
+        # a quick note needs no map of anything
+        if not args.no_links and not args.capture:
             links.start()
         return {"scanner": scanner, "links": links,
                 "watcher": None if args.no_watch else Watcher(),
@@ -367,7 +371,8 @@ def main(argv=None) -> int:
                   title=first["title"],
                   ui_config={**first["ui"],
                              "pulseMs": 0 if args.no_watch else 2500,
-                             "rememberLayout": remember},
+                             "rememberLayout": remember,
+                             "capture": bool(args.capture)},
                   watcher=first["watcher"], remember_layout=remember,
                   lifecycle=lifecycle, read_only=args.read_only, reopen=world)
     try:
@@ -397,7 +402,8 @@ def main(argv=None) -> int:
         print(f"  {C['b']}files{C['off']}     read-only")
     print(f"  {C['b']}url{C['off']}       {C['dim']}{url}{C['off']}")
 
-    opened = launch_window(url, args.window, args.browser, ctx.bootstrap)
+    opened = launch_window(url, args.window, args.browser, ctx.bootstrap,
+                           "560,300" if args.capture else "1560,960")
     if opened:
         print(f"  {C['b']}window{C['off']}    opened with {opened}")
     elif args.window == "none":
@@ -426,6 +432,7 @@ def main(argv=None) -> int:
         files.quiesce()             # a save in progress finishes, whole
         httpd.shutdown()
         ctx.links.stop()
+        ctx.stop_feed()
         ctx.forget_bootstrap()
         why = f" ({lifecycle.reason})" if lifecycle.reason else ""
         print(f"\n{C['dim']}  cortex out{why}.{C['off']}")

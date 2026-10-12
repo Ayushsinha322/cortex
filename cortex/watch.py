@@ -45,6 +45,11 @@ class Watcher:
             while len(self._seen) > self.cap:
                 self._seen.popitem(last=False)
 
+    def folders(self) -> list[str]:
+        """The folders being watched, oldest first."""
+        with self._lock:
+            return list(self._seen)
+
     def forget(self, path: str) -> None:
         with self._lock:
             self._seen.pop(path, None)

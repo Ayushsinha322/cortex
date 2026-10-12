@@ -102,18 +102,25 @@ const at = (id) => global.window.CORTEX.debug.at(id);
         D().selected === ABOVE, `selected=${D().selected}`);
 
   // --- export --------------------------------------------------------------
+  // the share button opens a menu; its first two items are the pictures
+  const menuItem = (start) => el("save-menu").children
+    .find((b) => b.children[1] && b.children[1].textContent.startsWith(start));
   const before = downloads.length;
   el("btn-save").click();
+  check("the share button offers a picture, and a map to send",
+        el("save-menu").classList.contains("open") && !!menuItem("Picture of")
+        && !!menuItem("Interactive map"));
+  menuItem("Picture of").click();
   await new Promise((r) => setTimeout(r, 20));
-  check("the save button hands over a png",
+  check("the picture item hands over a png",
         downloads.length === before + 1 && downloads[before].name.endsWith(".png"),
         downloads.map((d) => d.name).join(","));
   check("the png is a png", blobs[blobs.length - 1].type === "image/png");
 
-  el("btn-save").click({ shiftKey: true });
+  D.key("X");
   await new Promise((r) => setTimeout(r, 20));
   const svgBlob = blobs[blobs.length - 1];
-  check("shift-clicking hands over an svg instead",
+  check("shift-x hands over an svg instead",
         downloads[downloads.length - 1].name.endsWith(".svg")
         && svgBlob.type === "image/svg+xml",
         downloads[downloads.length - 1].name);

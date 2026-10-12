@@ -49,8 +49,11 @@
   <div class="spacer"></div>
   <button id="btn-links" class="ghost on" title="Toggle semantic links">links</button>
   <button id="btn-fit" class="ghost" title="Fit graph to screen">fit</button>
-  <button id="btn-save" class="ghost"
-          title="Save this view as a PNG (shift-click for SVG) — x">save</button>
+  <div class="more" id="save-wrap">
+    <button id="btn-save" class="ghost"
+            title="Save a picture of this view, or share it as a map">share ▾</button>
+    <div id="save-menu" class="menu"></div>
+  </div>
   <button id="btn-help" class="ghost" title="Keyboard shortcuts">?</button>
 </header>
 
@@ -66,6 +69,51 @@
   <span id="stat-drafts" class="drafts" hidden></span>
   <span id="stat-ro" class="muted" hidden>read-only</span>
 </div>
+
+<!-- bottom middle: the modes -- each is a different way of looking -->
+<nav id="dock" class="glass">
+  <button id="d-live" title="Live — watch files change as they change (w)"><i class="led"></i>live</button>
+  <button id="d-history" title="History — replay this folder through git (h)">history</button>
+  <button id="d-tours" title="Tours — walk someone through this project (T)">tours</button>
+  <button id="d-views" title="Views — saved ways of looking, on keys 1 to 9 (v)">views</button>
+  <button id="d-disk" title="Disk — size everything by the space it takes (u)">disk</button>
+  <button id="d-today" title="Today's note (d)">today</button>
+</nav>
+<!-- the list a dock button opens: tours, views -->
+<div id="pop" class="pop glass" hidden></div>
+
+<!-- live: what changed, newest first -->
+<aside id="feed" class="glass" hidden>
+  <div class="feed-head">
+    <span class="feed-title"><i class="led on"></i>Live</span>
+    <span id="feed-engine" class="muted"></span>
+    <span class="spacer"></span>
+    <button id="feed-follow" class="ghost sm" title="Fly to each change as it happens">follow</button>
+    <button id="feed-reveal" class="ghost sm on"
+            title="Bring changed files into the graph, even from folders that are shut">reveal</button>
+    <button id="feed-clear" class="ghost sm" title="Clear the trail">clear</button>
+  </div>
+  <div id="feed-list"></div>
+</aside>
+
+<!-- history: a slider through the commits -->
+<div id="timeline" class="glass" hidden>
+  <button id="tl-play" class="ghost icon" title="Play (space)">&#9654;</button>
+  <div class="tl-track">
+    <canvas id="tl-marks"></canvas>
+    <input id="tl-range" type="range" min="0" max="0" value="0" step="1">
+  </div>
+  <div id="tl-info"></div>
+  <button id="tl-speed" class="ghost sm" title="Speed">1×</button>
+  <button id="tl-record" class="ghost sm" title="Record the replay as a video">record</button>
+  <button id="tl-close" class="ghost sm" title="Back to now (h)">&#10005;</button>
+</div>
+
+<!-- tours: recording, and playing -->
+<div id="tourcard" class="glass" hidden></div>
+
+<!-- the chain between two files -->
+<div id="pathcard" class="glass" hidden></div>
 
 <!-- bottom right: zoom -->
 <div id="zoomer" class="glass">
@@ -144,6 +192,44 @@
   </div>
 </div>
 
+<!-- ctrl-k: everything cortex can do, and every file, by typing -->
+<div id="palette" class="modal">
+  <div class="sheet glass palette">
+    <input id="pal-input" type="text" spellcheck="false" autocomplete="off"
+           placeholder="type a command, or the name of a file">
+    <div id="pal-list"></div>
+  </div>
+</div>
+
+<!-- share: what goes into the file is said before it is made -->
+<div id="share" class="modal">
+  <div class="sheet glass ask">
+    <h2>Share this map</h2>
+    <p id="share-text"></p>
+    <label class="check"><input id="share-contents" type="checkbox">
+      <span id="share-contents-label"></span></label>
+    <p class="muted small">The file opens in any browser, with nothing to install.
+      It cannot change anything, and it does not update.</p>
+    <div class="ask-btns">
+      <button id="share-cancel" class="ghost">cancel</button>
+      <button id="share-ok" class="primary">make the file</button>
+    </div>
+  </div>
+</div>
+
+<!-- quick capture: the whole window, when started with --capture -->
+<div id="capture" hidden>
+  <div class="cap-head"><span class="dot"></span>Quick note
+    <span id="cap-where" class="muted"></span></div>
+  <textarea id="cap-text" spellcheck="true"
+            placeholder="a thought, a task, a link…"></textarea>
+  <div class="cap-foot">
+    <span class="muted"><kbd>enter</kbd> adds it to today's note ·
+      <kbd>shift</kbd> <kbd>enter</kbd> new line · <kbd>esc</kbd> cancel</span>
+    <button id="cap-ok" class="primary">add</button>
+  </div>
+</div>
+
 <!-- shown when the program behind the window has gone -->
 <div id="gone" class="modal">
   <div class="sheet glass">
@@ -175,6 +261,14 @@
       <dt><kbd>F2</kbd></dt><dd>rename the selection</dd>
       <dt><kbd>delete</kbd></dt><dd>move the selection to the trash</dd>
       <dt><kbd>p</kbd></dt><dd>open another folder, or a saved project</dd>
+      <dt><kbd>ctrl k</kbd></dt><dd>everything cortex can do, and every file, by name</dd>
+      <dt><kbd>shift-click</kbd></dt><dd>the chain of links from the selection to there</dd>
+      <dt><kbd>w</kbd></dt><dd>live: watch files light up as they change</dd>
+      <dt><kbd>h</kbd></dt><dd>history: replay this folder through git</dd>
+      <dt><kbd>T</kbd></dt><dd>tours: play one, or record your own</dd>
+      <dt><kbd>v</kbd> <kbd>1</kbd>–<kbd>9</kbd></dt><dd>views: save the way you are looking, and come back to it</dd>
+      <dt><kbd>u</kbd></dt><dd>disk: size everything by the space it takes</dd>
+      <dt><kbd>d</kbd></dt><dd>today's note</dd>
       <dt><kbd>right-click</kbd></dt><dd>everything you can do to a node</dd>
       <dt><kbd>r</kbd></dt><dd>read selection in the terminal cortex started in</dd>
       <dt><kbd>e</kbd></dt><dd>expand / collapse the selected folder</dd>

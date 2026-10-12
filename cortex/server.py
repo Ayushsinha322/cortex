@@ -18,7 +18,11 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, quote
 
-from . import desktop, files, gitstatus, grep, layout, places, reader
+from . import (desktop, dismissed, files, gitstatus, grep, journal, layout, places,
+               reader, snapshot, tours, views)
+from . import history
+from .activity import Activity
+from .du import DiskUsage
 
 UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
 log = logging.getLogger("cortex")
@@ -101,6 +105,40 @@ class Context:
         # the private page the browser was handed instead of the address; it
         # has done its job once the real page has been asked for
         self.bootstrap = bootstrap
+        # Live mode's feed of changes, started the first time live is turned
+        # on: until then nobody pays for it, in watches or in a walk of the
+        # tree. None for good when cortex was told not to watch.
+        self.watching = watcher is not None
+        self.activity = None
+        self._activity_lock = threading.Lock()
+        self.du = None                     # disk usage, counted on first use
+
+    def disk(self):
+        with self._activity_lock:
+            if self.du is None:
+                self.du = DiskUsage(inside=self.scanner.inside)
+            return self.du
+
+    def feed(self):
+        with self._activity_lock:
+            if self.activity is None and self.watching:
+                self.activity = Activity(self.scanner)
+                self.activity.start()
+                # the folders the window opened before live was turned on
+                known = self.watcher.folders() if self.watcher is not None else []
+                feed = self.activity
+                threading.Thread(target=lambda: [feed.note_dir(d) for d in known],
+                                 daemon=True).start()
+            return self.activity
+
+    def stop_feed(self) -> None:
+        with self._activity_lock:
+            feed, self.activity = self.activity, None
+            du, self.du = self.du, None
+        if feed is not None:
+            feed.stop()
+        if du is not None:
+            du.stop()
 
     @property
     def can_reopen(self) -> bool:
@@ -119,6 +157,7 @@ class Context:
                 self.runner.home = root
         if old is not None and old is not self.links:
             old.stop()
+        self.stop_feed()                   # it was watching the old folder
 
     def forget_bootstrap(self) -> None:
         path, self.bootstrap = self.bootstrap, None
@@ -281,6 +320,10 @@ class Handler(BaseHTTPRequestHandler):
             # empty one is falsy and would never get its first directory.
             if self.ctx.watcher is not None:
                 self.ctx.watcher.note(path)
+            feed = self.ctx.activity
+            if feed is not None:
+                # it may wait a moment for its own thread; this answer need not
+                threading.Thread(target=feed.note_dir, args=(path,), daemon=True).start()
             return self._json(kids)
 
         if route == "/api/pulse":
@@ -296,6 +339,9 @@ class Handler(BaseHTTPRequestHandler):
                 if any(os.path.isfile(os.path.join(d, ".gitignore"))
                        for d in changed):
                     self.ctx.scanner.forget_ignores()
+                if self.ctx.du is not None:
+                    for d in changed:
+                        self.ctx.du.invalidate(d)
                 reindexed = self.ctx.links.maybe_rebuild()
             return self._json({"changed": changed, "reindexed": reindexed,
                                "root": root})
@@ -340,7 +386,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(layout.load(self.ctx.scanner.root))
 
         if route == "/api/links":
-            return self._json(self.ctx.links.snapshot())
+            snap = self.ctx.links.snapshot()
+            if snap.get("suggest"):
+                snap["suggest"] = dismissed.without(self.ctx.scanner.root, snap["suggest"])
+            return self._json(snap)
 
         if route == "/api/editors":
             return self._json({"editors": self.ctx.runner.editors(),
@@ -351,6 +400,58 @@ class Handler(BaseHTTPRequestHandler):
 
         if route == "/api/dirs":
             return self._json(places.complete((params.get("path") or [""])[0]))
+
+        if route == "/api/activity":
+            feed = self.ctx.feed()
+            if feed is None:
+                return self._json({"off": True, "seq": 0, "events": [], "engine": None})
+            try:
+                since = int((params.get("since") or ["0"])[0])
+                wait = min(25.0, max(0.0, float((params.get("wait") or ["0"])[0])))
+            except ValueError:
+                return self._json({"error": "bad since"}, 400)
+            got = feed.since(since, wait)
+            du = self.ctx.du
+            if du is not None:
+                # a file grown in place leaves its folder's timestamp alone
+                for ev in got.get("events") or []:
+                    du.invalidate(ev.get("path") or "")
+            return self._json(got)
+
+        if route == "/api/history":
+            path = self._safe_path(params)
+            if not path or not os.path.isdir(path):
+                return self._json({"error": "bad path"}, 400)
+            return self._json(history.timeline(path, self.ctx.scanner.inside))
+
+        if route == "/api/du":
+            path = self._safe_path(params)
+            if not path or not os.path.isdir(path):
+                return self._json({"error": "bad path"}, 400)
+            try:
+                got = self.ctx.disk().get(path)
+            except ValueError:
+                return self._json({"error": "bad path"}, 400)
+            kids = got.get("children") or []
+            if len(kids) > 2000:
+                # the biggest are what the window shows; a folder of a hundred
+                # thousand files is told how many more there are
+                got = {**got, "children": kids[:2000], "more": len(kids) - 2000}
+            return self._json(got)
+
+        if route == "/api/views":
+            return self._json({"views": views.load(self.ctx.scanner.root)})
+
+        if route == "/api/tours":
+            sc = self.ctx.scanner
+            return self._json({"tours": tours.list_all(sc.root, sc.inside)})
+
+        if route == "/api/tour":
+            path = self._tour_path((params.get("path") or [None])[0])
+            if not path or not os.path.isfile(path):
+                return self._json({"ok": False, "error": "no such tour"}, 404)
+            sc = self.ctx.scanner
+            return self._json({"ok": True, **tours.read(path, sc.root, sc.inside)})
 
         return self._json({"error": "not found"}, 404)
 
@@ -380,6 +481,13 @@ class Handler(BaseHTTPRequestHandler):
             "/api/project": self._project,
             "/api/launcher": self._launcher,
             "/api/quit": self._quit,
+            "/api/nodes": self._nodes,
+            "/api/views": self._views,
+            "/api/tours": self._tours,
+            "/api/daily": self._daily,
+            "/api/capture": self._capture,
+            "/api/snapshot": self._snapshot,
+            "/api/dismiss": self._dismiss,
         }
         handler = routes.get(url.path)
         if handler is None:
@@ -440,6 +548,8 @@ class Handler(BaseHTTPRequestHandler):
             path = entry if entry and not os.path.lexists(entry) else None
         if not path:
             return self._json({"ok": False, "error": "bad path"}, 400)
+        if self.ctx.du is not None:
+            self.ctx.du.invalidate(path)
         try:
             return self._json(files.save(path, body.get("text"),
                                          body.get("version"), bool(body.get("force"))))
@@ -456,7 +566,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not folder:
                     return self._json({"ok": False, "error": "bad path"}, 400)
                 result = files.create(folder, body.get("name"),
-                                      "dir" if op == "mkdir" else "file")
+                                      "dir" if op == "mkdir" else "file",
+                                      parents=bool(body.get("parents")),
+                                      inside=self.ctx.scanner.inside)
             elif op in ("rename", "trash"):
                 path = self._entry(body.get("path"))
                 if not path:
@@ -513,6 +625,121 @@ class Handler(BaseHTTPRequestHandler):
         else:
             return self._json({"ok": False, "error": f"unknown operation {op!r}"})
         return self._json({**result, "launcher": desktop.status()})
+
+    def _nodes(self, body):
+        """Nodes, with their folder chains, for paths anywhere under the root.
+
+        What the tour, the path finder, the change feed and the history use to
+        put a file on the graph without opening every folder on the way.
+        """
+        paths = body.get("paths")
+        if not isinstance(paths, list):
+            return self._json({"ok": False, "error": "which paths?"}, 400)
+        hits, cache = [], {}
+        for raw in paths[:5000]:
+            hit = self.ctx.scanner.lineage(raw, cache)
+            if hit is not None:
+                hits.append(hit)
+        return self._json({"ok": True, "hits": hits})
+
+    def _views(self, body):
+        sc, op = self.ctx.scanner, body.get("op")
+        try:
+            if op == "save":
+                result = views.save(sc.root, body.get("view"), sc.inside)
+            elif op == "forget":
+                result = views.forget(sc.root, body.get("name"))
+            elif op == "move":
+                result = views.move(sc.root, body.get("name"), body.get("to", 0))
+            else:
+                return self._json({"ok": False, "error": f"unknown operation {op!r}"})
+        except (ValueError, TypeError) as exc:
+            return self._json({"ok": False, "error": str(exc)})
+        except OSError as exc:
+            return self._json({"ok": False, "error": f"could not save: {exc.strerror or exc}"})
+        return self._json({"ok": True, "views": result})
+
+    def _tour_path(self, raw) -> str | None:
+        """A tour file: a .md directly inside the root's .tours folder."""
+        if not isinstance(raw, str):
+            return None
+        path = os.path.normpath(raw)
+        where = tours.folder(self.ctx.scanner.root)
+        if os.path.dirname(path) != where or not path.endswith(".md"):
+            return None
+        # .tours, or the file in it, could be a symlink leading out of the root
+        sc = self.ctx.scanner
+        return path if sc.inside(where) and sc.inside(path) else None
+
+    def _tours(self, body):
+        if not self._writable():
+            return
+        sc, op = self.ctx.scanner, body.get("op")
+        if not sc.inside(tours.folder(sc.root)):
+            return self._json({"ok": False, "error": "the .tours folder leads "
+                                                     "outside this folder"}, 400)
+        try:
+            if op == "save":
+                existing = self._tour_path(body.get("path")) if body.get("path") else None
+                if body.get("path") and not existing:
+                    return self._json({"ok": False, "error": "bad tour path"}, 400)
+                path = tours.write(sc.root, body.get("title") or "",
+                                   body.get("intro") or "", body.get("stops") or [],
+                                   sc.inside, existing)
+                return self._json({"ok": True, "path": path})
+            if op == "delete":
+                path = self._tour_path(body.get("path"))
+                if not path or not os.path.isfile(path):
+                    return self._json({"ok": False, "error": "no such tour"}, 404)
+                return self._json(files.trash(path))
+        except files.FileError as exc:
+            return self._json(exc.reply(), exc.status)
+        except (OSError, ValueError) as exc:
+            return self._json({"ok": False, "error": f"could not save the tour: {exc}"})
+        return self._json({"ok": False, "error": f"unknown operation {op!r}"})
+
+    def _daily(self, body):
+        if not self._writable():
+            return
+        try:
+            sc = self.ctx.scanner
+            return self._json(journal.open_today(sc.root, inside=sc.inside))
+        except files.FileError as exc:
+            return self._json(exc.reply(), exc.status)
+
+    def _capture(self, body):
+        if not self._writable():
+            return
+        try:
+            sc = self.ctx.scanner
+            return self._json(journal.capture(sc.root, body.get("text"), inside=sc.inside))
+        except files.FileError as exc:
+            return self._json(exc.reply(), exc.status)
+
+    def _snapshot(self, body):
+        """The window as one HTML file, sent back as a download."""
+        sc = self.ctx.scanner
+        root = self._inside(body.get("root")) or sc.root
+        if not os.path.isdir(root):
+            return self._json({"ok": False, "error": "not a folder"}, 400)
+        page, summary = snapshot.build(sc, self.ctx.links, root, body)
+        name = (os.path.basename(root) or "cortex").replace('"', "")
+        plain = name.encode("ascii", "replace").decode().replace("?", "_")
+        return self._send(200, page, "text/html; charset=utf-8", {
+            "Content-Disposition": f'attachment; filename="{plain}-map.html"; '
+                                   f"filename*=UTF-8''{quote(name)}-map.html",
+            "X-Cortex-Summary": json.dumps(summary),
+        })
+
+    def _dismiss(self, body):
+        a, b = body.get("a"), body.get("b")
+        if not (self._inside(a) and self._inside(b)):
+            return self._json({"ok": False, "error": "bad path"}, 400)
+        try:
+            dismissed.add(self.ctx.scanner.root, a, b)
+        except OSError as exc:
+            return self._json({"ok": False, "error": f"could not save: {exc.strerror or exc}"})
+        return self._json({"ok": True})
 
     def _quit(self, body):
         if self.ctx.lifecycle is None:

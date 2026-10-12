@@ -45,7 +45,7 @@ jobs:
           python -c "
           import os, cortex.server as s
           need = ['index.html', 'style.css', 'app.js', 'markdown.js', 'highlight.js',
-                  'icon.svg']
+                  'icon.svg', 'snapshot.js']
           missing = [f for f in need if not os.path.isfile(os.path.join(s.UI_DIR, f))]
           raise SystemExit('missing from the wheel: ' + str(missing) if missing else 0)
           "

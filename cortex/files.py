@@ -276,10 +276,28 @@ def clean_name(name) -> str:
     return name
 
 
-def create(folder: str, name, kind: str = "file") -> dict:
-    """A new, empty note (or file) or folder inside `folder`."""
+def create(folder: str, name, kind: str = "file", parents: bool = False,
+           inside=None) -> dict:
+    """A new, empty note (or file) or folder inside `folder`.
+
+    With `parents`, the name may run through folders that do not exist yet --
+    [[projects/Roadmap]] is a note in a folder -- and those are made too, each
+    checked with `inside` so that an existing symlink cannot lead out.
+    """
     if not os.path.isdir(folder):
         raise FileError("not a folder")
+    if parents and isinstance(name, str) and "/" in name.strip().strip("/"):
+        *steps, name = [part for part in name.strip().strip("/").split("/") if part]
+        for step in steps:
+            folder = os.path.join(folder, clean_name(step))
+            if os.path.lexists(folder):
+                if not os.path.isdir(folder) or (inside and not inside(folder)):
+                    raise FileError(f"{step} is not a folder here")
+                continue
+            try:
+                os.mkdir(folder)
+            except OSError as exc:
+                raise FileError(f"could not make {step}: {exc.strerror or exc}") from None
     name = clean_name(name)
     if kind == "file" and not os.path.splitext(name)[1] and not name.startswith("."):
         name += DEFAULT_EXT

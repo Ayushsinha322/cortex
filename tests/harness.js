@@ -203,6 +203,7 @@ function harness(opts = {}) {
   global.Blob = class {
     constructor(parts, opts) { this.parts = parts; this.type = (opts || {}).type; }
     text() { return this.parts.join(""); }
+    get size() { return this.parts.join("").length; }
   };
   // node has URL; it does not have the object-url half of it
   global.URL.createObjectURL = (blob) => {
@@ -259,7 +260,11 @@ function harness(opts = {}) {
     if (routes[route]) {
       const params = Object.fromEntries(new URL(u, "http://127.0.0.1:9999").searchParams);
       const answer = await routes[route](params, init && init.body ? JSON.parse(init.body) : null);
-      return { ok: true, status: 200, json: async () => answer };
+      // a route can answer with an error status: {__status: 403, ...}
+      const status = (answer && answer.__status) || 200;
+      return { ok: status < 400, status, json: async () => answer,
+               blob: async () => new global.Blob([JSON.stringify(answer)],
+                                                 { type: "text/html" }) };
     }
     const q = decodeURIComponent((u.split("q=")[1] || "").split("&")[0]);
     const body =
@@ -280,9 +285,15 @@ function harness(opts = {}) {
 
   /* Run app.js, then let its boot-time awaits resolve and paint once. */
   async function boot() {
-    // the page loads these two first, and the reader calls into both
-    for (const lib of ["markdown.js", "highlight.js"]) {
+    // the page loads these two first, and the reader calls into both; a
+    // snapshot page loads its stand-in for the server before them
+    for (const lib of [...(opts.preload || []), "markdown.js", "highlight.js"]) {
       new Function(fs.readFileSync(path.join(path.dirname(SRC), lib), "utf8"))();
+      // in a browser window is the global object; here it is not, so a script
+      // that replaces window.fetch has to be told to the page as well
+      if (global.window.fetch && global.window.fetch !== global.fetch) {
+        global.fetch = global.window.fetch;
+      }
     }
     new Function(fs.readFileSync(SRC, "utf8"))();     // app.js is an IIFE
     await new Promise((r) => setTimeout(r, 60));

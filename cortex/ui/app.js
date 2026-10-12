@@ -16,7 +16,7 @@ const READ_ONLY = !!CFG.readOnly;
 const TERMINAL = CFG.terminal === undefined ? "here" : CFG.terminal;
 
 const GROUPS = ["dir", "note", "code", "config", "doc", "media", "archive",
-                "other", "tag"];
+                "other", "tag", "ghost"];
 const TAG_PREFIX = "tag:";
 const isTag = (id) => id.startsWith(TAG_PREFIX);
 /* What git thinks of a file, as a dot on its node. Amber for work in progress,
@@ -28,12 +28,12 @@ const GIT_COLOR = {
 const COLOR = {
   dir: "#f5a524", note: "#34d399", code: "#60a5fa", config: "#a78bfa",
   doc: "#f472b6", media: "#fb7185", archive: "#94a3b8", other: "#64748b",
-  tag: "#c084fc",
+  tag: "#c084fc", ghost: "#9fb0c8",
 };
 const LABEL = {
   dir: "folders", note: "notes", code: "code", config: "config",
   doc: "docs", media: "media", archive: "archives", other: "other",
-  tag: "tags",
+  tag: "tags", ghost: "unwritten",
 };
 
 // ------------------------------------------------------------------- state
@@ -55,6 +55,7 @@ let savedPos = new Map();       // path -> [x, y] from the last time you looked
 let savedCam = null, layoutDirty = false;
 let cam = { s: 1, x: 0, y: 0 };
 let needsFit = false;
+let booted = false;             // the page is built and the chrome can be placed
 
 /* ROOT is the folder cortex was launched on and the hard security boundary.
    viewRoot is what the graph is currently showing, which the user can narrow to
@@ -98,6 +99,7 @@ function resize() {
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   makeBackdrop();
   dirty = true;
+  if (booted) placeChrome();
 }
 window.addEventListener("resize", resize);
 resize();
@@ -113,6 +115,8 @@ async function reach(url, init) {
   try {
     res = await fetch(url, init);
   } catch (err) {
+    // a request we called off is not the server going away
+    if (err && err.name === "AbortError") throw err;
     if (++unreachable >= 2) serverGone();
     throw err;
   }
@@ -126,11 +130,19 @@ function apiURL(path, params = {}) {
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
   return url;
 }
-async function api(path, params = {}) {
-  const res = await reach(apiURL(path, params));
-  if (!res.ok) throw new Error(`${path} -> ${res.status}`);
+async function api(path, params = {}, init = undefined) {
+  const res = await reach(apiURL(path, params), init);
+  if (!res.ok) {
+    const err = new Error(`${path} -> ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
   return res.json();
 }
+
+/* A 403 to a request carrying our token means the token is no longer the
+   server's: cortex was restarted, and this window belongs to the old one. */
+const staleToken = (err) => err && err.status === 403;
 /* Like api(), but a refusal is an answer: the server says why in the body,
    and that is what the toast should say. */
 async function query(path, params = {}) {
@@ -145,7 +157,9 @@ async function post(path, body, params = {}) {
   });
   return res.json();
 }
-const rawURL = (p) =>
+/* A snapshot carries its few images inside itself, as data: URLs by path. */
+const RAW = CFG.raw || {};
+const rawURL = (p) => RAW[p] ||
   `/api/raw?t=${encodeURIComponent(TOKEN)}&path=${encodeURIComponent(p)}`;
 
 // ------------------------------------------------------------- graph model
@@ -206,6 +220,7 @@ async function expand(id, opts = {}) {
     linkUp(fresh);
     updateStats();
     reheat();
+    if (disk) measure();               // size what just arrived
   } catch (err) {
     expanded.delete(id);
     if (!opts.quiet) toast("could not read that folder", true);
@@ -321,6 +336,7 @@ async function pulse() {
     if (sel && changed.includes(parentOf(sel.id))) renderBody(sel);
   } catch (err) {
     /* the server going away is not worth a toast every two seconds */
+    if (staleToken(err)) serverGone();
   } finally {
     pulseBusy = false;
   }
@@ -362,10 +378,15 @@ async function applySemantic() {
     try {
       const snap = await api("/api/links");
       semanticEdges = snap.edges || [];
+      ghostNames = snap.ghosts || {};
+      buildSuggestIndex(snap.suggest);
       $("stat-index").textContent = snap.ready
         ? `${snap.notes} notes · ${snap.sources} sources indexed`
         : `indexing… ${snap.edges.length} links`;
       buildConnIndex();
+      // a note that has since been written is no longer a ghost
+      const stale = [...nodes.keys()].filter((id) => isGhost(id) && !connIndex.has(id));
+      if (stale.length) forget(new Set(stale));
       if (!snap.ready) setTimeout(() => { semanticEdges = null; applySemantic(); }, 4000);
     } catch (err) { return; }
   }
@@ -393,6 +414,10 @@ function linkUp(ids) {
         // it from the reader still brings it in, on request.
         if ((tagWeight.get(c.path) || 0) < 2) continue;
         addTagNode(c.path, nodes.get(id));
+      }
+      if (c.kind === "ghost" && !nodes.has(c.path)) {
+        if (hist) continue;            // the past has no plans in it
+        addGhostNode(c.path, nodes.get(id));
       }
       if (!addLink(id, c.path, c.kind)) continue;
       added = true;
@@ -467,7 +492,9 @@ function buildConnIndex() {
 }
 
 const baseName = (p) =>
-  isTag(p) ? "#" + p.slice(TAG_PREFIX.length) : p.slice(p.lastIndexOf("/") + 1);
+  isTag(p) ? "#" + p.slice(TAG_PREFIX.length)
+  : p.startsWith("ghost:") ? (ghostNames[p] || p.slice(6))
+  : p.slice(p.lastIndexOf("/") + 1);
 
 /* How many files carry each tag, which is what sizes its node. */
 let tagWeight = new Map();
@@ -508,7 +535,8 @@ function renderConnections(n) {
   const box = $("p-links");
   box.textContent = "";
   const list = (n && connIndex && connIndex.get(n.id)) || [];
-  if (!list.length) { box.hidden = true; return; }
+  const suggested = (n && suggestIndex.get(n.id)) || [];
+  if (!list.length && !suggested.length) { box.hidden = true; return; }
   box.hidden = false;
   box.classList.toggle("closed", !connOpen);
 
@@ -524,7 +552,8 @@ function renderConnections(n) {
     `${list.length} connection${list.length === 1 ? "" : "s"}`;
   const detail = document.createElement("span");
   detail.className = "muted";
-  detail.textContent = `${outs} out \u00b7 ${list.length - outs} in`;
+  detail.textContent = `${outs} out \u00b7 ${list.length - outs} in`
+    + (suggested.length ? ` \u00b7 ${suggested.length} suggested` : "");
   head.append(caret, label, detail);
   head.addEventListener("click", () => {
     connOpen = !connOpen;
@@ -547,12 +576,15 @@ function renderConnections(n) {
     name.textContent = baseName(c.path);
     const where = document.createElement("span");
     where.className = "where";
-    where.textContent = dirLabel(c.path, 18);
+    // a tag or an unwritten note has no folder to name
+    where.textContent = c.kind === "ghost" ? "not written yet"
+      : c.kind === "tag" ? "tag" : dirLabel(c.path, 18);
     row.append(arrow, name, where);
     row.addEventListener("click", () => focusOn(c.path));
     rows.appendChild(row);
   }
   box.appendChild(rows);
+  renderSuggestions(n, box);
 }
 
 /* Open the first few levels on launch, smallest folders first so the node
@@ -640,6 +672,7 @@ async function toggleSidebar(on) {
   $("sidebar").hidden = !sidebarOpen;
   document.body.classList.toggle("sidebar-open", sidebarOpen);
 
+  placeChrome();
   if (sidebarOpen) {
     await fillSidebar();
     $("sb-filter").focus();
@@ -728,6 +761,9 @@ async function revealPath(abs, line) {
    selection moves. */
 function setLine(line) {
   selLine = line || null;
+  // a tour being recorded keeps the line a search hit landed on
+  const last = tourRec && tourRec.stops[tourRec.stops.length - 1];
+  if (last && sel && last.path === sel.id && selLine) { last.line = selLine; renderTourCard(); }
   const meta = $("p-meta");
   if (selLine && meta && !meta.textContent.includes("line ")) {
     meta.textContent += `  ·  line ${selLine}`;
@@ -808,6 +844,11 @@ const toScreenX = (x) => x * cam.s + cam.x;
 const toScreenY = (y) => y * cam.s + cam.y;
 
 function visible(n) {
+  // the path between two files stays in sight whatever is filtered out
+  if (pathSet && pathSet.has(n.id)) return !hist || !hist.show || hist.show.has(n.id);
+  if (pathOnly && pathSet) return false;
+  // in the history, only what existed at that point
+  if (hist && hist.show && !hist.show.has(n.id)) return false;
   if (hidden.has(n.group)) return false;
   if (focusMode && sel) {
     if (n === sel) return true;
@@ -852,6 +893,7 @@ function draw() {
     ctx.lineTo(toScreenX(b.x), toScreenY(b.y));
     ctx.stroke();
   }
+  drawSuggestions();
 
   // nodes
   for (const n of nodes.values()) {
@@ -868,7 +910,17 @@ function draw() {
     }
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
-    if (n.tag) {
+    if (n.ghost) {
+      // a note not written yet: an outline where it will go
+      ctx.fillStyle = "#0b1120";
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.setLineDash([2.5, 2.5]);
+      ctx.strokeStyle = c;
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    } else if (n.tag) {
       ctx.fillStyle = "#0b1120";
       ctx.fill();
       ctx.shadowBlur = 0;
@@ -926,6 +978,8 @@ function draw() {
     }
   }
   ctx.shadowBlur = 0;
+  drawOverlays();
+  drawCaption();
 
   // labels, in a separate pass, with cheap collision avoidance
   const boxes = [];
@@ -957,7 +1011,9 @@ function draw() {
     const r = Math.max(1.8, n.r * cam.s);
     const size = active ? 12.5 : Math.max(9.5, Math.min(12.5, 11 * Math.sqrt(cam.s)));
     ctx.font = `${active || n.dir ? 600 : 400} ${size}px ui-sans-serif, system-ui, sans-serif`;
-    const text = n.name.length > 34 ? n.name.slice(0, 32) + "…" : n.name;
+    const full = disk ? diskLabel(n) : n.name;
+    const cap = disk ? 46 : 34;
+    const text = full.length > cap ? full.slice(0, cap - 2) + "…" : full;
     const w = ctx.measureText(text).width;
     const bx = x - w / 2, by = y + r + 3, bh = size + 3;
     if (!bypass && !fits(bx, by, w, bh)) continue;
@@ -991,7 +1047,10 @@ function frame() {
   frameCount++;
   const moving = simulate();
   if (needsFit) { needsFit = false; warmup(180); fit(); }
-  if (moving || dirty) { drawCount++; draw(); dirty = false; }
+  stepFlight();
+  tickModes();
+  const animating = Date.now() < animateUntil;
+  if (moving || dirty || animating) { drawCount++; draw(); dirty = false; }
   requestAnimationFrame(frame);
 }
 
@@ -1020,6 +1079,13 @@ CFG.debug.select = (id) => {
   if (n) select(n);
   return !!n;
 };
+CFG.debug.visible = (id) => { const n = nodes.get(id); return !!n && visible(n); };
+CFG.debug.modes = () => ({
+  live: !!live, disk: !!disk, history: hist ? hist.v : null,
+  path: pathHops ? pathHops.map((h) => h.id) : null,
+  tour: tourPlay ? tourPlay.i : null, recording: tourRec ? tourRec.stops.length : null,
+  views: viewsList.map((v) => v.name),
+});
 
 // -------------------------------------------------------------- navigation
 function fit(pad = 90) {
@@ -1076,10 +1142,14 @@ function pick(mx, my) {
 
 // ------------------------------------------------------------- interaction
 let dragging = null, panning = false, travel = 0, lastPt = { x: 0, y: 0 };
+let shiftDown = false;
 
 stage.addEventListener("mousedown", (e) => {
   lastPt = { x: e.clientX, y: e.clientY };
   travel = 0;
+  shiftDown = !!e.shiftKey;
+  flight = null;                  // a hand on the camera outranks a flight
+  touched = Date.now();
   const n = pick(e.clientX, e.clientY);
   if (n) { dragging = n; n.pinned = true; }
   else { panning = true; stage.classList.add("panning"); }
@@ -1102,7 +1172,13 @@ window.addEventListener("mousemove", (e) => {
 window.addEventListener("mouseup", () => {
   if (dragging) {
     dragging.pinned = false;
-    if (travel < 4) select(dragging);
+    if (travel < 4) {
+      // shift-click: the chain of links from what was selected to here
+      if (shiftDown && sel && sel !== dragging && !sel.tag && !dragging.tag) {
+        showPath(sel, dragging);
+      }
+      select(dragging);
+    }
     dragging = null;
   } else if (panning && travel < 4 && !maximized) {
     closePanel();
@@ -1125,6 +1201,8 @@ stage.addEventListener("dblclick", async (e) => {
 stage.addEventListener("wheel", (e) => {
   e.preventDefault();
   closeMenu();
+  flight = null;
+  touched = Date.now();
   zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0013));
 }, { passive: false });
 
@@ -1133,8 +1211,9 @@ stage.addEventListener("contextmenu", (e) => {
   e.preventDefault();
   const n = pick(e.clientX, e.clientY);
   if (n) {
+    const prior = sel;
     select(n);
-    openMenu(e.clientX, e.clientY, n.name, menuFor(n));
+    openMenu(e.clientX, e.clientY, n.name, menuFor(n, prior));
   } else {
     openMenu(e.clientX, e.clientY, null, backgroundMenu());
   }
@@ -1155,6 +1234,7 @@ function closePanel() {
   $("p-links").hidden = true;
   sel = null; selLine = null; focusMode = false; recomputeNeighbours();
   dirty = true;
+  placeChrome();
 }
 
 /* Full-screen the reader. The rendered content is reused as-is, so a PDF is
@@ -1169,6 +1249,7 @@ function setMax(on) {
     btn.classList.toggle("on", maximized);
   }
   dirty = true;
+  placeChrome();
 }
 
 function select(n) {
@@ -1180,22 +1261,25 @@ function select(n) {
   focusMode = false;
   recomputeNeighbours();
   panel.classList.add("open");
-  $("p-kind").textContent = n.tag ? "tag"
-    : n.dir ? "folder" : (n.group === "other" ? "file" : n.group);
+  $("p-kind").textContent = n.ghost ? "unwritten" : n.tag ? "tag"
+    : n.missing ? "gone" : n.dir ? "folder" : (n.group === "other" ? "file" : n.group);
   $("p-name").textContent = n.name;
-  $("p-path").textContent = n.tag ? "a tag, not a file" : n.id.replace(ROOT, "~");
+  $("p-path").textContent = n.ghost ? "linked to, but not written yet"
+    : n.tag ? "a tag, not a file" : n.id.replace(ROOT, "~");
   describe(n);
   renderGitChip(n);
   buildActions(n);
   renderConnections(n);
   renderBody(n);
+  placeChrome();
+  if (tourRec) addStop(n);
 }
 
 let editBtn = null;               // the reader's "edit", shown once we know it is text
 let openDropdown = null;          // the one action menu that may be open
 
 function describe(n) {
-  $("p-meta").textContent = n.tag ? ""
+  $("p-meta").textContent = n.tag || n.missing ? ""
     : (n.dir ? `${n.kids || 0} item${n.kids === 1 ? "" : "s"}` : fmtSize(n.size)) +
       (n.mtime ? "  ·  " + new Date(n.mtime * 1000).toLocaleString() : "");
 }
@@ -1260,8 +1344,10 @@ function buildActions(n) {
        TERMINAL === "here" ? "drop a shell into this directory, in your terminal"
                            : "open a terminal window in this folder");
   }
-  mk("open ⧉", "ghost", () => act("open", n.id), "hand to the desktop default app");
-  dropdown(bar, "file ▾", fileItems(n).filter((it) => it !== "-"));
+  if (!SNAPSHOT) {
+    mk("open ⧉", "ghost", () => act("open", n.id), "hand to the desktop default app");
+    dropdown(bar, "file ▾", fileItems(n).filter((it) => it !== "-"));
+  }
   if (n.dir) {
     mk(expanded.has(n.id) ? "collapse" : "expand", "ghost", () => {
       expanded.has(n.id) ? collapse(n.id) : expand(n.id);
@@ -1336,7 +1422,19 @@ async function renderBody(n) {
   if (editing && editing.path === n.id) return;
   const body = $("p-body");
   body.classList.remove("fill");     // reset before any early return below
+  if (n.ghost) return renderGhostBody(n, body);
   if (n.tag) return renderTagBody(n, body);
+  if (n.missing) {
+    body.textContent = "";
+    body.appendChild(hint("This file is not here now: it existed at this point in the "
+      + "history, and was deleted or renamed later."));
+    return;
+  }
+  if (n.dir && disk) {
+    body.textContent = "";
+    renderDiskBody(n, body);
+    return;
+  }
   if (n.dir) {
     const kids = expanded.has(n.id) ? null : await api("/api/children", { path: n.id })
       .catch(() => null);
@@ -1464,7 +1562,8 @@ function markdownView(text, path) {
   const div = document.createElement("div");
   div.className = "md";
   div.innerHTML = window.MD.render(text, {
-    wiki: () => true,
+    // a link to a note not written yet is drawn as one
+    wiki: (name) => !ghostNames[ghostKey(name)],
     resolve: (u) => /^(https?:|data:)/.test(u) ? u
       : rawURL(u.startsWith("/") ? u : dirOf + "/" + u),
   });
@@ -1473,7 +1572,8 @@ function markdownView(text, path) {
     if (!a) return;
     if (a.dataset.rel) {
       e.preventDefault();
-      const rel = a.dataset.rel.split("#")[0];
+      let rel = a.dataset.rel.split("#")[0];
+      try { rel = decodeURIComponent(rel); } catch (err) { /* left as written */ }
       revealPath(rel.startsWith("/") ? rel : normalize(dirOf + "/" + rel));
     } else if (a.dataset.wiki) {
       e.preventDefault();
@@ -1515,6 +1615,14 @@ function renderTagBody(n, body) {
 /* Follow a connection. A tag has no path to reveal, so it is selected where it
    already stands in the graph. */
 function focusOn(id) {
+  if (isGhost(id)) {
+    const g = nodes.get(id) || addGhostNode(id, sel);
+    linkUp([id]);
+    updateStats();
+    select(g);
+    flyTo(camOn(g));
+    return;
+  }
   if (!isTag(id)) return revealPath(id);
   let n = nodes.get(id);
   if (!n) {
@@ -1548,6 +1656,8 @@ function normalize(path) {
 }
 
 async function jumpToWiki(name) {
+  // a note that does not exist yet: go to its ghost, which offers to make it
+  if (ghostNames[ghostKey(name)]) { focusOn(ghostKey(name)); return; }
   try {
     const r = await api("/api/search", { q: name });
     const stem = name.toLowerCase();
@@ -2169,20 +2279,38 @@ function openMenu(x, y, title, items) {
   }
   if (!rows) return;
   m.hidden = false;
+  menuOpen = true;
   m.style.left = Math.max(8, Math.min(x, W - 250)) + "px";
   m.style.top = Math.max(8, Math.min(y, H - 34 * rows - 60)) + "px";
 }
 
+let menuOpen = false;
 function closeMenu() {
   $("ctx").hidden = true;
+  menuOpen = false;
 }
 
-function menuFor(n) {
+function menuFor(n, prior = null) {
+  if (n.ghost) {
+    return READ_ONLY || SNAPSHOT ? []
+      : [{ label: "Create this note", run: () => createGhost(n) }];
+  }
   if (n.tag) {
     return [{ label: focusMode ? "Show everything" : "Focus on this tag", key: "f",
               run: () => { focusMode = !focusMode; recomputeNeighbours(); } }];
   }
   const items = [];
+  const from = prior && prior !== n && !prior.tag ? prior : null;
+  if (from) {
+    items.push({ label: `Path from ${from.name} to here`, key: "⇧click",
+                 run: () => showPath(from, n) });
+    items.push("-");
+  }
+  if (SNAPSHOT) {
+    if (n.dir) items.push({ label: expanded.has(n.id) ? "Collapse" : "Expand", key: "e",
+                            run: () => { expanded.has(n.id) ? collapse(n.id) : expand(n.id); } });
+    return items;
+  }
   if (!n.dir) {
     if (!READ_ONLY) items.push({ label: "Edit here", key: "i", run: () => startEdit(n) });
     if (primaryEditor) {
@@ -2556,6 +2684,1976 @@ function serverGone(quit) {
       : "The program behind this window is no longer running. Start it again from your app menu.";
   $("gone").classList.add("open");
   if (quit && window.close) window.close();
+}
+
+/* ---------------------------------------------------------------- motion
+
+   Most of the time the graph is frozen and costs nothing to show. A few
+   things need it to keep drawing for a while -- the camera flying somewhere,
+   a file that just changed glowing and fading, the history playing -- and
+   each says for how long by pushing `animateUntil` out. When they are all
+   done, the graph is frozen again. */
+const SNAPSHOT = CFG.snapshot || null;
+let animateUntil = 0;
+const animateFor = (ms) => {
+  animateUntil = Math.max(animateUntil, Date.now() + ms);
+  dirty = true;
+};
+
+let flight = null;
+
+/* The camera that puts `n` in the middle of the free part of the window. */
+function camOn(n, s = Math.max(cam.s, 1.15)) {
+  const panelW = (panel.classList.contains("open") && !maximized) ? 520 : 0;
+  const left = sidebarInset();
+  return { s, x: left + (W - left - panelW) / 2 - n.x * s, y: H / 2 - n.y * s };
+}
+
+/* The camera that frames all of these, the way fit() frames the graph. */
+function camAround(list, pad = 140) {
+  if (!list.length) return null;
+  if (list.length === 1) return camOn(list[0]);
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const n of list) {
+    minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x);
+    minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y);
+  }
+  const panelW = (panel.classList.contains("open") && !maximized) ? 520 : 0;
+  const left = sidebarInset();
+  const availW = Math.max(200, W - panelW - left - pad * 2);
+  const availH = Math.max(200, H - pad * 2 - 70);
+  const s = Math.max(0.08, Math.min(1.6,
+    Math.min(availW / Math.max(1, maxX - minX), availH / Math.max(1, maxY - minY))));
+  return { s, x: left + pad + availW / 2 - ((minX + maxX) / 2) * s,
+           y: pad + 40 + availH / 2 - ((minY + maxY) / 2) * s };
+}
+
+function flyTo(to, ms = 700) {
+  if (!to) return;
+  flight = { from: { s: cam.s, x: cam.x, y: cam.y }, to: { s: to.s, x: to.x, y: to.y },
+             t0: Date.now(), ms };
+  animateFor(ms + 40);
+}
+
+/* One step of a flight. It travels through the world point at the middle
+   of the screen and zooms in log space, so it neither swings wide nor rushes
+   the last stretch. */
+function stepFlight() {
+  const f = flight;
+  if (!f) return;
+  const k = Math.min(1, (Date.now() - f.t0) / f.ms);
+  const e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+  const px = W / 2, py = H / 2;
+  const fx = (px - f.from.x) / f.from.s, fy = (py - f.from.y) / f.from.s;
+  const tx = (px - f.to.x) / f.to.s, ty = (py - f.to.y) / f.to.s;
+  const s = Math.exp(Math.log(f.from.s) + (Math.log(f.to.s) - Math.log(f.from.s)) * e);
+  cam = { s, x: px - (fx + (tx - fx) * e) * s, y: py - (fy + (ty - fy) * e) * s };
+  if (k >= 1) { cam = { ...f.to }; flight = null; }
+  showZoom();
+}
+
+/* --------------------------------------------------------------- chrome
+
+   The floating pieces -- the dock, the timeline, the tour and path cards --
+   centre themselves on the part of the canvas the sidebar and the reader are
+   not covering. And on a narrow window the dock rides up a row rather than
+   sit on top of the counts in the corner. */
+function placeChrome() {
+  const body = document.body;
+  const left = sidebarOpen ? SIDEBAR_W : 0;
+  const right = panel.classList.contains("open") && !maximized ? Math.min(520, W * 0.94) : 0;
+  if (body.style && body.style.setProperty) {
+    body.style.setProperty("--free-left", left + "px");
+    body.style.setProperty("--free-right", right + "px");
+  }
+  const dock = $("dock"), stats = $("stats"), zoom = $("zoomer");
+  const d = dock.getBoundingClientRect(), st = stats.getBoundingClientRect();
+  const z = zoom.getBoundingClientRect();
+  if (!(d.width > 0) || !(st.right >= 0)) return;
+  const centre = left + (W - left - right) / 2;
+  const clash = st.right + 10 > centre - d.width / 2
+    || (z.left > 0 && right === 0 && centre + d.width / 2 > z.left - 10);
+  body.classList.toggle("dock-high", clash);
+}
+
+/* ------------------------------------------------------------------- dock */
+let popFor = null;
+
+function openPop(kind, fill) {
+  const pop = $("pop");
+  if (popFor === kind) { closePop(); return; }
+  popFor = kind;
+  pop.textContent = "";
+  pop.hidden = false;
+  fill(pop);
+}
+
+function closePop() {
+  $("pop").hidden = true;
+  popFor = null;
+}
+
+function popHead(pop, text, extra) {
+  const h = document.createElement("div");
+  h.className = "pop-head";
+  const t = document.createElement("span");
+  t.textContent = text;
+  const sp = document.createElement("span");
+  sp.className = "spacer";
+  h.append(t, sp);
+  if (extra) h.appendChild(extra);
+  pop.appendChild(h);
+}
+
+function popRow(pop, { key, name, sub, title, run, remove }) {
+  const b = document.createElement("button");
+  b.className = "pop-row";
+  if (title) b.title = title;
+  const k = document.createElement("span");
+  k.className = "k";
+  k.textContent = key || "";
+  const nm = document.createElement("span");
+  nm.className = "nm";
+  nm.textContent = name;
+  b.append(k, nm);
+  if (sub) {
+    const s = document.createElement("span");
+    s.className = "sub";
+    s.textContent = sub;
+    b.appendChild(s);
+  }
+  if (remove) {
+    const x = document.createElement("span");
+    x.className = "x";
+    x.textContent = "✕";
+    x.title = remove.title;
+    x.addEventListener("click", (e) => { e.stopPropagation(); remove.run(); });
+    b.appendChild(x);
+  }
+  b.addEventListener("click", () => run());
+  pop.appendChild(b);
+  return b;
+}
+
+function popText(pop, text) {
+  const d = document.createElement("div");
+  d.className = "pop-empty";
+  d.textContent = text;
+  pop.appendChild(d);
+}
+
+function popFoot(pop, buttons) {
+  const f = document.createElement("div");
+  f.className = "pop-foot";
+  for (const [label, run, cls] of buttons) {
+    const b = document.createElement("button");
+    b.className = cls || "ghost sm";
+    b.textContent = label;
+    b.addEventListener("click", run);
+    f.appendChild(b);
+  }
+  pop.appendChild(f);
+}
+
+function dockState() {
+  $("d-live").classList.toggle("on", !!live);
+  $("d-history").classList.toggle("on", !!hist);
+  $("d-tours").classList.toggle("on", !!(tourPlay || tourRec));
+  $("d-disk").classList.toggle("on", !!disk);
+}
+
+/* ------------------------------------------------------------- grafting
+
+   Put files on the graph with their folder chains, the way a search result
+   is grafted on, without opening every folder on the way. A narrowed view
+   widens if one of them lies outside it. */
+async function ensureNodes(ids, { missing = false } = {}) {
+  const want = [...new Set(ids)].filter((id) => typeof id === "string"
+    && id.startsWith("/") && !nodes.has(id));
+  if (!want.length) return true;
+  if (viewRoot !== ROOT
+      && want.some((id) => id !== viewRoot && !id.startsWith(viewRoot + "/"))) {
+    await showFullMap();
+  }
+  let r;
+  try { r = await post("/api/nodes", { paths: want }); }
+  catch (err) { return false; }
+  const grafted = [];
+  for (const hit of (r && r.hits) || []) {
+    // a file that is gone is only drawn by the history, which asks for them
+    if (hit.node.missing && !missing) continue;
+    grafted.push(...graft(hit));
+  }
+  if (grafted.length) {
+    linkUp(grafted);
+    updateStats();
+    reheat(0.25);
+  }
+  return true;
+}
+
+function graft(hit) {
+  let prev = nodes.get(viewRoot);
+  const added = [];
+  if (!prev) return added;
+  const under = (id) => id.startsWith(viewRoot + "/");
+  for (const anc of hit.ancestors || []) {
+    if (anc.id === viewRoot || !under(anc.id)) continue;
+    if (!nodes.has(anc.id)) added.push(anc.id);
+    const a = addNode(anc, prev);
+    addLink(prev.id, a.id, "tree");
+    prev = a;
+  }
+  if (!under(hit.node.id)) return added;
+  if (!nodes.has(hit.node.id)) added.push(hit.node.id);
+  const n = addNode(hit.node, prev);
+  addLink(prev.id, n.id, "tree");
+  return added;
+}
+
+/* --------------------------------------------------------------- overlays
+
+   Drawn over the nodes and under the labels: the chain between two files,
+   the stop a tour is on, and -- added below -- what has just changed. */
+function arrowHead(x1, y1, x2, y2, back, size) {
+  const ang = Math.atan2(y2 - y1, x2 - x1);
+  const tx = x2 - Math.cos(ang) * back, ty = y2 - Math.sin(ang) * back;
+  ctx.beginPath();
+  ctx.moveTo(tx, ty);
+  ctx.lineTo(tx - Math.cos(ang - 0.42) * size, ty - Math.sin(ang - 0.42) * size);
+  ctx.lineTo(tx - Math.cos(ang + 0.42) * size, ty - Math.sin(ang + 0.42) * size);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawOverlays() {
+  const now = Date.now();
+  drawHeat(now);
+  drawPath();
+  if (tourPlay && sel) {
+    const x = toScreenX(sel.x), y = toScreenY(sel.y);
+    const r = Math.max(1.8, sel.r * cam.s);
+    const breathe = 0.5 + 0.5 * Math.sin(now / 380);
+    ctx.strokeStyle = `rgba(255, 209, 102, ${0.35 + 0.4 * breathe})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(x, y, r + 11 + breathe * 4, 0, Math.PI * 2);
+    ctx.stroke();
+    animateFor(200);
+  }
+}
+
+/* ------------------------------------------------------------------ path
+
+   How does main.py reach db.py? Select one and shift-click the other, and
+   the chain of imports and links between them lights up: following imports
+   in the direction they run when such a chain exists, and any link at all
+   when it does not. Tags are left out -- two notes tagged #work are not
+   "connected" in any sense worth a path. */
+let pathHops = null;            // [{id, kind, out}] from the start, while shown
+let pathSet = null;             // ids on it, which stay visible whatever the filters
+let pathOnly = false;
+
+function findPath(from, to) {
+  if (!connIndex || from === to) return null;
+  const usable = (c) => c.kind === "note" || c.kind === "code";
+  const search = (directed) => {
+    const prev = new Map([[from, null]]);
+    const queue = [from];
+    for (let i = 0; i < queue.length && !prev.has(to); i++) {
+      for (const c of connIndex.get(queue[i]) || []) {
+        if (!usable(c) || (directed && !c.out) || prev.has(c.path)) continue;
+        prev.set(c.path, { from: queue[i], kind: c.kind, out: c.out });
+        queue.push(c.path);
+      }
+    }
+    if (!prev.has(to)) return null;
+    const hops = [];
+    for (let cur = to; cur !== from; cur = prev.get(cur).from) {
+      const p = prev.get(cur);
+      hops.unshift({ id: cur, kind: p.kind, out: p.out });
+    }
+    return hops;
+  };
+  const directed = search(true);
+  if (directed) return { directed: true, hops: directed };
+  const any = search(false);
+  return any ? { directed: false, hops: any } : null;
+}
+
+async function showPath(a, b) {
+  if (!a || !b || a === b || a.tag || b.tag) return;
+  if (!connIndex) { toast("the links are still being indexed", true); return; }
+  const found = findPath(a.id, b.id);
+  if (!found) {
+    pathHops = null;
+    pathSet = null;
+    renderPathCard(a, b, null);
+    repaint();
+    return;
+  }
+  const hops = [{ id: a.id, kind: null, out: null }, ...found.hops];
+  await ensureNodes(hops.map((h) => h.id));
+  for (let i = 1; i < hops.length; i++) addLink(hops[i - 1].id, hops[i].id, hops[i].kind);
+  pathHops = hops;
+  pathSet = new Set(hops.map((h) => h.id));
+  renderPathCard(a, b, found);
+  const onGraph = hops.map((h) => nodes.get(h.id)).filter(Boolean);
+  flyTo(camAround(onGraph));
+  repaint();
+}
+
+function clearPath() {
+  if (!pathHops && $("pathcard").hidden) return false;
+  pathHops = null;
+  pathSet = null;
+  pathOnly = false;
+  $("pathcard").hidden = true;
+  updateStats();
+  repaint();
+  return true;
+}
+
+function hopVerb(h) {
+  if (h.kind === "code") return h.out ? "imports" : "is imported by";
+  return h.out ? "links to" : "is linked from";
+}
+
+function renderPathCard(a, b, found) {
+  const card = $("pathcard");
+  card.textContent = "";
+  card.hidden = false;
+  const label = document.createElement("span");
+  label.className = "pc-label";
+  label.textContent = "path";
+  card.appendChild(label);
+  const stepBtn = (id) => {
+    const s = document.createElement("button");
+    s.className = "pc-step";
+    s.textContent = baseName(id);
+    s.title = id;
+    s.addEventListener("click", () => {
+      const n = nodes.get(id);
+      if (n) { select(n); flyTo(camOn(n)); }
+    });
+    return s;
+  };
+  if (!found) {
+    const none = document.createElement("span");
+    none.className = "pc-none";
+    none.textContent = `No chain of imports or links joins ${a.name} and ${b.name}.`;
+    card.appendChild(none);
+  } else {
+    card.appendChild(stepBtn(pathHops[0].id));
+    for (const h of pathHops.slice(1)) {
+      const verb = document.createElement("span");
+      verb.className = "pc-arrow";
+      verb.textContent = hopVerb(h);
+      card.append(verb, stepBtn(h.id));
+    }
+    const only = document.createElement("button");
+    only.className = "ghost sm" + (pathOnly ? " on" : "");
+    only.textContent = "only the path";
+    only.title = "hide everything that is not on the path";
+    only.addEventListener("click", () => {
+      pathOnly = !pathOnly;
+      only.classList.toggle("on", pathOnly);
+      updateStats();
+      reheat(0.2);
+    });
+    card.appendChild(only);
+  }
+  const x = document.createElement("button");
+  x.className = "ghost sm";
+  x.textContent = "✕";
+  x.title = "clear the path (esc)";
+  x.addEventListener("click", () => clearPath());
+  card.appendChild(x);
+}
+
+function drawPath() {
+  if (!pathHops) return;
+  ctx.lineWidth = 2.6;
+  ctx.strokeStyle = "#ffd166";
+  ctx.fillStyle = "#ffd166";
+  for (let i = 1; i < pathHops.length; i++) {
+    const a = nodes.get(pathHops[i - 1].id), b = nodes.get(pathHops[i].id);
+    if (!a || !b) continue;
+    const ax = toScreenX(a.x), ay = toScreenY(a.y);
+    const bx = toScreenX(b.x), by = toScreenY(b.y);
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(bx, by);
+    ctx.stroke();
+    // the arrow says which way the import or link runs
+    const toward = pathHops[i].out;
+    const [hx, hy, tx, ty, end] = toward ? [ax, ay, bx, by, b] : [bx, by, ax, ay, a];
+    arrowHead(hx, hy, tx, ty, Math.max(1.8, end.r * cam.s) + 5, 9);
+  }
+  ctx.font = "700 10px ui-sans-serif, system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  pathHops.forEach((h, i) => {
+    const n = nodes.get(h.id);
+    if (!n) return;
+    const x = toScreenX(n.x), y = toScreenY(n.y);
+    const r = Math.max(1.8, n.r * cam.s);
+    ctx.beginPath();
+    ctx.arc(x - r - 7, y - r - 7, 8, 0, Math.PI * 2);
+    ctx.fillStyle = "#ffd166";
+    ctx.fill();
+    ctx.fillStyle = "#1a1300";
+    ctx.fillText(String(i + 1), x - r - 7, y - r - 6.5);
+  });
+}
+
+/* ------------------------------------------------------------------ views
+
+   A view is the way you are looking right now -- the folder it is narrowed
+   to, the kinds hidden, the folders open, the camera -- kept under a name.
+   The first nine are on the number keys. */
+let viewsList = [];
+
+async function loadViews() {
+  if (SNAPSHOT) return;
+  try { viewsList = (await api("/api/views")).views || []; }
+  catch (err) { viewsList = []; }
+}
+
+function currentView(name) {
+  return {
+    name, scope: viewRoot, hidden: [...hidden], solo: soloGroup,
+    semantic: showSemantic, labels: showLabels,
+    expanded: [...expanded].filter((id) => id !== viewRoot && nodes.has(id)),
+    selected: sel && !sel.tag && sel.id.startsWith("/") ? sel.id : null,
+    cam: { s: cam.s, x: cam.x, y: cam.y },
+  };
+}
+
+async function saveView() {
+  const here = nodes.get(viewRoot);
+  const name = await ask({
+    title: "Save this view",
+    text: "The folder in view, what is hidden, what is open and where you are "
+      + "looking — kept under a name. The first nine are on the number keys.",
+    value: here && viewRoot !== ROOT ? here.name : "",
+    ok: "save",
+  });
+  if (!name) return;
+  let r;
+  try { r = await post("/api/views", { op: "save", view: currentView(name) }); }
+  catch (err) { toast("could not reach cortex", true); return; }
+  if (!r.ok) { toast(r.error || "could not save the view", true); return; }
+  viewsList = r.views || [];
+  const slot = viewsList.findIndex((v) => v.name.toLowerCase() === name.toLowerCase());
+  toast(slot >= 0 && slot < 9 ? `saved — press ${slot + 1} to come back to it`
+                              : "view saved");
+  if (popFor === "views") { popFor = null; openViews(); }
+}
+
+async function forgetView(v) {
+  let r;
+  try { r = await post("/api/views", { op: "forget", name: v.name }); }
+  catch (err) { toast("could not reach cortex", true); return; }
+  viewsList = (r && r.views) || viewsList.filter((x) => x !== v);
+  if (popFor === "views") { popFor = null; openViews(); }
+}
+
+async function applyView(v) {
+  if (!v) return;
+  closePop();
+  if (v.scope && v.scope !== viewRoot) {
+    if (v.scope === ROOT) await showFullMap();
+    else {
+      let r;
+      try { r = await post("/api/nodes", { paths: [v.scope] }); } catch (err) { r = null; }
+      const hit = r && r.hits && r.hits[0];
+      if (!hit || hit.node.missing || !hit.node.dir) {
+        toast(`the folder of “${v.name}” is gone`, true);
+      } else {
+        await setScope(hit.node);
+      }
+    }
+  }
+  hidden.clear();
+  for (const g of v.hidden || []) hidden.add(g);
+  soloGroup = v.solo || null;
+  afterFilterChange();
+  showSemantic = v.semantic !== false;
+  $("btn-links").classList.toggle("on", showSemantic);
+  showLabels = v.labels !== false;
+
+  // the folders the view had open, outermost first; and shut the others, or
+  // it would not look the way it did
+  const want = new Set(v.expanded || []);
+  for (const id of [...expanded]) {
+    if (id !== viewRoot && !want.has(id) && nodes.has(id)) collapse(id);
+  }
+  const order = [...want].sort((a, b) => a.split("/").length - b.split("/").length);
+  for (const id of order) {
+    if (!nodes.has(id)) await ensureNodes([id]);
+    if (nodes.has(id) && !expanded.has(id)) await expand(id, { quiet: true });
+  }
+  const pick = v.selected && nodes.get(v.selected);
+  if (pick) select(pick); else closePanel();
+  if (v.cam) flyTo(v.cam, 600);
+  updateStats();
+  if (!SNAPSHOT) toast(`view: ${v.name}`);
+}
+
+function openViews() {
+  openPop("views", (pop) => {
+    popHead(pop, "Views");
+    if (!viewsList.length) {
+      popText(pop, "Nothing saved yet. Arrange the graph the way you want it — "
+        + "narrowed to a folder, some kinds hidden, some folders open — and save "
+        + "it here. The first nine are on keys 1 to 9.");
+    }
+    viewsList.forEach((v, i) => popRow(pop, {
+      key: i < 9 ? String(i + 1) : "", name: v.name,
+      sub: v.scope && v.scope !== ROOT ? baseName(v.scope) : "",
+      title: `open this view${i < 9 ? ` (${i + 1})` : ""}`,
+      run: () => applyView(v),
+      remove: { title: "forget this view", run: () => forgetView(v) },
+    }));
+    popFoot(pop, [["save this view…", () => saveView(), "ghost sm"]]);
+  });
+}
+
+/* ------------------------------------------------------------------ tours
+
+   A walk through the project, with something said at each stop, kept as a
+   markdown file in its .tours folder -- so it is committed with the code and
+   reads properly on GitHub. Record one by selecting files in the order you
+   would show them; play one and the graph flies from stop to stop. */
+let tourRec = null;              // {title, stops: [{path, line, note}]}
+let tourPlay = null;             // {tour, i}
+
+function openTours() {
+  openPop("tours", async (pop) => {
+    popHead(pop, "Tours");
+    let list = [];
+    try { list = (await api("/api/tours")).tours || []; } catch (err) { list = []; }
+    if (popFor !== "tours") return;
+    if (!list.length) {
+      popText(pop, "A tour walks someone through this folder, stop by stop, with "
+        + "something said at each. Record one: select files in the order you would "
+        + "show them, and write a line about each.");
+    }
+    for (const t of list) {
+      popRow(pop, {
+        key: "▶", name: t.title, sub: `${t.stops} stop${t.stops === 1 ? "" : "s"}`,
+        title: t.intro || "play this tour", run: () => playTour(t.path),
+        remove: READ_ONLY || SNAPSHOT ? null
+          : { title: "move this tour to the trash", run: () => trashTour(t) },
+      });
+    }
+    if (!READ_ONLY && !SNAPSHOT) popFoot(pop, [["record a tour…", () => startRecording()]]);
+  });
+}
+
+async function trashTour(t) {
+  const yes = await ask({
+    title: "Move this tour to the trash?", text: `“${t.title}” will go to your `
+      + "desktop's trash, where it can be restored.", ok: "move to trash", danger: true,
+  });
+  if (!yes) return;
+  let r;
+  try { r = await post("/api/tours", { op: "delete", path: t.path }); }
+  catch (err) { toast("could not reach cortex", true); return; }
+  if (!r.ok) { toast(r.error || "could not remove it", true); return; }
+  popFor = null;
+  openTours();
+}
+
+async function startRecording() {
+  if (READ_ONLY) { toast("cortex was started read-only", true); return; }
+  closePop();
+  const title = await ask({
+    title: "Record a tour",
+    text: "Select files in the order you would show them, and write a line about "
+      + "each as you go. Name it for the person who will play it.",
+    value: "", ok: "start recording",
+  });
+  if (!title) return;
+  tourPlay = null;
+  tourRec = { title, stops: [] };
+  if (sel && !sel.tag && sel.id.startsWith("/")) addStop(sel);
+  renderTourCard();
+  dockState();
+}
+
+function addStop(n) {
+  if (!tourRec || !n || n.tag || !n.id.startsWith("/") || n.missing) return;
+  const last = tourRec.stops[tourRec.stops.length - 1];
+  if (last && last.path === n.id) return;
+  tourRec.stops.push({ path: n.id, line: selLine || null, note: "" });
+  renderTourCard();
+}
+
+async function finishRecording() {
+  const rec = tourRec;
+  if (!rec) return;
+  if (!rec.stops.length) { toast("select at least one file first", true); return; }
+  let r;
+  try { r = await post("/api/tours", { op: "save", title: rec.title, intro: "", stops: rec.stops }); }
+  catch (err) { toast("could not reach cortex — the tour is still here", true); return; }
+  if (!r.ok) { toast(r.error || "could not save the tour", true); return; }
+  tourRec = null;
+  $("tourcard").hidden = true;
+  dockState();
+  toast(`tour saved in ${r.path.replace(ROOT, "~")}`);
+}
+
+async function cancelRecording() {
+  if (tourRec && tourRec.stops.length > 1) {
+    const yes = await ask({ title: "Throw this tour away?",
+      text: `${tourRec.stops.length} stops have been recorded.`, ok: "throw it away",
+      danger: true });
+    if (!yes) return;
+  }
+  tourRec = null;
+  $("tourcard").hidden = true;
+  dockState();
+}
+
+async function playTour(path) {
+  if (tourRec) {
+    toast("save or cancel the tour you are recording first", true);
+    return;
+  }
+  let t;
+  try { t = await query("/api/tour", { path }); }
+  catch (err) { toast("could not reach cortex", true); return; }
+  if (!t || !t.ok) { toast((t && t.error) || "could not read the tour", true); return; }
+  if (!t.stops.length) { toast("this tour has no stops", true); return; }
+  closePop();
+  tourRec = null;
+  tourPlay = { tour: t, i: 0 };
+  dockState();
+  await showStop();
+}
+
+async function showStop() {
+  const play = tourPlay;
+  if (!play) return;
+  const stop = play.tour.stops[play.i];
+  renderTourCard();
+  if (stop.missing) return;
+  await ensureNodes([stop.path]);
+  const n = nodes.get(stop.path);
+  if (!n || tourPlay !== play) return;
+  select(n);
+  if (stop.line) setLine(stop.line);
+  flyTo(camOn(n, Math.max(cam.s, 1.3)));
+}
+
+function tourStep(d) {
+  if (!tourPlay) return;
+  const j = tourPlay.i + d;
+  if (j < 0 || j >= tourPlay.tour.stops.length) {
+    if (j >= tourPlay.tour.stops.length) toast("that was the last stop");
+    return;
+  }
+  tourPlay.i = j;
+  showStop();
+}
+
+function endTour() {
+  if (!tourPlay) return false;
+  tourPlay = null;
+  $("tourcard").hidden = true;
+  dockState();
+  repaint();
+  return true;
+}
+
+function renderTourCard() {
+  const card = $("tourcard");
+  card.textContent = "";
+  card.hidden = false;
+  const head = document.createElement("div");
+  head.className = "tc-head";
+  const btn = (label, title, run, cls = "ghost sm") => {
+    const b = document.createElement("button");
+    b.className = cls;
+    b.textContent = label;
+    b.title = title;
+    b.addEventListener("click", run);
+    return b;
+  };
+  const spacer = () => { const s = document.createElement("span"); s.className = "spacer"; return s; };
+
+  if (tourRec) {
+    const rec = document.createElement("span");
+    rec.className = "rec";
+    rec.textContent = "● REC";
+    const name = document.createElement("b");
+    name.textContent = tourRec.title;
+    const count = document.createElement("span");
+    count.className = "tc-step";
+    count.textContent = `${tourRec.stops.length} stop${tourRec.stops.length === 1 ? "" : "s"}`;
+    head.append(rec, name, spacer(), count);
+    card.appendChild(head);
+    const last = tourRec.stops[tourRec.stops.length - 1];
+    if (!last) {
+      const p = document.createElement("div");
+      p.className = "pop-empty";
+      p.textContent = "Select the first file you would show someone.";
+      card.appendChild(p);
+    } else {
+      const file = document.createElement("div");
+      file.className = "tc-file";
+      file.textContent = last.path.replace(ROOT + "/", "") + (last.line ? `, line ${last.line}` : "");
+      const note = document.createElement("textarea");
+      note.className = "tc-note";
+      note.placeholder = "What should someone notice here? (markdown)";
+      note.value = last.note;
+      note.addEventListener("input", () => { last.note = note.value; });
+      card.append(file, note);
+    }
+    const btns = document.createElement("div");
+    btns.className = "tc-btns";
+    if (last) {
+      btns.appendChild(btn("remove this stop", "take the last stop out", () => {
+        tourRec.stops.pop();
+        renderTourCard();
+      }));
+    }
+    btns.append(spacer(), btn("cancel", "stop recording, without saving", () => cancelRecording()),
+                btn("save tour", "write the tour into the project's .tours folder",
+                    () => finishRecording(), "primary sm"));
+    card.appendChild(btns);
+    return;
+  }
+
+  const play = tourPlay;
+  if (!play) { card.hidden = true; return; }
+  const stop = play.tour.stops[play.i];
+  const name = document.createElement("b");
+  name.textContent = play.tour.title;
+  const count = document.createElement("span");
+  count.className = "tc-step";
+  count.textContent = `${play.i + 1} / ${play.tour.stops.length}`;
+  head.append(name, spacer(), count, btn("✕", "end the tour (esc)", () => endTour()));
+  card.appendChild(head);
+
+  const file = document.createElement("div");
+  file.className = "tc-file" + (stop.missing ? " missing" : "");
+  file.textContent = (stop.label || stop.path.replace(ROOT + "/", ""))
+    + (stop.missing ? " — no longer here" : "");
+  card.appendChild(file);
+  const text = [play.i === 0 ? play.tour.intro : "", stop.note].filter(Boolean).join("\n\n");
+  if (text) {
+    const body = document.createElement("div");
+    body.className = "tc-body";
+    body.appendChild(markdownView(text, play.tour.path));
+    card.appendChild(body);
+  }
+  const btns = document.createElement("div");
+  btns.className = "tc-btns";
+  const back = btn("‹ back", "the previous stop (←)", () => tourStep(-1));
+  back.disabled = play.i === 0;
+  const dots = document.createElement("div");
+  dots.className = "tc-dots";
+  play.tour.stops.forEach((_, i) => {
+    const d = document.createElement("i");
+    if (i === play.i) d.className = "on";
+    dots.appendChild(d);
+  });
+  const last = play.i === play.tour.stops.length - 1;
+  const next = last ? btn("done", "end the tour", () => endTour(), "primary sm")
+                    : btn("next ›", "the next stop (→)", () => tourStep(1), "primary sm");
+  btns.append(back, spacer(), dots, spacer(), next);
+  card.appendChild(btns);
+}
+
+/* ------------------------------------------------------------------ today
+
+   One note per day, made on first use, in the folder's daily/ (or the
+   Daily/ or journal/ already there). */
+async function openToday() {
+  if (READ_ONLY) { toast("cortex was started read-only", true); return; }
+  let r;
+  try { r = await post("/api/daily", {}); }
+  catch (err) { toast("could not reach cortex", true); return; }
+  if (!r.ok) { toast(r.error || "could not open today's note", true); return; }
+  await settle(parentOf(r.path));
+  await ensureNodes([r.path]);
+  const n = nodes.get(r.path);
+  if (!n) { toast("today's note is outside this view", true); return; }
+  select(n);
+  flyTo(camOn(n));
+  startEdit(n, { atEnd: true });
+}
+
+/* --------------------------------------------------------------- capture
+
+   Started with --capture -- "Quick note" on the app-menu icon -- the window
+   is only this: one box, and enter puts what is in it into today's note. */
+async function quitQuietly() {
+  try { await post("/api/quit", {}); } catch (err) { /* gone already */ }
+  gone = true;
+  if (window.close) window.close();
+}
+
+function startCapture() {
+  document.body.classList.add("capture");
+  $("capture").hidden = false;
+  $("cap-where").textContent = `→ today's note in ${CFG.title || ROOT}`;
+  const box = $("cap-text");
+  const send = async () => {
+    const text = box.value.trim();
+    if (!text) { quitQuietly(); return; }
+    $("cap-ok").disabled = true;
+    let r;
+    try { r = await post("/api/capture", { text }); }
+    catch (err) { $("cap-ok").disabled = false; toast("could not reach cortex", true); return; }
+    if (!r.ok) { $("cap-ok").disabled = false; toast(r.error || "could not add it", true); return; }
+    toast("added to today's note");
+    setTimeout(quitQuietly, 450);
+  };
+  box.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+    else if (e.key === "Escape") { e.preventDefault(); quitQuietly(); }
+  });
+  $("cap-ok").addEventListener("click", () => send());
+  box.focus();
+}
+
+/* ----------------------------------------------------------------- share
+
+   The view as one HTML file that opens in any browser, for someone without
+   cortex. What goes into it is said before it is made, and the text of the
+   files goes in only when asked: a file sent is a file you cannot take back. */
+function shareFiles() {
+  return [...nodes.values()].filter((n) => visible(n) && !n.dir && !n.tag
+    && !n.missing && n.id.startsWith("/"));
+}
+
+function openShare() {
+  closeMenu();
+  const shown = [...nodes.values()].filter(visible).length;
+  const files = shareFiles().length;
+  $("share-text").textContent = `One HTML file of this view: ${shown} node`
+    + `${shown === 1 ? "" : "s"}, where they sit now, with their links.`;
+  $("share-contents-label").textContent = `Include the text of the ${files} file`
+    + `${files === 1 ? "" : "s"} on screen — anyone you send it to can read them.`;
+  $("share-contents").checked = false;
+  $("share").classList.add("open");
+  $("share-ok").focus();
+}
+
+async function makeShare() {
+  $("share").classList.remove("open");
+  const positions = {};
+  for (const n of nodes.values()) if (!n.missing) positions[n.id] = [n.x, n.y];
+  const view = currentView("shared");
+  const body = {
+    root: viewRoot, title: (nodes.get(viewRoot) || {}).name || CFG.title,
+    folders: [...expanded].filter((id) => nodes.has(id)),
+    files: shareFiles().map((n) => n.id),
+    positions, cam: { s: cam.s, x: cam.x, y: cam.y },
+    contents: $("share-contents").checked, view,
+  };
+  toast("making the file…");
+  let res;
+  try {
+    res = await reach(apiURL("/api/snapshot"), {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) { toast("could not reach cortex", true); return; }
+  if (!res.ok) { toast("could not make the file", true); return; }
+  const blob = await res.blob();
+  offerDownload(blob, `${(body.title || "cortex").replace(/[^\w.-]+/g, "_")}-map.html`);
+  toast(`saved a ${fmtSize(blob.size)} map — it opens in any browser`);
+}
+
+/* ---------------------------------------------------------------- palette
+
+   ctrl-k: everything cortex can do, and every file, by typing a few
+   letters of it. The keys are shown beside each, so the palette is also how
+   the keys are learnt. */
+let palRows = [], palIndex = 0, palTimer = null, palFiles = [];
+
+function commands() {
+  const write = !READ_ONLY && !SNAPSHOT;
+  const list = [
+    { label: "Open another folder…", key: "p", run: () => openPlaces(), on: !SNAPSHOT },
+    { label: "Today's note", key: "d", run: () => openToday(), on: write },
+    { label: "New note…", key: "n", on: write,
+      run: () => newEntry(sel && !sel.tag ? parentOfNode(sel) : viewRoot) },
+    { label: live ? "Live: stop watching" : "Live: watch files change", key: "w",
+      run: () => toggleLive(), on: !SNAPSHOT },
+    { label: hist ? "History: back to now" : "History: replay through git", key: "h",
+      run: () => toggleHistory(), on: !SNAPSHOT },
+    { label: "Play a tour…", key: "T", run: () => openTours() },
+    { label: "Record a tour…", run: () => startRecording(), on: write },
+    { label: "Save this view…", run: () => saveView(), on: !SNAPSHOT },
+    { label: "Views…", key: "v", run: () => openViews(), on: !SNAPSHOT },
+    ...viewsList.map((v, i) => ({ label: `View: ${v.name}`, key: i < 9 ? String(i + 1) : "",
+                                  run: () => applyView(v) })),
+    { label: disk ? "Disk: back to item counts" : "Disk: size by space on disk", key: "u",
+      run: () => toggleDisk(), on: !SNAPSHOT },
+    { label: "Share this map…", run: () => openShare(), on: !SNAPSHOT },
+    { label: "Save a picture (PNG)", key: "x", run: () => exportScene("png") },
+    { label: "Save a picture (SVG)", key: "X", run: () => exportScene("svg") },
+    { label: "Fit the graph to the screen", key: "0", run: () => fit() },
+    { label: showSemantic ? "Hide links" : "Show links", key: "l",
+      run: () => $("btn-links").click() },
+    { label: showLabels ? "Hide labels" : "Show labels", key: "t", run: () => keyHandlerKey("t") },
+    { label: showGit ? "Hide git marks" : "Show git marks", key: "g", run: () => keyHandlerKey("g") },
+    { label: "Directories sidebar", key: "s", run: () => toggleSidebar() },
+    { label: "Back to the whole map", key: "b", run: () => showFullMap(), on: viewRoot !== ROOT },
+    { label: "Clear the path", key: "esc", run: () => clearPath(), on: !!pathHops },
+    { label: "Keyboard shortcuts", key: "?", run: () => $("help").classList.add("open") },
+    { label: "Quit cortex", run: () => quitCortex(), on: !!CFG.canQuit && !SNAPSHOT },
+  ];
+  return list.filter((c) => c.on !== false);
+}
+
+const keyHandlerKey = (key) => keyHandler({
+  key, target: null, preventDefault() {}, metaKey: false, ctrlKey: false,
+  altKey: false, shiftKey: false,
+});
+
+/* How well `term` matches `text`: its letters in order, scored for runs and
+   word starts. -1 when they are not all there. */
+function fuzzy(term, text) {
+  const t = text.toLowerCase();
+  if (!term) return 0;
+  const at = t.indexOf(term);
+  if (at !== -1) return 1000 - at * 2 - (t.length - term.length) / 10
+    + (at === 0 || /[\s:/_.-]/.test(t[at - 1]) ? 200 : 0);
+  let score = 0, from = 0, run = 0;
+  for (const ch of term) {
+    const i = t.indexOf(ch, from);
+    if (i === -1) return -1;
+    run = i === from ? run + 1 : 0;
+    score += 10 + run * 6 + (i === 0 || /[\s:/_.-]/.test(t[i - 1]) ? 12 : 0);
+    from = i + 1;
+  }
+  return score - t.length / 10;
+}
+
+function openPalette() {
+  closeMenu();
+  closePop();
+  $("palette").classList.add("open");
+  const input = $("pal-input");
+  input.value = "";
+  palFiles = [];
+  renderPalette();
+  input.focus();
+}
+
+function closePalette() {
+  $("palette").classList.remove("open");
+  clearTimeout(palTimer);
+}
+
+function renderPalette() {
+  const term = $("pal-input").value.trim().toLowerCase();
+  const scored = commands().map((c) => ({ c, s: fuzzy(term, c.label) }))
+    .filter((x) => x.s >= 0).sort((a, b) => b.s - a.s);
+  const list = $("pal-list");
+  list.textContent = "";
+  palRows = [];
+  palIndex = 0;
+  const add = (kind, label, sub, run) => {
+    const b = document.createElement("button");
+    b.className = "pal-row";
+    const k = document.createElement("span");
+    k.className = "kind";
+    k.textContent = kind;
+    const nm = document.createElement("span");
+    nm.className = "nm";
+    nm.textContent = label;
+    const s = document.createElement("span");
+    s.className = "sub";
+    s.textContent = sub || "";
+    b.append(k, nm, s);
+    b.addEventListener("click", () => { closePalette(); run(); });
+    list.appendChild(b);
+    b._run = run;
+    palRows.push(b);
+  };
+  for (const { c } of scored.slice(0, term ? 12 : 40)) add("", c.label, c.key, c.run);
+  for (const hit of palFiles.slice(0, 30)) {
+    add("file", hit.node.name + (hit.node.dir ? "/" : ""), dirLabel(hit.node.id, 40),
+        () => revealPath(hit.node.id));
+  }
+  if (!palRows.length) {
+    const e = document.createElement("div");
+    e.className = "pal-empty";
+    e.textContent = term.length < 2 ? "Type to search." : "Nothing by that name.";
+    list.appendChild(e);
+  }
+  if (palRows[0]) palRows[0].classList.add("on");
+}
+
+async function paletteFiles() {
+  const term = $("pal-input").value.trim();
+  if (term.length < 2) { palFiles = []; renderPalette(); return; }
+  let r;
+  try { r = await api("/api/search", { q: term }); } catch (err) { return; }
+  if ($("pal-input").value.trim() !== term) return;
+  const inScope = (p) => viewRoot === ROOT || p === viewRoot || p.startsWith(viewRoot + "/");
+  palFiles = (r.results || []).filter((h) => inScope(h.node.id));
+  renderPalette();
+}
+
+function paletteKey(e) {
+  if (e.key === "Escape") { e.preventDefault(); closePalette(); return; }
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    if (!palRows.length) return;
+    palRows[palIndex].classList.remove("on");
+    palIndex = (palIndex + (e.key === "ArrowDown" ? 1 : -1) + palRows.length) % palRows.length;
+    palRows[palIndex].classList.add("on");
+    if (palRows[palIndex].scrollIntoView) palRows[palIndex].scrollIntoView({ block: "nearest" });
+    return;
+  }
+  if (e.key === "Enter") {
+    e.preventDefault();
+    const row = palRows[palIndex];
+    if (row) { closePalette(); row._run(); }
+  }
+}
+
+/* ------------------------------------------------------- the save button */
+function openSaveMenu(e) {
+  if (e) e.stopPropagation();
+  const menu = $("save-menu");
+  if (menu.classList.contains("open")) { menu.classList.remove("open"); return; }
+  menu.textContent = "";
+  const item = (label, key, run) => {
+    const b = document.createElement("button");
+    const k = document.createElement("span");
+    k.className = "k";
+    k.textContent = key || "";
+    b.append(k, document.createTextNode(label));
+    b.addEventListener("click", () => { menu.classList.remove("open"); run(); });
+    menu.appendChild(b);
+  };
+  item("Picture of this view (PNG)", "x", () => exportScene("png"));
+  item("Picture, sharp at any size (SVG)", "X", () => exportScene("svg"));
+  if (!SNAPSHOT) item("Interactive map (HTML)…", "", () => openShare());
+  if (hist && !SNAPSHOT) item("Video of the history (WebM)", "", () => recordHistory());
+  menu.classList.add("open");
+}
+
+/* ------------------------------------------------------------------ live
+
+   Files light up as they change and leave a fading trail, so you can watch
+   an AI agent, a build or a git pull move through the project as it happens.
+   The server keeps a feed of file-level changes -- the kernel's own events on
+   Linux, a careful poll elsewhere -- and while live is on the window asks it
+   for whatever is new, waiting on the answer rather than asking over and
+   over. */
+let live = null;
+const HEAT_MS = 90_000;          // how long a change glows
+const PING_MS = 1400;            // the ring that goes out from it first
+const TRAIL = 24;                // recent changes joined by the trail
+const heat = new Map();          // path -> {kind, t, x, y}
+let trail = [];                  // [{path, t}], oldest first
+let fadeTimer = null;
+let touched = 0;                 // last time the camera was handled by a person
+const KIND_COLOR = { created: "#34d399", modified: "#f5a524",
+                     deleted: "#f43f5e", moved: "#60a5fa" };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const inView = (p) => p === viewRoot || p.startsWith(viewRoot + "/");
+
+function toggleLive(on) {
+  const next = on === undefined ? !live : !!on;
+  if (next === !!live) return;
+  if (!next) {
+    clearInterval(live.clock);
+    // the long poll would hold a connection for up to 25 seconds more; a few
+    // toggles of that and the browser has none left for anything else
+    if (live.abort) live.abort.abort();
+    live = null;
+    $("feed").hidden = true;
+    dockState();
+    repaint();
+    return;
+  }
+  live = { seq: null, follow: false, reveal: true, events: [], engine: "",
+           count: 0, lastFly: 0, clock: null,
+           abort: typeof AbortController === "function" ? new AbortController() : null };
+  $("feed").hidden = false;
+  live.clock = setInterval(() => { if (live) renderFeed(); }, 5000);
+  renderFeed();
+  dockState();
+  liveLoop(live);
+}
+
+async function liveLoop(me) {
+  while (live === me && !gone) {
+    let r;
+    try {
+      r = await api("/api/activity", { since: me.seq === null ? 0 : me.seq,
+                                       wait: me.seq === null ? 0 : 25 },
+                    me.abort ? { signal: me.abort.signal } : undefined);
+    } catch (err) {
+      if (live !== me || (err && err.name === "AbortError")) return;
+      if (staleToken(err)) { serverGone(); return; }
+      await sleep(2000);
+      continue;
+    }
+    if (live !== me) return;
+    if (r.off) {
+      me.engine = "off";
+      renderFeed();
+      return;
+    }
+    me.engine = r.engine || "";
+    if (me.seq === null) {
+      // what changed before live was turned on is not news
+      me.seq = r.seq || 0;
+      renderFeed();
+      continue;
+    }
+    if (r.dropped) pulse();
+    me.seq = r.seq;
+    if (r.events && r.events.length) await absorb(r.events);
+  }
+}
+
+const HEAT_MAX = 400;            // glowing at once; a big checkout keeps its newest
+
+function record(ev) {
+  const n = nodes.get(ev.path) || (ev.from && nodes.get(ev.from));
+  heat.delete(ev.path);            // re-inserted, so it counts as the newest
+  heat.set(ev.path, { kind: ev.kind, t: Date.now(), x: n ? n.x : null,
+                      y: n ? n.y : null });
+  while (heat.size > HEAT_MAX) heat.delete(heat.keys().next().value);
+  if (ev.from) heat.delete(ev.from);
+  trail.push({ path: ev.path, t: Date.now() });
+  if (trail.length > TRAIL) trail.shift();
+}
+
+async function absorb(events) {
+  const parents = new Set(), reveal = [];
+  for (let ev of events) {
+    if (ev.kind === "overflow") {
+      for (const dir of expanded) parents.add(dir);
+      continue;
+    }
+    if (!inView(ev.path) && !(ev.from && inView(ev.from))) continue;
+    // a save that writes a new copy and renames it over the old one comes
+    // through as a creation; for a file already here it is an edit
+    if (ev.kind === "created" && nodes.has(ev.path)) ev = { ...ev, kind: "modified" };
+    record(ev);
+    if (live) {
+      live.events.push(ev);
+      live.count++;
+      if (live.events.length > 400) live.events.shift();
+    }
+    parents.add(parentOf(ev.path));
+    if (ev.from) parents.add(parentOf(ev.from));
+    if (ev.kind !== "deleted" && !ev.dir && live && live.reveal && !nodes.has(ev.path)) {
+      reveal.push(ev.path);
+    }
+    if (disk) disk.sizes.delete(parentOf(ev.path));
+  }
+  for (const dir of parents) if (expanded.has(dir)) await refreshDir(dir);
+  // a handful of new files is news; ten thousand from a checkout is a flood,
+  // and grafting them all would bury the graph
+  if (reveal.length && reveal.length <= 150) await ensureNodes(reveal);
+  else if (reveal.length) toast(`${reveal.length} files changed — not all brought into the graph`);
+  updateStats();
+  renderFeed();
+  animateFor(PING_MS);
+  // however it was saved -- in place, or as a new copy renamed over it
+  if (sel && !sel.dir && events.some((ev) => ev.path === sel.id && ev.kind !== "deleted")) {
+    renderBody(sel);
+  }
+  // follow: fly to the newest change, but never while someone is steering
+  const newest = [...events].reverse().find((ev) => ev.kind !== "deleted" && nodes.has(ev.path));
+  if (live && live.follow && newest && Date.now() - touched > 4000
+      && Date.now() - live.lastFly > 1200) {
+    live.lastFly = Date.now();
+    flyTo(camOn(nodes.get(newest.path), Math.max(cam.s, 0.9)), 600);
+  }
+}
+
+function drawHeat(now) {
+  if (!heat.size) return;
+  const at = (path) => {
+    const n = nodes.get(path), h = heat.get(path);
+    if (n) return visible(n) ? [n.x, n.y, n] : null;
+    return h && h.x !== null ? [h.x, h.y, null] : null;
+  };
+  // the trail: the order things changed in, as a line from each to the next
+  ctx.setLineDash([4, 5]);
+  let prev = null;
+  for (const p of trail) {
+    const age = now - p.t;
+    const pos = age < HEAT_MS ? at(p.path) : null;
+    if (!pos) { prev = null; continue; }
+    const x = toScreenX(pos[0]), y = toScreenY(pos[1]);
+    if (prev) {
+      const fade = 1 - Math.max(age, prev.age) / HEAT_MS;
+      ctx.strokeStyle = `rgba(255, 209, 102, ${(0.07 + 0.4 * fade).toFixed(3)})`;
+      ctx.lineWidth = 1 + 1.4 * fade;
+      ctx.beginPath();
+      ctx.moveTo(prev.x, prev.y);
+      ctx.lineTo(x, y);
+      ctx.stroke();
+    }
+    prev = { x, y, age };
+  }
+  ctx.setLineDash([]);
+
+  let pinging = false, glowing = false;
+  for (const [path, h] of heat) {
+    const age = now - h.t;
+    if (age > HEAT_MS) { heat.delete(path); continue; }
+    glowing = true;
+    const pos = at(path);
+    if (!pos) continue;
+    const x = toScreenX(pos[0]), y = toScreenY(pos[1]);
+    const r = pos[2] ? Math.max(1.8, pos[2].r * cam.s) : 4;
+    const color = KIND_COLOR[h.kind] || KIND_COLOR.modified;
+    const fade = 1 - age / HEAT_MS;
+    if (age < PING_MS) {
+      pinging = true;
+      const k = age / PING_MS;
+      ctx.globalAlpha = (1 - k) * 0.95;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.arc(x, y, r + 4 + k * 28, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 0.2 + 0.7 * fade;
+    ctx.shadowColor = color;
+    // a blur per ring is the expensive part of drawing; with hundreds lit
+    // at once it is dropped
+    ctx.shadowBlur = heat.size > 60 ? 0 : 16 * fade;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    if (!pos[2]) ctx.setLineDash([2, 3]);       // gone: an outline of where it was
+    ctx.beginPath();
+    ctx.arc(x, y, r + 3, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
+  }
+  // the ping needs every frame; the slow fade after it only now and then
+  if (pinging) animateFor(40);
+  else if (glowing && !fadeTimer) {
+    fadeTimer = setTimeout(() => { fadeTimer = null; repaint(); }, 400);
+  }
+}
+
+const ago = (t) => {
+  const s = Math.max(0, Math.round(Date.now() / 1000 - t));
+  return s < 5 ? "now" : s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m`
+    : `${Math.floor(s / 3600)}h`;
+};
+
+function renderFeed() {
+  if (!live) return;
+  $("feed-engine").textContent = live.engine === "inotify" ? "instant"
+    : live.engine === "poll" ? "checked every 1.5s"
+    : live.engine === "off" ? "off — started with --no-watch" : "";
+  $("feed-follow").classList.toggle("on", live.follow);
+  $("feed-reveal").classList.toggle("on", live.reveal);
+  const count = live.count;
+  const btn = $("d-live");
+  btn.textContent = "";
+  const led = document.createElement("i");
+  led.className = "led";
+  btn.append(led, document.createTextNode("live"));
+  if (count) {
+    const c = document.createElement("span");
+    c.className = "count";
+    c.textContent = String(count);
+    btn.appendChild(c);
+  }
+  const list = $("feed-list");
+  list.textContent = "";
+  const recent = live.events.slice(-80).reverse();
+  if (!recent.length) {
+    const e = document.createElement("div");
+    e.className = "feed-empty";
+    e.textContent = live.engine === "off"
+      ? "cortex was started with --no-watch, so it is not watching the disk."
+      : "Waiting for something to change. Save a file, run a build, or let an "
+        + "agent loose on the project: each change lights up here and on the graph.";
+    list.appendChild(e);
+    return;
+  }
+  for (const ev of recent) {
+    const row = document.createElement("button");
+    row.className = "feed-row";
+    row.title = ev.from ? `${ev.from} → ${ev.path}` : ev.path;
+    const verb = document.createElement("span");
+    verb.className = "verb " + ev.kind;
+    verb.textContent = ev.kind;
+    const nm = document.createElement("span");
+    nm.className = "nm";
+    nm.textContent = baseName(ev.path) + (ev.dir ? "/" : "");
+    const when = document.createElement("span");
+    when.className = "when";
+    when.textContent = ago(ev.t);
+    row.append(verb, nm, when);
+    row.addEventListener("click", async () => {
+      if (ev.kind === "deleted") { toast(`${baseName(ev.path)} was deleted`); return; }
+      await ensureNodes([ev.path]);
+      const n = nodes.get(ev.path);
+      if (n) { select(n); flyTo(camOn(n)); }
+    });
+    list.appendChild(row);
+  }
+}
+
+/* --------------------------------------------------------------- history
+
+   The project's life, replayed: drag the slider, or press play, and the
+   graph goes back through git -- files appearing, being renamed, being
+   deleted -- with each commit's changes lighting up as it lands. Everything
+   that ever existed is laid out together, so nothing moves while you scrub;
+   what did not exist yet is simply not drawn. */
+let hist = null;
+const SPEEDS = [1, 4, 16, 64];
+
+let histLoading = false;
+
+async function toggleHistory(on) {
+  const next = on === undefined ? !hist : !!on;
+  if (next === !!hist || (next && histLoading)) return;
+  if (!next) { exitHistory(); return; }
+  histLoading = true;
+  try { await enterHistory(); } finally { histLoading = false; }
+}
+
+async function enterHistory() {
+  toast("reading the history…");
+  let r;
+  try { r = await api("/api/history", { path: viewRoot }); }
+  catch (err) { toast("could not reach cortex", true); return; }
+  if (!r.repo) {
+    toast(r.error ? `no history here: ${r.error}` : "this folder is not in a git repository", true);
+    return;
+  }
+  if (!r.commits.length) { toast("no commit has touched this folder", true); return; }
+
+  // when each file existed, as ranges of slider positions: position v shows
+  // the folder after the first v commits, so 0 is before them all
+  const life = new Map();
+  const open = (p, v) => {
+    const spans = life.get(p) || [];
+    const last = spans[spans.length - 1];
+    if (!last || last[1] !== Infinity) spans.push([v, Infinity]);
+    life.set(p, spans);
+  };
+  const close = (p, v) => {
+    const spans = life.get(p);
+    const last = spans && spans[spans.length - 1];
+    if (last && last[1] === Infinity) last[1] = v;
+  };
+  for (const p of r.base || []) open(p, 0);
+  r.commits.forEach((c, i) => {
+    for (const [st, p, from] of c.changes) {
+      if (st === "A") open(p, i + 1);
+      else if (st === "M") { if (!life.has(p)) open(p, 0); }
+      else if (st === "D") close(p, i + 1);
+      else if (st === "R") { if (from) close(from, i + 1); open(p, i + 1); }
+    }
+  });
+
+  // most recently touched first, should the graph have to be capped
+  const touchedAt = new Map();
+  r.commits.forEach((c, i) => { for (const [, p] of c.changes) touchedAt.set(p, i); });
+  const paths = [...life.keys()].sort((a, b) => (touchedAt.get(b) ?? -1) - (touchedAt.get(a) ?? -1))
+    .slice(0, 5000);
+  const before = new Set(nodes.keys());
+  await ensureNodes(paths, { missing: true });
+  const grafted = new Set([...nodes.keys()].filter((id) => !before.has(id)));
+
+  hist = {
+    commits: r.commits, life, grafted, truncated: r.truncated, v: r.commits.length,
+    playing: false, speed: 1, lastStep: 0, show: null, recording: null,
+  };
+  closePanel();
+  $("timeline").hidden = false;
+  const range = $("tl-range");
+  range.max = String(r.commits.length);
+  range.value = String(r.commits.length);
+  drawMarks();
+  setHistIndex(r.commits.length, false);
+  dockState();
+  warmup(120);
+  flyTo(camAround([...nodes.values()].filter((n) => !n.tag)), 600);
+  toast(`${r.commits.length} commit${r.commits.length === 1 ? "" : "s"}`
+    + (r.truncated ? ", the most recent" : "") + " — drag, or press space to play");
+}
+
+function exitHistory() {
+  if (!hist) return;
+  const h = hist;
+  if (h.recording) h.recording.stop();
+  hist = null;
+  // what was brought in for the history goes, unless it belongs in the graph
+  // anyway: its folder is open, or it was opened itself meanwhile
+  const gone = new Set();
+  for (const id of h.grafted) {
+    const n = nodes.get(id);
+    if (n && !n.missing && (expanded.has(n.parent) || expanded.has(id))) continue;
+    gone.add(id);
+  }
+  for (const n of nodes.values()) if (n.missing) gone.add(n.id);
+  forget(new Set([...gone, ...dropDescendants([...gone])]));
+  $("timeline").hidden = true;
+  heat.clear();
+  trail = [];
+  dockState();
+  updateStats();
+  reheat(0.2);
+}
+
+/* Which nodes exist at position v. Folders show when anything inside does;
+   files git never knew about appear only at the end, which is now. */
+function histShown(v) {
+  const show = new Set([viewRoot]);
+  const end = v >= hist.commits.length;
+  for (const n of nodes.values()) {
+    if (n.dir || n.tag) continue;
+    const spans = hist.life.get(n.id);
+    const there = spans ? spans.some(([a, b]) => v >= a && v < b) : end && !n.missing;
+    if (!there) continue;
+    show.add(n.id);
+    for (let p = n.parent; p && !show.has(p); p = parentOf(p)) {
+      show.add(p);
+      if (p === viewRoot || p.length <= viewRoot.length) break;
+    }
+  }
+  return show;
+}
+
+function setHistIndex(v, flash = true) {
+  if (!hist) return;
+  v = Math.max(0, Math.min(hist.commits.length, v));
+  const moved = v !== hist.v;
+  hist.v = v;
+  hist.show = histShown(v);
+  $("tl-range").value = String(v);
+  if (flash && moved && v > 0) {
+    const c = hist.commits[v - 1];
+    const kinds = { A: "created", M: "modified", D: "deleted", R: "moved" };
+    for (const [st, p] of c.changes) {
+      const n = nodes.get(p);
+      heat.set(p, { kind: kinds[st] || "modified", t: Date.now(),
+                    x: n ? n.x : null, y: n ? n.y : null });
+      trail.push({ path: p, t: Date.now() });
+    }
+    trail = trail.slice(-TRAIL);
+    animateFor(PING_MS);
+  }
+  renderHistInfo();
+  updateStats();
+  repaint();
+}
+
+function renderHistInfo() {
+  const info = $("tl-info");
+  info.textContent = "";
+  const when = document.createElement("span");
+  when.className = "when";
+  const subj = document.createElement("span");
+  subj.className = "subj";
+  const counts = document.createElement("span");
+  counts.className = "counts";
+  const fmt = (t) => new Date(t * 1000).toLocaleDateString(undefined,
+    { day: "numeric", month: "short", year: "numeric" });
+  if (hist.v === 0) {
+    when.textContent = `before ${fmt(hist.commits[0].t)}`;
+    subj.textContent = hist.truncated ? "older history is left out" : "the beginning";
+  } else {
+    const c = hist.commits[hist.v - 1];
+    when.textContent = `${fmt(c.t)} · ${hist.v}/${hist.commits.length}`;
+    subj.textContent = c.subject;
+    const n = { A: 0, M: 0, D: 0, R: 0 };
+    for (const [st] of c.changes) n[st] = (n[st] || 0) + 1;
+    counts.textContent = `${c.author} · +${n.A} ~${n.M + n.R} −${n.D}`;
+  }
+  info.append(when, subj, counts);
+  $("tl-play").innerHTML = hist.playing ? "&#10074;&#10074;" : "&#9654;";
+  $("tl-speed").textContent = `${hist.speed}×`;
+}
+
+/* The commits as ticks along the slider, taller for bigger commits. */
+function drawMarks() {
+  const c = $("tl-marks");
+  if (!c.getContext || !hist) return;
+  const w = c.clientWidth || 600, h = c.clientHeight || 20;
+  c.width = Math.round(w * DPR);
+  c.height = Math.round(h * DPR);
+  const g = c.getContext("2d");
+  g.setTransform(DPR, 0, 0, DPR, 0, 0);
+  g.clearRect(0, 0, w, h);
+  const n = hist.commits.length;
+  const most = Math.max(1, ...hist.commits.map((x) => x.changes.length));
+  hist.commits.forEach((cm, i) => {
+    const x = n <= 1 ? w : ((i + 1) / n) * (w - 4) + 2;
+    const k = Math.log(1 + cm.changes.length) / Math.log(1 + most);
+    g.fillStyle = "#4c8dff";
+    g.globalAlpha = 0.25 + 0.55 * k;
+    g.fillRect(x - 0.6, h - 2 - k * (h - 4), 1.2, k * (h - 4) + 2);
+  });
+}
+
+function playHistory(on) {
+  if (!hist) return;
+  hist.playing = on === undefined ? !hist.playing : !!on;
+  if (hist.playing && hist.v >= hist.commits.length) setHistIndex(0, false);
+  hist.lastStep = Date.now();
+  renderHistInfo();
+  if (hist.playing) animateFor(100);
+}
+
+/* Called every frame: steps the playback on, at about one commit every
+   700ms at 1x, faster at higher speeds. */
+function tickModes() {
+  if (!hist || !hist.playing) return;
+  const every = 700 / hist.speed;
+  const now = Date.now();
+  if (now - hist.lastStep >= every) {
+    hist.lastStep = now;
+    if (hist.v >= hist.commits.length) {
+      hist.playing = false;
+      renderHistInfo();
+      if (hist.recording) setTimeout(() => hist && hist.recording && hist.recording.stop(), 900);
+      return;
+    }
+    setHistIndex(hist.v + 1);
+  }
+  animateFor(100);
+}
+
+/* Record the replay, start to finish, as a video: the canvas itself, with
+   the date and the commit drawn on it, so the video says what it shows. */
+function recordHistory() {
+  if (!hist) return;
+  if (hist.recording) { hist.recording.stop(); return; }
+  if (!stage.captureStream || typeof MediaRecorder === "undefined") {
+    toast("this browser cannot record video", true);
+    return;
+  }
+  const type = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"]
+    .find((t) => MediaRecorder.isTypeSupported(t));
+  const rec = new MediaRecorder(stage.captureStream(30),
+    type ? { mimeType: type, videoBitsPerSecond: 8e6 } : {});
+  const chunks = [];
+  rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+  rec.onstop = () => {
+    offerDownload(new Blob(chunks, { type: "video/webm" }), exportName("webm"));
+    toast("saved the replay as a video");
+    if (hist) hist.recording = null;
+    $("tl-record").classList.remove("rec");
+    $("tl-record").textContent = "record";
+  };
+  hist.recording = rec;
+  $("tl-record").classList.add("rec");
+  $("tl-record").textContent = "stop";
+  setHistIndex(0, false);
+  rec.start(250);
+  playHistory(true);
+}
+
+function drawCaption() {
+  if (!hist || !hist.recording) return;
+  const c = hist.v > 0 ? hist.commits[hist.v - 1] : null;
+  const date = c ? new Date(c.t * 1000).toLocaleDateString(undefined,
+    { day: "numeric", month: "long", year: "numeric" }) : "the beginning";
+  ctx.font = "600 15px ui-sans-serif, system-ui, sans-serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = "#ffd166";
+  ctx.fillText(date, 28, H - 52);
+  ctx.font = "400 13px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillStyle = "#c4d0e4";
+  ctx.fillText(c ? c.subject.slice(0, 90) : "", 28, H - 32);
+}
+
+/* ------------------------------------------------------------------ disk
+
+   What is filling the drive: every node sized by the space it takes on
+   disk, folders by everything inside them -- including what the graph never
+   shows, node_modules and .git and build output, since those are usually
+   the answer. Sizes arrive as they are counted; a big folder says "at least"
+   until it is done. */
+let disk = null;
+
+function toggleDisk(on) {
+  const next = on === undefined ? !disk : !!on;
+  if (next === !!disk) return;
+  if (!next) {
+    const old = disk;
+    disk = null;
+    clearTimeout(old.timer);
+    for (const n of nodes.values()) n.r = n.tag ? n.r : radiusOf(n);
+    $("d-disk").textContent = "disk";
+    dockState();
+    if (sel && sel.dir) renderBody(sel);
+    reheat(0.3);
+    return;
+  }
+  disk = { sizes: new Map(), detail: new Map(), timer: null };
+  dockState();
+  measure();
+}
+
+async function measure() {
+  const me = disk;
+  if (!me) return;
+  // one count at a time: every folder opened asks for one, and each would
+  // otherwise start its own chain of asking again
+  if (me.busy) { me.again = true; return; }
+  me.busy = true;
+  clearTimeout(me.timer);
+  try { await measureOnce(me); } finally { me.busy = false; }
+  if (disk === me && me.again) { me.again = false; measure(); }
+}
+
+async function measureOnce(me) {
+  const dirs = [...expanded].filter((id) => nodes.has(id) && visible(nodes.get(id)));
+  let pending = false;
+  for (const dir of dirs) {
+    const known = me.detail.get(dir);
+    if (known && known.complete) continue;
+    let r;
+    try { r = await api("/api/du", { path: dir }); } catch (err) { continue; }
+    if (disk !== me) return;
+    me.detail.set(dir, r);
+    me.sizes.set(dir, { bytes: r.bytes, complete: r.complete });
+    for (const k of r.children || []) me.sizes.set(k.path, { bytes: k.bytes, complete: k.complete });
+    if (!r.complete) pending = true;
+  }
+  sizeNodes();
+  if (sel && sel.dir && me.detail.has(sel.id)) renderBody(sel);
+  if (pending && disk === me) me.timer = setTimeout(measure, 900);
+}
+
+
+function sizeNodes() {
+  if (!disk) return;
+  let most = 1;
+  for (const n of nodes.values()) {
+    const s = disk.sizes.get(n.id);
+    if (s && visible(n) && n.id !== viewRoot) most = Math.max(most, s.bytes);
+  }
+  for (const n of nodes.values()) {
+    if (n.tag) continue;
+    const s = disk.sizes.get(n.id);
+    // the folder in view holds everything, so it is held to the largest size
+    n.r = s ? 3 + 34 * Math.sqrt(Math.min(1, s.bytes / most)) : 3;
+  }
+  const root = disk.sizes.get(viewRoot);
+  const btn = $("d-disk");
+  btn.textContent = "disk";
+  if (root) {
+    const c = document.createElement("span");
+    c.className = "count";
+    c.textContent = (root.complete ? "" : "≥") + fmtSize(root.bytes);
+    btn.appendChild(c);
+  }
+  reheat(0.15);
+}
+
+const diskLabel = (n) => {
+  const s = disk && disk.sizes.get(n.id);
+  return s ? `${n.name} · ${s.complete ? "" : "≥"}${fmtSize(s.bytes)}` : n.name;
+};
+
+/* A folder's reader, in disk mode: where its space goes, biggest first. */
+function renderDiskBody(n, body) {
+  const d = disk.detail.get(n.id);
+  const box = document.createElement("div");
+  box.className = "md";
+  if (!d) {
+    box.appendChild(hint("Counting…"));
+    body.appendChild(box);
+    return;
+  }
+  const h = document.createElement("h3");
+  h.textContent = `${d.complete ? "" : "at least "}${fmtSize(d.bytes)} in ${d.files} file${d.files === 1 ? "" : "s"}`;
+  box.appendChild(h);
+  const table = document.createElement("div");
+  table.className = "du-list";
+  const top = (d.children || []).reduce((m, k) => Math.max(m, k.bytes), 1);
+  for (const k of (d.children || []).slice(0, 80)) {
+    const row = document.createElement("button");
+    row.className = "du-row";
+    const bar = document.createElement("i");
+    bar.style.width = `${Math.max(1, (k.bytes / top) * 100)}%`;
+    const nm = document.createElement("span");
+    nm.className = "nm";
+    nm.textContent = k.name + (k.dir ? "/" : "");
+    const sz = document.createElement("span");
+    sz.className = "sz";
+    sz.textContent = (k.complete ? "" : "≥") + fmtSize(k.bytes);
+    row.append(bar, nm, sz);
+    const onGraph = nodes.has(k.path);
+    if (!onGraph) {
+      const t = document.createElement("span");
+      t.className = "tag";
+      t.textContent = "not in the graph";
+      row.appendChild(t);
+      row.title = "hidden from the graph — click to show it in your file manager";
+      row.addEventListener("click", () => act("reveal", k.path));
+    } else {
+      row.addEventListener("click", () => { const m = nodes.get(k.path); select(m); flyTo(camOn(m)); });
+    }
+    table.appendChild(row);
+  }
+  box.appendChild(table);
+  const more = (d.children || []).length - 80 + (d.more || 0);
+  if (more > 0) box.appendChild(hint(`and ${more} smaller`));
+  body.appendChild(box);
+}
+
+/* ---------------------------------------------------------------- ghosts
+
+   A [[wikilink]] to a note that does not exist yet is a faint, dashed node:
+   the note you said you would write. Select it to see who links to it, and
+   to make it -- in the folder of the first note that mentions it. */
+const GHOST_PREFIX = "ghost:";
+const isGhost = (id) => id.startsWith(GHOST_PREFIX);
+let ghostNames = {};
+
+const ghostKey = (name) => GHOST_PREFIX + name.trim().toLowerCase()
+  .replace(/\s+/g, " ").replace(/\.md$/, "");
+
+function addGhostNode(id, near) {
+  const n = addNode({ id, name: ghostNames[id] || id.slice(GHOST_PREFIX.length),
+                      dir: false, group: "ghost", size: 0, mtime: 0, parent: null }, near);
+  n.tag = true;                    // not a file: no editor, no path, no size
+  n.ghost = true;
+  n.r = 4.5;
+  return n;
+}
+
+function renderGhostBody(n, body) {
+  body.textContent = "";
+  const from = ((connIndex && connIndex.get(n.id)) || []).filter((c) => !c.out);
+  const note = document.createElement("div");
+  note.className = "empty";
+  note.textContent = from.length
+    ? `This note does not exist yet. ${from.length} note${from.length === 1 ? " links" : "s link"} to it.`
+    : "This note does not exist yet.";
+  body.appendChild(note);
+  if (!READ_ONLY && !SNAPSHOT) {
+    const make = document.createElement("button");
+    make.className = "primary";
+    const where = ghostFolder(n);
+    make.textContent = `create it in ${where === ROOT ? CFG.title || "~" : where.replace(ROOT, "~")}`;
+    make.addEventListener("click", () => createGhost(n));
+    body.appendChild(make);
+  }
+  if (from.length) {
+    const list = document.createElement("div");
+    list.className = "md";
+    const ul = document.createElement("ul");
+    for (const c of from) {
+      const li = document.createElement("li");
+      const a = document.createElement("a");
+      a.className = "wiki";
+      a.textContent = baseName(c.path);
+      a.title = c.path;
+      a.addEventListener("click", () => focusOn(c.path));
+      li.appendChild(a);
+      ul.appendChild(li);
+    }
+    list.appendChild(ul);
+    body.appendChild(list);
+  }
+}
+
+function ghostFolder(n) {
+  const from = ((connIndex && connIndex.get(n.id)) || []).filter((c) => !c.out);
+  return from.length ? parentOf(from[0].path) : viewRoot;
+}
+
+async function createGhost(n) {
+  const folder = ghostFolder(n);
+  const name = n.name.replace(/^\/+|\/+$/g, "");
+  let r;
+  try { r = await post("/api/fs", { op: "new", path: folder, name, parents: true }); }
+  catch (err) { toast("could not reach cortex", true); return; }
+  if (!r.ok) { toast(r.error || "could not create it", true); return; }
+  forget(new Set([n.id]));
+  await settle(folder);
+  await ensureNodes([r.path]);
+  const made = nodes.get(r.path);
+  if (made) {
+    for (const c of (connIndex && connIndex.get(n.id)) || []) addLink(c.path, made.id, "note");
+    select(made);
+    flyTo(camOn(made));
+    startEdit(made, { atEnd: true });
+  }
+  toast(`made ${baseName(r.path)}`);
+}
+
+/* ------------------------------------------------------------ suggestions
+
+   Notes that talk about the same things but never link to each other. The
+   index compares what every note says; the strongest pairs come back with
+   the words they share. Select a note to see its suggestions, dashed; link
+   one and a real link is written into the note, or dismiss it for good. */
+let suggestIndex = new Map();     // path -> [{path, score, terms}]
+let showAllSuggest = false;
+
+function buildSuggestIndex(list) {
+  suggestIndex = new Map();
+  for (const [a, b, score, terms] of list || []) {
+    for (const [x, y] of [[a, b], [b, a]]) {
+      let l = suggestIndex.get(x);
+      if (!l) suggestIndex.set(x, (l = []));
+      l.push({ path: y, score, terms });
+    }
+  }
+  for (const l of suggestIndex.values()) l.sort((p, q) => q.score - p.score);
+}
+
+function drawSuggestions() {
+  if (!showSemantic || !suggestIndex.size) return;
+  const pairs = [];
+  if (showAllSuggest) {
+    for (const [a, l] of suggestIndex) for (const s of l) if (a < s.path) pairs.push([a, s]);
+  } else if (sel && suggestIndex.has(sel.id)) {
+    for (const s of suggestIndex.get(sel.id)) pairs.push([sel.id, s]);
+  }
+  if (!pairs.length) return;
+  ctx.setLineDash([3, 4]);
+  ctx.lineWidth = 1.3;
+  for (const [a, s] of pairs) {
+    const p = nodes.get(a), q = nodes.get(s.path);
+    if (!p || !q || !visible(p) || !visible(q)) continue;
+    ctx.strokeStyle = `rgba(103, 232, 249, ${(0.25 + 0.6 * Math.min(1, s.score * 1.6)).toFixed(3)})`;
+    ctx.beginPath();
+    ctx.moveTo(toScreenX(p.x), toScreenY(p.y));
+    ctx.lineTo(toScreenX(q.x), toScreenY(q.y));
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+}
+
+function renderSuggestions(n, box) {
+  const list = suggestIndex.get(n.id);
+  if (!list || !list.length || n.tag) return;
+  const head = document.createElement("div");
+  head.className = "conn-sub";
+  head.textContent = "suggested — they talk about the same things";
+  box.appendChild(head);
+  const rows = document.createElement("div");
+  rows.className = "conn-list";
+  for (const s of list) {
+    const row = document.createElement("div");
+    row.className = "conn suggest";
+    const arrow = document.createElement("span");
+    arrow.className = "arrow";
+    arrow.textContent = "≈";
+    const name = document.createElement("button");
+    name.className = "nm link";
+    name.textContent = baseName(s.path);
+    name.title = `${s.path}\nshares: ${s.terms.join(", ")} · ${Math.round(s.score * 100)}%`;
+    name.addEventListener("click", () => focusOn(s.path));
+    const why = document.createElement("span");
+    why.className = "where";
+    why.textContent = s.terms.slice(0, 3).join(", ");
+    row.append(arrow, name, why);
+    if (!READ_ONLY && !SNAPSHOT) {
+      const add = document.createElement("button");
+      add.className = "ghost sm";
+      add.textContent = "link";
+      add.title = `write a link to ${baseName(s.path)} into ${n.name}`;
+      add.addEventListener("click", () => acceptSuggestion(n, s));
+      const no = document.createElement("button");
+      no.className = "ghost sm";
+      no.textContent = "✕";
+      no.title = "not related — stop suggesting it";
+      no.addEventListener("click", () => dismissSuggestion(n, s));
+      row.append(add, no);
+    }
+    rows.appendChild(row);
+  }
+  box.appendChild(rows);
+}
+
+function dropSuggestion(a, b) {
+  for (const [x, y] of [[a, b], [b, a]]) {
+    const l = suggestIndex.get(x);
+    if (!l) continue;
+    const kept = l.filter((s) => s.path !== y);
+    if (kept.length) suggestIndex.set(x, kept); else suggestIndex.delete(x);
+  }
+}
+
+/* "See also" with an ordinary relative link: unambiguous, which a [[name]]
+   is not when two notes share a name, and it works on GitHub too. */
+function seeAlso(from, to) {
+  const a = parentOf(from).split("/").filter(Boolean);
+  const b = to.split("/").filter(Boolean);
+  let i = 0;
+  while (i < a.length && i < b.length - 1 && a[i] === b[i]) i++;
+  const rel = [...a.slice(i).map(() => ".."), ...b.slice(i)].join("/");
+  const label = baseName(to).replace(/\.[^.]+$/, "").replace(/[[\]]/g, "");
+  // encodeURIComponent leaves ( and ), which would end the link early
+  const enc = (part) => encodeURIComponent(part).replace(/[()]/g,
+    (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
+  return `[${label}](${rel.split("/").map(enc).join("/")})`;
+}
+
+async function acceptSuggestion(n, s) {
+  const link = seeAlso(n.id, s.path);
+  if (editing && editing.path === n.id) {
+    const area = editing.area;
+    area.focus();
+    area.setSelectionRange(area.value.length, area.value.length);
+    insertText(area, (area.value.endsWith("\n") ? "\n" : "\n\n") + `See also ${link}\n`);
+    toast("added — save to keep it");
+  } else {
+    let src;
+    try { src = await query("/api/source", { path: n.id }); }
+    catch (err) { toast("could not reach cortex", true); return; }
+    if (!src || !src.ok) { toast((src && src.error) || "cannot edit this note", true); return; }
+    const text = src.text.replace(/\s*$/, "") + `\n\nSee also ${link}\n`;
+    let r;
+    try { r = await post("/api/save", { path: n.id, text, version: src.version }); }
+    catch (err) { toast("could not reach cortex", true); return; }
+    if (!r.ok) { toast(r.error || "could not save", true); return; }
+    toast(`linked ${n.name} to ${baseName(s.path)}`);
+  }
+  dropSuggestion(n.id, s.path);
+  if (nodes.has(s.path)) addLink(n.id, s.path, "note");
+  buildConnIndexExtra(n.id, s.path);
+  renderConnections(n);
+  repaint();
+}
+
+/* The new link, known at once rather than at the next re-index. */
+function buildConnIndexExtra(a, b) {
+  if (!connIndex) return;
+  const add = (from, to, out) => {
+    let l = connIndex.get(from);
+    if (!l) connIndex.set(from, (l = []));
+    if (!l.some((c) => c.path === to && c.kind === "note")) l.push({ path: to, kind: "note", out });
+  };
+  add(a, b, true);
+  add(b, a, false);
+}
+
+async function dismissSuggestion(n, s) {
+  dropSuggestion(n.id, s.path);
+  renderConnections(n);
+  repaint();
+  try { await post("/api/dismiss", { a: n.id, b: s.path }); } catch (err) { /* local is enough */ }
 }
 
 // ------------------------------------------------------------------- search
@@ -2968,6 +5066,7 @@ function afterFilterChange() {
 
 function updateStats() {
   dirty = true;
+  if (booted) placeChrome();
   let shown = 0;
   for (const n of nodes.values()) if (visible(n)) shown++;
   let semantic = 0;
@@ -2990,6 +5089,17 @@ function updateStats() {
 window.addEventListener("keydown", (e) => keyHandler(e));
 
 function keyHandler(e) {
+  // ctrl-k, from anywhere but the palette itself: everything, by name
+  if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K") && !CFG.capture) {
+    e.preventDefault();
+    if ($("palette").classList.contains("open")) closePalette(); else openPalette();
+    return;
+  }
+  if ($("palette").classList.contains("open")) return;
+  if ($("share").classList.contains("open")) {
+    if (e.key === "Escape") $("share").classList.remove("open");
+    return;
+  }
   // ctrl-s saves the open editor wherever focus is, and never the page
   if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
     e.preventDefault();
@@ -3010,16 +5120,55 @@ function keyHandler(e) {
     if (e.key === "Escape") closePlaces();
     return;
   }
-  if (!$("ctx").hidden && e.key === "Escape") { closeMenu(); return; }
+  if (menuOpen && e.key === "Escape") { closeMenu(); return; }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
+  // while a tour plays, the arrows step through it
+  if (tourPlay && (e.key === "ArrowRight" || e.key === "ArrowLeft" || e.key === " ")) {
+    e.preventDefault();
+    tourStep(e.key === "ArrowLeft" ? -1 : 1);
+    return;
+  }
+  if (hist && (e.key === " " || e.key === "[" || e.key === "]")) {
+    e.preventDefault();
+    if (e.key === " ") playHistory();
+    else { playHistory(false); setHistIndex(hist.v + (e.key === "]" ? 1 : -1)); }
+    return;
+  }
+  // a snapshot can be looked at, not changed
+  if (SNAPSHOT && ((e.key.length === 1 && "iwhudpnv".includes(e.key))
+                   || e.key === "F2" || e.key === "Delete")) return;
+  if (/^[1-9]$/.test(e.key)) {
+    const v = viewsList[Number(e.key) - 1];
+    if (v) applyView(v); else toast(`no view on ${e.key} yet — press v to save one`);
+    return;
+  }
   switch (e.key) {
     case "/":
       e.preventDefault(); qbox.focus(); qbox.select(); break;
     case "Escape":
+      // one thing at a time, the most recent first
       if ($("help").classList.contains("open")) $("help").classList.remove("open");
+      else if ($("save-menu").classList.contains("open")) $("save-menu").classList.remove("open");
+      else if (popFor) closePop();
+      else if (tourPlay) endTour();
+      else if (pathHops || !$("pathcard").hidden) clearPath();
       else if (maximized) setMax(false);
       else closePanel();
       break;
+    case "w":
+      toggleLive(); break;
+    case "h":
+      toggleHistory(); break;
+    case "T":
+      openTours(); break;
+    case "v":
+      openViews(); break;
+    case "u":
+      toggleDisk(); break;
+    case "d":
+      e.preventDefault(); openToday(); break;
+    case "X":
+      exportScene("svg"); break;
     case "Enter":
       if (sel && !sel.tag && primaryEditor) {
         act("edit", sel.id, primaryEditor.id, selLine);
@@ -3114,7 +5263,7 @@ document.addEventListener("click", (e) => {
   }
 });
 $("btn-fit").addEventListener("click", () => fit());
-$("btn-save").addEventListener("click", (e) => exportScene(e.shiftKey ? "svg" : "png"));
+$("btn-save").addEventListener("click", (e) => openSaveMenu(e));
 $("btn-help").addEventListener("click", () => $("help").classList.toggle("open"));
 $("help-close").addEventListener("click", () => $("help").classList.remove("open"));
 $("help").addEventListener("click", (e) => {
@@ -3127,11 +5276,66 @@ $("btn-links").addEventListener("click", (e) => {
 });
 $("z-in").addEventListener("click", () => zoomAt(W / 2, H / 2, 1.25));
 $("z-out").addEventListener("click", () => zoomAt(W / 2, H / 2, 0.8));
-document.addEventListener("click", () => {
+document.addEventListener("click", (e) => {
   if (openDropdown) { openDropdown.classList.remove("open"); openDropdown = null; }
+  const inside = (sel_) => e.target && e.target.closest && e.target.closest(sel_);
+  if (!inside("#save-wrap")) $("save-menu").classList.remove("open");
+  if (popFor && !inside("#pop") && !inside("#dock")) closePop();
+});
+
+// the dock, and what its buttons open
+$("d-live").addEventListener("click", () => toggleLive());
+$("d-history").addEventListener("click", () => toggleHistory());
+$("d-tours").addEventListener("click", () => {
+  if (tourPlay) endTour(); else if (tourRec) renderTourCard(); else openTours();
+});
+$("d-views").addEventListener("click", () => openViews());
+$("d-disk").addEventListener("click", () => toggleDisk());
+$("d-today").addEventListener("click", () => openToday());
+$("feed-follow").addEventListener("click", () => {
+  if (!live) return;
+  live.follow = !live.follow;
+  renderFeed();
+  toast(live.follow ? "following — the camera goes to each change" : "not following");
+});
+$("feed-reveal").addEventListener("click", () => {
+  if (!live) return;
+  live.reveal = !live.reveal;
+  renderFeed();
+});
+$("feed-clear").addEventListener("click", () => {
+  heat.clear();
+  trail = [];
+  if (live) { live.events = []; live.count = 0; renderFeed(); }
+  repaint();
+});
+$("tl-play").addEventListener("click", () => playHistory());
+$("tl-range").addEventListener("input", (e) => {
+  playHistory(false);
+  setHistIndex(Number(e.target.value));
+});
+$("tl-speed").addEventListener("click", () => {
+  if (!hist) return;
+  hist.speed = SPEEDS[(SPEEDS.indexOf(hist.speed) + 1) % SPEEDS.length];
+  renderHistInfo();
+});
+$("tl-record").addEventListener("click", () => recordHistory());
+$("tl-close").addEventListener("click", () => toggleHistory(false));
+
+$("pal-input").addEventListener("input", () => {
+  renderPalette();
+  clearTimeout(palTimer);
+  palTimer = setTimeout(paletteFiles, 140);
+});
+$("pal-input").addEventListener("keydown", (e) => paletteKey(e));
+$("palette").addEventListener("click", (e) => { if (e.target.id === "palette") closePalette(); });
+$("share-ok").addEventListener("click", () => makeShare());
+$("share-cancel").addEventListener("click", () => $("share").classList.remove("open"));
+$("share").addEventListener("click", (e) => {
+  if (e.target.id === "share") $("share").classList.remove("open");
 });
 window.addEventListener("mousedown", (e) => {
-  if (!$("ctx").hidden && !(e.target && e.target.closest && e.target.closest("#ctx"))) {
+  if (menuOpen && !(e.target && e.target.closest && e.target.closest("#ctx"))) {
     closeMenu();
   }
 });
@@ -3168,13 +5372,31 @@ $("gone-retry").addEventListener("click", () => location.reload && location.relo
 
 // --------------------------------------------------------------------- boot
 (async () => {
+  if (CFG.capture) {                 // the quick-note window is only that
+    hello();
+    window.addEventListener("pagehide", () => goodbye());
+    startCapture();
+    return;
+  }
   buildFilters();
   showZoom();
   toggleSearchMode("names");        // label, placeholder and list, in one place
   // the name identifies a folder; the path is in the tooltip
   $("place-name").textContent = ROOT === CFG.home ? "~" : (ROOT.split("/").pop() || "/");
   $("btn-places").title = `${CFG.title || ROOT} — open another folder (p)`;
-  $("stat-ro").hidden = !READ_ONLY;
+  $("stat-ro").hidden = !READ_ONLY || !!SNAPSHOT;
+  if (SNAPSHOT) {
+    // a snapshot says what it is, where the folder name would be
+    $("place-name").textContent = `${CFG.title} · snapshot`;
+    $("btn-places").title = `A read-only snapshot, taken ${SNAPSHOT.taken} with cortex `
+      + `${SNAPSHOT.version}. It does not change, and cannot change anything.`;
+    $("btn-places").addEventListener("click", (e) => {
+      e.stopImmediatePropagation();
+      toast(`a snapshot taken ${SNAPSHOT.taken} — explore, search, read`);
+    }, true);
+    for (const id of ["d-live", "d-history", "d-views", "d-disk", "d-today"]) $(id).hidden = true;
+  }
+  loadViews();
 
   hello();
   window.addEventListener("pagehide", () => goodbye());
@@ -3203,6 +5425,13 @@ $("gone-retry").addEventListener("click", () => location.reload && location.relo
 
   applySemantic();          // not awaited: the graph should paint first
   loadGit();
+  if (SNAPSHOT && CFG.view) await applyView(CFG.view);
+  if (SNAPSHOT) {
+    // the dock has only tours to offer, and only when there are some
+    api("/api/tours").then((r) => {
+      if (!(r.tours || []).length) $("dock").hidden = true;
+    }).catch(() => { $("dock").hidden = true; });
+  }
   const every = CFG.pulseMs || 0;
   if (every > 0) setInterval(pulse, every);
 
@@ -3225,6 +5454,8 @@ $("gone-retry").addEventListener("click", () => location.reload && location.relo
     setInterval(() => { if (alpha < ALPHA_MIN) saveLayout(); }, 10000);
     window.addEventListener("pagehide", () => { if (!reloading) saveLayout(); });
   }
+  booted = true;
+  placeChrome();
   frame();
 })();
 

@@ -17,10 +17,15 @@ folders, notes, code, PDFs, and the links between them. Click a node to read
 the file. Press <kbd>i</kbd> and edit it right there. Press <kbd>Enter</kbd> and
 it opens in Neovim, in your terminal, right where you were.
 
+Then look at it in ways a file manager cannot: watch files light up as an AI
+agent or a build works through them, replay the project's whole git history
+as it grows, find the chain of imports from one file to another, and walk a
+newcomer through the code with a tour that lives in the repository.
+
 ![Clicking a node opens the file; pressing Enter opens it in Neovim in the terminal cortex was launched from](https://raw.githubusercontent.com/Ayushsinha322/cortex/main/docs/demo.gif)
 
 No dependencies. No database. No import step. It reads your disk directly, and
-it is about 8,400 lines of Python standard library and vanilla JavaScript.
+it is about 14,000 lines of Python standard library and vanilla JavaScript.
 
 ---
 
@@ -33,13 +38,16 @@ it is about 8,400 lines of Python standard library and vanilla JavaScript.
 - [Reading files](#reading-files)
 - [Editing files](#editing-files)
 - [New, rename, trash](#new-rename-trash)
+- [Today's note, and quick capture](#todays-note-and-quick-capture)
 - [Following the links](#following-the-links)
 - [Searching](#searching)
 - [Opening files in your editor](#opening-files-in-your-editor)
 - [Working on one project](#working-on-one-project)
 - [Opening another folder](#opening-another-folder)
+- [Ways of looking](#ways-of-looking) — live, history, the path, tours, views, disk
 - [Reading the graph](#reading-the-graph)
 - [Every command and key](#every-command-and-key)
+- [Saving and sharing](#saving-and-sharing)
 - [How it works](#how-it-works)
 - [Tests](#tests)
 - [FAQ](#faq)
@@ -60,6 +68,10 @@ cortex maps what is really on your disk:
 | Understands code            | no                          | yes — Python, JS/TS, Go, Rust, C, shell |
 | Links it draws              | `[[wikilinks]]`             | wikilinks **and** resolved code imports |
 | Edits a note in place       | yes                         | yes, and refuses to save over a change it did not see |
+| Notes you have not written  | unresolved links            | ghost nodes; click one to write it |
+| Suggests links you missed   | no                          | yes, from what the notes say |
+| Watch files change live     | no                          | yes — agents, builds, `git pull` |
+| Replay the git history      | no                          | yes, and record it as a video |
 | Opens a file in Neovim      | no                          | yes, in your real terminal |
 | Reads PDFs                  | via a plugin                | built in |
 | Setup before first use      | create and index a vault    | none |
@@ -312,6 +324,31 @@ nothing.
 
 ---
 
+## Today's note, and quick capture
+
+Press <kbd>d</kbd>, or **today** in the dock, and today's note opens ready to
+write in — `daily/2026-10-09.md`, headed with the date, made on first use. If
+the folder already has a `Daily`, `journal` or `Journal`, that is where it goes
+instead, beside the ones you already have.
+
+**Quick note** is the half-second version. Right-click cortex's icon in your
+app menu, choose **Quick note**, and a small window takes one line:
+
+```
+  ● QUICK NOTE  → today's note in ~/notes
+  ┌──────────────────────────────────────────────┐
+  │ ask about the Q3 budget forecast             │
+  └──────────────────────────────────────────────┘
+  enter adds it to today's note · shift enter new line · esc cancel
+```
+
+<kbd>Enter</kbd> adds it to today's note with the time in front —
+`- 14:02 ask about the Q3 budget forecast` — and the window closes. No graph,
+no folder to choose. `cortex --capture` does the same from a terminal or a
+keyboard shortcut.
+
+---
+
 ## Following the links
 
 Under the actions in the reader is a list of every file connected to this one:
@@ -336,6 +373,35 @@ one file, read what calls it, jump, repeat.
 
 Press <kbd>c</kbd> to collapse the list when you want the height back. It is
 hidden in full screen, where you are there to read the file.
+
+### Notes you have not written yet
+
+A `[[link]]` to a note that does not exist is a faint, dashed node of its own —
+the note you said you would write. It sits beside the notes that mention it,
+and in the reader the link is drawn as a link to nothing yet. Select it and the
+reader lists who links to it, with a button that writes it: in the folder of
+the note that mentions it, folders and all for `[[projects/Roadmap]]`, opened
+ready to type. The **unwritten** chip hides them all.
+
+Links inside code blocks are not links, and an image or other file named in
+`[[...]]` never becomes a note.
+
+### Links you have not made
+
+cortex reads what your notes say, and when two of them keep talking about the
+same things without ever linking, it says so. Select a note and its
+suggestions are listed under its connections, with the words they share, and
+drawn on the graph as dashed lines:
+
+```
+  SUGGESTED — THEY TALK ABOUT THE SAME THINGS
+  ≈  costs.md        quarter, budget, forecast        link  ✕
+```
+
+**link** writes `See also [costs](costs.md)` into the note — an ordinary
+relative link, so it works on GitHub too and cannot point at the wrong note
+when two share a name. **✕** says they are not related, and that is
+remembered. Nothing is suggested for code, or with fewer than three notes.
 
 ---
 
@@ -547,6 +613,121 @@ switch can never quietly throw your typing away.
 
 ---
 
+## Ways of looking
+
+Along the bottom of the window is a dock: **live**, **history**, **tours**,
+**views**, **disk** and **today**. Each is a different question to ask of the
+same folder.
+
+### Live — watch it change
+
+Press <kbd>w</kbd> and every file lights up the moment it changes: green when
+it is created, amber when it is written, red where it was deleted. A dashed
+trail joins them in the order they happened, and fades over a minute or so.
+A list in the corner says what changed and when.
+
+This is the one to leave open while an AI agent works on your project. You
+see which files it reads its way towards, what it touches, and in what order,
+as it does it — or what a build writes, or what `git pull` brought in.
+
+- **follow** flies the camera to each change as it happens, and stops the
+  moment you take the camera yourself.
+- **reveal** brings changed files into the graph even from folders you had
+  not opened.
+
+On Linux the kernel tells cortex what changed (inotify), so it is instant and
+costs nothing while nothing happens. Elsewhere the folders you have open are
+checked every second and a half. Nothing is watched at all until you first
+turn live on.
+
+### History — replay the project
+
+Press <kbd>h</kbd> in a folder that is in a git repository and a timeline
+appears. Drag it, and the graph becomes the folder as it was after that
+commit: what had not been written yet is not there, what has since been
+deleted or renamed is back where it was. Each commit's changes light up as you
+reach it, in the same colours as live.
+
+It follows the main line, the way `git log --first-parent` does: a merged
+branch arrives in one step, at its merge, rather than as its own commits
+interleaved by date — which would show files together that never were.
+
+<kbd>space</kbd> plays it, at 1×, 4×, 16× or 64×, and <kbd>[</kbd> <kbd>]</kbd>
+step a commit at a time. Everything that ever existed is laid out together
+first, so nothing jumps about while you scrub.
+
+**record** plays it from the first commit to the last and saves it as a video,
+with the date and the commit message drawn on — the life of a project in thirty
+seconds, for a README or a talk.
+
+### The path between two files
+
+How does `main.py` reach `db.py`? Select one and <kbd>shift</kbd>-click the
+other:
+
+```
+  PATH  cli.py  imports  server.py  imports  reader.py     only the path  ✕
+```
+
+The chain lights up in gold with each step numbered, following imports the
+way they run when such a chain exists, and any link at all when it does not.
+**only the path** hides everything else. Right-click a node for
+**Path from … to here** as well.
+
+### Tours — walk someone through it
+
+A tour is a path through the project with something said at each stop: start
+here, this calls that, the interesting part is on line 120. Press
+<kbd>T</kbd>, **record a tour**, then select files in the order you would show
+them and write a line about each. Play it back and the graph flies from stop
+to stop while the note for each one is shown; the arrow keys step through.
+
+A tour is saved as an ordinary markdown file in the project's `.tours` folder:
+
+```markdown
+# How a request flows
+
+1. [cortex/cli.py](../cortex/cli.py)
+   It all starts here: **main()** builds the server.
+
+2. [cortex/server.py, line 120](../cortex/server.py#L120)
+   The routes.
+```
+
+So it is committed with the code, reviewed in pull requests, edited by hand,
+and every stop is a link that works on GitHub.
+
+### Views — come back to how you were looking
+
+Narrow the graph to a folder, hide the kinds you do not want, open the folders
+you care about, frame it — then <kbd>v</kbd> and **save this view**. Keys
+<kbd>1</kbd> to <kbd>9</kbd> bring the first nine back, exactly as they were.
+"Frontend", "thesis", "the bug I am chasing".
+
+Views belong to the folder they were made in and live in
+`~/.config/cortex/views/`.
+
+### Disk — what is filling the drive
+
+Press <kbd>u</kbd> and every node is sized by the space it takes on disk, its
+size beside its name. A folder counts everything inside it — including
+`node_modules`, `.git` and build output, which the graph never shows and which
+are usually the answer. Select a folder and the reader lists where its space
+goes, biggest first:
+
+```
+  4.9 MB in 141 files
+  docs/        ██████████████████   2.5 MB
+  .git/        ██████████████       1.9 MB   not in the graph
+  cortex/      ██                 232.0 KB
+```
+
+A big folder says "≥" until it has finished counting. Hard links are counted
+once, and other drives mounted inside are not counted at all, the way `du -x`
+would have it.
+
+---
+
 ## Reading the graph
 
 **Colour** is the kind of file — folder, note, code, config, document, media,
@@ -622,7 +803,7 @@ Code links are found by actually resolving the import:
 
 | Language | Read from |
 | -------- | --------- |
-| Python   | `import a.b`, `from .x import y` |
+| Python   | `import a.b`, `from .x import y`, `from . import a, b` |
 | JS / TS  | `import … from './x'`, `require('./x')` |
 | Go       | `import "yourmodule/pkg"`, resolved through `go.mod` |
 | Rust     | `mod x;`, `use crate::a::b`, `use super::x` |
@@ -649,6 +830,19 @@ The reader still lists it, and clicking it there brings it in.
 
 ## Every command and key
 
+You need not remember any of this. <kbd>ctrl</kbd> <kbd>k</kbd> opens a palette
+of everything cortex can do, with the key for each beside it, and every file
+by name:
+
+```
+  ┌──────────────────────────────────────────────┐
+  │ hist                                         │
+  ├──────────────────────────────────────────────┤
+  │ History: replay through git               h  │
+  │ file  history.py                   cortex/   │
+  └──────────────────────────────────────────────┘
+```
+
 ```
 cortex [folder] [options]
 
@@ -672,6 +866,7 @@ cortex [folder] [options]
 
       --install-launcher  put cortex in your app menu, then exit
       --remove-launcher   take it out again, then exit
+      --capture           a small window that adds a line to today's note
 
   -w, --window MODE       app (default) | tab | none
   -b, --browser BIN       force a particular browser
@@ -693,7 +888,18 @@ cortex [folder] [options]
 | <kbd>F2</kbd> | rename the selection |
 | <kbd>Delete</kbd> | move the selection to the trash |
 | <kbd>p</kbd> | open another folder, or a saved project |
+| <kbd>ctrl</kbd> <kbd>k</kbd> | everything cortex can do, and every file, by name |
 | right-click | everything you can do to a node |
+| <kbd>shift</kbd>-click | the chain of links from the selection to there |
+| <kbd>w</kbd> | live: watch files change as they change |
+| <kbd>h</kbd> | history: replay this folder through git |
+| <kbd>space</kbd> <kbd>[</kbd> <kbd>]</kbd> | in the history: play, and step a commit |
+| <kbd>T</kbd> | tours: play one, or record your own |
+| <kbd>→</kbd> <kbd>←</kbd> | in a tour: the next and previous stop |
+| <kbd>v</kbd> | views: save how you are looking |
+| <kbd>1</kbd>–<kbd>9</kbd> | go back to a saved view |
+| <kbd>u</kbd> | disk: size everything by the space it takes |
+| <kbd>d</kbd> | today's note |
 | <kbd>r</kbd> | page through the selection in the terminal |
 | <kbd>m</kbd> | full screen the reader |
 | <kbd>e</kbd> | expand / collapse the selected folder |
@@ -706,25 +912,32 @@ cortex [folder] [options]
 | <kbd>g</kbd> | show / hide what git thinks of each file |
 | <kbd>0</kbd> | fit the graph on screen |
 | <kbd>arrows</kbd> | step to the next node that way, following links |
-| <kbd>x</kbd> | save this view as a picture — <kbd>shift</kbd> for SVG |
+| <kbd>x</kbd> | save this view as a picture — <kbd>X</kbd> for SVG |
 | <kbd>?</kbd> | the shortcut list |
-| <kbd>esc</kbd> | leave full screen, then close the reader |
+| <kbd>esc</kbd> | one thing at a time: a menu, a tour, a path, full screen, the reader |
 
 Optional extras, if you have them: `rg` for faster content search, `bat` for
 nicer terminal reading, `pdftotext` to page a PDF in the terminal.
 
 ---
 
-## Saving a picture of it
+## Saving and sharing
 
-Press <kbd>x</kbd>, or click **save**, and the view you are looking at becomes
-a PNG in your downloads. <kbd>shift</kbd> makes it an SVG instead, redrawn from
-the same numbers rather than captured, so it stays sharp on a slide or in
-print.
+Press <kbd>x</kbd>, or **share ▾** then **Picture**, and the view you are
+looking at becomes a PNG in your downloads. <kbd>X</kbd> makes it an SVG
+instead, redrawn from the same numbers rather than captured, so it stays sharp
+on a slide or in print. Either way it is the view as it stands — pan, zoom,
+whatever the chips are hiding, labels on or off. <kbd>t</kbd> first if you want
+the shape without the names.
 
-Either way it is the view as it stands — pan, zoom, whatever the chips are
-hiding, labels on or off. <kbd>t</kbd> first if you want the shape without the
-names.
+**Interactive map** is the view as one HTML file that someone else can open in
+any browser, with nothing to install — the same window, the same graph where
+you left it, with search, the reader and the tours, but no cortex behind it.
+It is read-only by construction and does not update. Before it is made you are
+told what goes in: the map always, and the text of the files on screen only if
+you tick the box, because a file you have sent is a file you cannot take back.
+
+In the history, **share ▾** also offers the replay as a video.
 
 ---
 
@@ -743,7 +956,7 @@ you type `cortex`
         (started from the app menu: a terminal window of its own)
 ```
 
-Five ideas worth knowing:
+Six ideas worth knowing:
 
 **Nothing is read until you ask.** One folder per expansion. Whether you point
 it at a 20-file project or a 140GB home directory, launch takes the same time.
@@ -767,6 +980,11 @@ forever jitter, and jitter reads as flicker — labels sit right on the collisio
 threshold and blink. cortex cools the simulation to a freeze and then stops
 drawing entirely, so an idle graph costs no CPU and no battery. Touching
 anything wakes it.
+
+**Nothing is watched until you ask.** Live mode's feed of changes, disk
+usage and the history are each started the first time they are wanted, not at
+launch, so an ordinary session pays nothing for them — not even inotify watches,
+which other programs on the machine draw from the same allowance.
 
 **Closing the window is quitting.** The page says hello as it opens and
 goodbye as it closes, and once the last goodbye has gone a few seconds without a
@@ -823,14 +1041,23 @@ cortex/
 │   ├── cli.py            arguments, saved projects, window launch, action loop
 │   ├── scanner.py        lazy folder scanning, ignore rules, node building
 │   ├── ignore.py         .gitignore parsing, the way git reads it
-│   ├── links.py          the semantic index: wikilinks, imports and tags
+│   ├── links.py          the semantic index: links, imports, tags, ghosts,
+│   │                     and the links your notes are missing
 │   ├── grep.py           content search, through ripgrep or a plain walk
 │   ├── gitstatus.py      what git thinks of each file
 │   ├── watch.py          noticing the disk change under an open window
+│   ├── activity.py       live mode: every file as it changes (inotify, or a poll)
+│   ├── history.py        the folder's life, from git
+│   ├── du.py             what is filling the disk
 │   ├── layout.py         where the nodes were, per mapped folder
 │   ├── reader.py         per-filetype preview extraction
 │   ├── files.py          saving, new, rename and trash
 │   ├── places.py         saved projects, recent folders, typing a path
+│   ├── views.py          named views, on keys 1 to 9
+│   ├── tours.py          tours, as markdown in .tours
+│   ├── journal.py        today's note, and quick capture
+│   ├── snapshot.py       the map as one HTML file to send
+│   ├── dismissed.py      suggestions someone said no to
 │   ├── actions.py        editor detection, terminal handoff, terminal windows
 │   ├── lifecycle.py      noticing the window has closed
 │   ├── desktop.py        the app-menu launcher
@@ -841,11 +1068,17 @@ cortex/
 │       ├── app.js        the graph, the reader and editor, the sheets
 │       ├── markdown.js   markdown renderer, no dependencies
 │       ├── highlight.js  syntax highlighter, no dependencies
+│       ├── snapshot.js   the server, played by data inside a shared map
 │       └── icon.svg      the favicon, and the launcher's icon
 └── tests/
     ├── run                  runs everything
     ├── test_cortex.py       scanner, links, reader, actions, HTTP surface
     ├── test_app.py          saving, files, folders, quitting, the launcher
+    ├── test_features.py     views, tours, notes, capture, sharing, the routes
+    ├── test_activity.py     the live feed, both engines
+    ├── test_history.py      git history, odd filenames and all
+    ├── test_du.py           disk usage, hard links, partial answers
+    ├── test_suggest.py      ghost notes and suggested links
     ├── harness.js           the stub DOM the browser-side tests run against
     ├── markdown.test.js     the markdown renderer
     ├── render-loop.test.js  cooling and repaint gating
@@ -857,7 +1090,11 @@ cortex/
     ├── view.test.js         remembered layout, arrow keys, saving a picture
     ├── edit.test.js         the editor, drafts and conflicts
     ├── files.test.js        new, rename, trash, right-click, other folders
-    └── readonly.test.js     --read-only, and the window outliving cortex
+    ├── readonly.test.js     --read-only, and the window outliving cortex
+    ├── modes.test.js        live, history, disk, paths, views, tours, palette
+    ├── notes.test.js        ghosts, suggestions, today's note, sharing
+    ├── capture.test.js      the quick-note window
+    └── snapshot.test.js     a shared map, with no server behind it
 ```
 
 ---
@@ -868,6 +1105,11 @@ cortex/
 tests/run                          # all of it
 python3 tests/test_cortex.py       # python only
 python3 tests/test_app.py
+python3 tests/test_features.py
+python3 tests/test_activity.py
+python3 tests/test_history.py
+python3 tests/test_du.py
+python3 tests/test_suggest.py
 node tests/markdown.test.js
 node tests/render-loop.test.js
 node tests/connections.test.js
@@ -878,10 +1120,14 @@ node tests/view.test.js
 node tests/edit.test.js
 node tests/files.test.js
 node tests/readonly.test.js
+node tests/modes.test.js
+node tests/notes.test.js
+node tests/capture.test.js
+node tests/snapshot.test.js
 node tests/perf.test.js
 ```
 
-575 tests, no framework to install — `unittest` and plain `node`. They run on
+858 tests, no framework to install — `unittest` and plain `node`. They run on
 every push against Python 3.9 and 3.13 on Linux, and 3.13 on macOS. `tests/run`
 also byte-checks every source file, because raw NUL bytes once got into two UI
 files and made git treat them as binary, silently breaking diffs and `grep`.
@@ -907,7 +1153,9 @@ in `~/.config/cortex/`, and recent folders, layouts and a log in
 
 **Does anything leave my machine?**
 No. The server binds to `127.0.0.1`, there are no external requests, and no CDN
-— the CSS and JavaScript are served from the folder you cloned.
+— the CSS and JavaScript are served from the folder you cloned. The one way
+anything leaves is a map you choose to share, which is a file you save and send
+yourself, and which holds the text of your files only if you said so.
 
 **Can other users on this machine see it?**
 No. It listens on loopback only, every request needs a token that is
@@ -943,6 +1191,19 @@ uses `open` instead of `xdg-open`. The launcher is a small app bundle in
 `~/Applications`, terminal editors open in Terminal.app, and trash goes through
 Finder, so **Put Back** works — the first time, macOS asks whether your
 terminal may control Finder.
+
+**What are the dashed things on the graph?**
+A dashed node is a note something links to that has not been written yet. A
+dashed ring around a node means it has unsaved changes in the editor. With live
+or history on, a dashed outline in red is where a file was just deleted, and the
+dashed gold line is the order things changed in. Dashed cyan lines are suggested
+links.
+
+**Live says "checked every 1.5s", not "instant".**
+That is the fallback for when the kernel's change notifications are not
+available — on macOS, or on Linux when the per-user inotify limit is used up by
+other programs. It still sees every change in the folders you have open, a
+second or so later.
 
 **Can I use it over SSH?**
 Run `cortex -w none`, forward the port (`ssh -L 41277:127.0.0.1:41277`), and

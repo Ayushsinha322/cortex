@@ -269,6 +269,50 @@ class Scanner:
         ))
         return hits
 
+    def lineage(self, path: str, cache: dict | None = None) -> dict | None:
+        """{node, ancestors} for a path under the root, on disk or not.
+
+        Search grafts what it finds onto the graph with its folder chain; so
+        do the tour, the path between two files, the change feed and the
+        history. The last two also name files that are gone -- deleted a
+        moment ago, or three years ago -- and those come back as nodes marked
+        missing, so the history can show where they were.
+        """
+        if not isinstance(path, str) or not path.startswith("/"):
+            return None
+        path = os.path.normpath(path)
+        if path != self.root and not path.startswith(self.root + os.sep):
+            return None
+        rel = os.path.relpath(path, self.root)
+        parts = [] if rel == "." else rel.split(os.sep)
+        ancestors, cur = [], self.root
+        for part in parts[:-1]:
+            cur = os.path.join(cur, part)
+            # five thousand files in one folder share their folders' nodes
+            node = cache.get(cur, False) if cache is not None else False
+            if node is False:
+                node = self._known(cur, True)
+                if cache is not None:
+                    cache[cur] = node
+            if node is None:
+                return None
+            ancestors.append(node)
+        node = self._known(path, False)
+        return None if node is None else {"node": node, "ancestors": ancestors}
+
+    def _known(self, path: str, is_dir: bool) -> dict | None:
+        if os.path.lexists(path):
+            # on disk it has to be genuinely inside: a symlinked folder that
+            # leads out does not become a way through
+            return self.node(path) if self.inside(path) else None
+        name = os.path.basename(path)
+        node = {"id": path, "name": name, "dir": is_dir,
+                "group": group_of(name, is_dir), "size": 0, "mtime": 0,
+                "parent": os.path.dirname(path), "missing": True}
+        if is_dir:
+            node["kids"] = 0
+        return node
+
     def _hit(self, full: str) -> dict:
         rel = os.path.relpath(full, self.root)
         parts = rel.split(os.sep)[:-1]

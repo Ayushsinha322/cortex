@@ -114,9 +114,10 @@ def _entry_value(text: str) -> str:
 
 
 def desktop_entry(script: str, icon: str, projects: dict | None = None) -> str:
-    """The .desktop file, with each saved project as a right-click action."""
+    """The .desktop file. Right-click on its icon offers a quick note, then
+    each saved project."""
     names = sorted(projects or {})[:12]
-    actions = [f"project-{i}" for i in range(len(names))]
+    actions = ["capture"] + [f"project-{i}" for i in range(len(names))]
     out = [
         "[Desktop Entry]",
         "Type=Application",
@@ -135,9 +136,10 @@ def desktop_entry(script: str, icon: str, projects: dict | None = None) -> str:
         "StartupNotify=false",
         MARKER,
     ]
-    if actions:
-        out.append("Actions=" + ";".join(actions) + ";")
-    for action, name in zip(actions, names):
+    out.append("Actions=" + ";".join(actions) + ";")
+    out += ["", "[Desktop Action capture]", "Name=Quick note",
+            f"Exec={_exec_arg(script)} --capture"]
+    for action, name in zip(actions[1:], names):
         out += ["", f"[Desktop Action {action}]", f"Name={_entry_value(name)}",
                 f"Exec={_exec_arg(script)} -P {_exec_arg(name)}"]
     return "\n".join(out) + "\n"
