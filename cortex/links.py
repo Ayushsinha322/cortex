@@ -7,14 +7,25 @@ Two kinds of link are discovered in the background after launch:
 
 Obsidian only does the first, and only inside one vault.  We do both, across
 the whole home directory.
+
+The same pass finds two links that are not there yet: a [[wikilink]] to a note
+nobody has written becomes a ghost, and two notes that use the same unusual
+words without linking to each other are suggested as a pair.
 """
 
 from __future__ import annotations
 
+import heapq
+import math
 import os
 import re
 import threading
 import time
+from urllib.parse import unquote
+from bisect import bisect_right
+from collections import Counter
+
+from .scanner import EXT_GROUP
 
 NOTE_EXT = {".md", ".markdown", ".mdx", ".txt", ".org", ".rst", ".adoc"}
 CODE_EXT = {".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".go", ".rs",
@@ -37,8 +48,74 @@ SKIP_SUFFIX = (".min.js", ".min.css", ".bundle.js", ".pack.js", "-lock.json",
 
 # --- note links -------------------------------------------------------------
 
-RE_WIKILINK = re.compile(r"\[\[\s*([^\]\|#\n]+)")
+# The target, then an optional `#heading` or `|alias`, then the closing `]]`.
+# Requiring the close matters now that a miss becomes a ghost: `[[1, 2], [3]]`
+# in prose is a nested list, not a note somebody meant to write.
+RE_WIKILINK = re.compile(r"\[\[\s*([^\]\|#\n]+)(?:[#|][^\]\n]*)?\]\]")
 RE_MDLINK = re.compile(r"\]\(\s*(?!https?:|mailto:|#)([^)\s]+)")
+
+# --- ghost notes ------------------------------------------------------------
+#
+# A [[wikilink]] to a note that does not exist is a note somebody meant to
+# write. It becomes a faint node of its own, and clicking it writes the note.
+
+GHOST_PREFIX = "ghost:"
+MAX_GHOSTS = 2000                # distinct ghosts; more would bury the notes
+
+# `![[diagram.png]]` is a wikilink too, but a missing picture is not a note
+# waiting to be written, and writing one would put markdown in a `.png`.
+ATTACHMENT_EXT = {e for e, group in EXT_GROUP.items() if group != "note"}
+ATTACHMENT_EXT.add(".canvas")    # Obsidian's whiteboards
+
+# --- suggested links --------------------------------------------------------
+#
+# Two notes that lean on the same unusual words are probably about the same
+# thing, whether or not anyone linked them. TF-IDF finds them: a word counts
+# for being frequent in one note and rare across the rest.
+
+SUGGEST_MIN = 0.15               # below this it is shared vocabulary, not a topic
+SUGGEST_MIN_SHARED = 2           # one word in common is a coincidence
+SUGGEST_PER_NOTE = 3             # partners per note; more and it is a hairball
+SUGGEST_TERMS = 4                # shared words shown as the reason
+SUGGEST_KEEP_TERMS = 40          # a note's strongest words; the tail is noise
+SUGGEST_MAX_NOTES = 4000         # pairing grows faster than the notes do
+SUGGEST_MAX_BYTES = 200 * 1024   # this long has every word, so pairs with all
+SUGGEST_MAX_WORDS = 1_000_000    # (note, word) counts held at once: ~30 MB
+
+# Runs of letters and digits, three or more: "a", "of" and "is" never carry a
+# topic, and cutting them in the regex is cheaper than in the loop.
+RE_TERM = re.compile(r"[^\W_]{3,}")
+RE_URL = re.compile(r"(?:https?://|www\.)\S+", re.I)
+RE_LINK_TARGET = re.compile(r"\]\([^)\n]*\)")
+# A front matter key (`title:`, `- tags:`) is in every note that has front
+# matter at all, so it would make every one of those notes look alike.
+RE_YAML_KEY = re.compile(r"^[ \t]*(?:-[ \t]+)?[\w-]+[ \t]*:", re.M)
+
+# Words that say nothing about what a note is for: English glue (including
+# what is left of "don't" once the apostrophe splits it), the debris of links
+# and images, and the two words on every task list.
+STOPWORDS = frozenset("""
+    about above across after again against all almost along already also
+    although always among and another any anyone anything are around because
+    been before behind being below between both but can cannot come could
+    did does doing down during each either else enough etc even ever
+    every few for from further get gets getting give given going gone good
+    got had has have having her here hers herself him himself his how however
+    instead into its itself just least less let like made make makes many may
+    maybe might mine more most much must myself need needs never next nor not
+    nothing now off often once one only onto other others our ours ourselves
+    out over own per perhaps put quite rather really said same see seem seems
+    shall she should since some something still such sure take than that the
+    their theirs them themselves then there these they thing things think this
+    those though through thus till too toward under until upon use used uses
+    using very want was way well were what whatever when where whether which
+    while who whom whose why will with within without would yes yet you your
+    yours yourself yourselves
+    don doesn didn isn aren wasn weren won wouldn couldn shouldn haven hasn
+    hadn
+    http https www com org net html htm png jpg jpeg gif svg pdf nbsp
+    todo done
+""".split())
 
 # --- tags -------------------------------------------------------------------
 #
@@ -99,6 +176,8 @@ class LinkIndex:
         self.notes = 0
         self.sources = 0
         self.tags: list[str] = []
+        self.ghosts: dict[str, str] = {}     # ghost id -> name as written
+        self.suggest: list[list] = []        # [a, b, score, [term, ...]]
         self.elapsed = 0.0
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -144,7 +223,8 @@ class LinkIndex:
         with self._lock:
             return {"ready": self.ready, "edges": list(self.edges),
                     "notes": self.notes, "sources": self.sources,
-                    "tags": list(self.tags), "elapsed": self.elapsed}
+                    "tags": list(self.tags), "ghosts": dict(self.ghosts),
+                    "suggest": list(self.suggest), "elapsed": self.elapsed}
 
     # -- build -------------------------------------------------------------
 
@@ -154,11 +234,12 @@ class LinkIndex:
         _GO_MODULES.clear()          # go.mod contents may have changed
         note_paths: list[str] = []
         code_paths: list[str] = []
-        by_stem: dict[str, str] = {}       # note stem -> path (first wins)
+        by_stem: dict[str, list[str]] = {}   # note stem -> paths, walk order
         all_files: set[str] = set()
 
         sc = self.scanner
         walked = 0
+        cut_short = False
         for dirpath, dirnames, filenames in os.walk(sc.root, followlinks=False):
             if self._stop.is_set():
                 return
@@ -178,10 +259,12 @@ class LinkIndex:
                 ext = os.path.splitext(lower)[1]
                 if ext in NOTE_EXT:
                     note_paths.append(full)
-                    by_stem.setdefault(os.path.splitext(fn)[0].lower(), full)
+                    by_stem.setdefault(_fold(os.path.splitext(fn)[0]),
+                                       []).append(full)
                 elif ext in CODE_EXT:
                     code_paths.append(full)
             if walked >= MAX_WALK_FILES:
+                cut_short = True
                 break
 
         with self._lock:
@@ -191,6 +274,12 @@ class LinkIndex:
         edges: list[list] = []
         seen: set[tuple[str, str]] = set()
         tag_names: set[str] = set()
+        ghosts: dict[str, str] = {}
+        docs: list[tuple[str, dict]] = []    # (note, its terms) for pairing
+        copies: set[int] = set()             # hashes of the texts in `docs`
+        vocab: dict[str, str] = {}           # one string per word, not per note
+        held = 0                             # (note, word) counts in `docs`
+        root = sc.root.rstrip(os.sep) + os.sep
 
         def emit(a: str, b: str, kind: str) -> None:
             if a == b:
@@ -205,15 +294,52 @@ class LinkIndex:
             return (time.monotonic() - started > TIME_BUDGET
                     or self._stop.is_set())
 
+        def ghost(path: str, name: str) -> None:
+            # A walk cut short cannot tell a missing note from one it never
+            # reached, and a ghost for a note that exists would write a twin.
+            if cut_short or _is_attachment(name):
+                return
+            key = ghost_key(name)
+            if not key:
+                return
+            gid = GHOST_PREFIX + key
+            if gid not in ghosts:
+                if len(ghosts) >= MAX_GHOSTS:
+                    return
+                ghosts[gid] = name
+            emit(path, gid, "ghost")
+
+        def remember(path: str, text: str) -> None:
+            nonlocal held
+            if (len(docs) >= SUGGEST_MAX_NOTES or held >= SUGGEST_MAX_WORDS
+                    or len(text) > SUGGEST_MAX_BYTES):
+                return
+            # A copy of a note (a symlink, a LICENSE in every repository) is
+            # the same note: pairing it with itself suggests nothing, and
+            # counting it twice makes its words look common.
+            fingerprint = hash(text)
+            if fingerprint in copies:
+                return
+            copies.add(fingerprint)
+            terms = note_terms(text, vocab)
+            if terms:
+                docs.append((path, terms))
+                held += len(terms)
+
         # Notes first: they are what a "second brain" is mostly made of, and
         # there are far fewer of them than source files.
         for i, path in enumerate(note_paths[:MAX_PARSE_FILES]):
             text = _read(path)
             if text:
-                for raw in RE_WIKILINK.findall(text):
-                    target = by_stem.get(os.path.splitext(raw.strip())[0].lower())
+                for raw in RE_WIKILINK.findall(_strip_code(text)):
+                    name = raw.strip().rstrip("\\").rstrip()   # `\|` in a table
+                    if not name:
+                        continue
+                    target = _resolve_wikilink(name, root, by_stem)
                     if target:
                         emit(path, target, "note")
+                    else:
+                        ghost(path, name)
                 for raw in RE_MDLINK.findall(text):
                     target = _resolve_rel(path, raw, all_files)
                     if target:
@@ -223,10 +349,12 @@ class LinkIndex:
                         continue
                     tag_names.add(tag)
                     emit(path, TAG_PREFIX + tag, "tag")
+                remember(path, text)
             if i % PROGRESS_EVERY == 0:
                 if self._partial:
                     with self._lock:
                         self.edges = list(edges)
+                        self.ghosts = dict(ghosts)
                 if over_budget():
                     break
 
@@ -243,11 +371,19 @@ class LinkIndex:
                 if over_budget():
                     break
 
+        # Only a finished pairing is shown: a half-done one would suggest
+        # whatever happened to be compared first, not what is most alike.
+        suggest: list[list] = []
+        if not over_budget():
+            suggest = suggest_links(docs, seen, over_budget) or []
+
         if self._stop.is_set():
             return
         with self._lock:
             self.edges = edges
             self.tags = sorted(tag_names)
+            self.ghosts = ghosts
+            self.suggest = suggest
             self.ready = True
             self._partial = True
             self.elapsed = round(time.monotonic() - started, 1)
@@ -263,8 +399,53 @@ def _read(path: str) -> str | None:
         return None
 
 
+def _strip_code(text: str) -> str:
+    """Prose only: what sits in a code sample is an example, not a statement."""
+    return RE_INLINE_CODE.sub("", RE_FENCE.sub("", text))
+
+
+def _fold(name: str) -> str:
+    """A note name as a link matches it: case and runs of spaces do not count."""
+    return " ".join(name.split()).lower()
+
+
+def _ends_with(path: str, tail: str) -> bool:
+    return path == tail or path.endswith("/" + tail)
+
+
+def _resolve_wikilink(name: str, root: str,
+                      by_stem: dict[str, list[str]]) -> str | None:
+    """The note a [[wikilink]] names: by its path if it gives one, else by stem.
+
+    `[[sub/deep]]` means the `deep` in a `sub/` folder, not whichever `deep` the
+    walk met first. `root` ends in a separator, and every path starts with it.
+    """
+    want = _fold(name).lstrip("/")
+    while want.startswith("./"):
+        want = want[2:]
+    base = want.rsplit("/", 1)[-1]
+    stem, ext = os.path.splitext(base)
+    candidates = by_stem.get(stem.rstrip() if ext in NOTE_EXT else base)
+    if not candidates:
+        return None
+    if "/" in want:
+        nearest = None
+        for cand in candidates:
+            rel = _fold(cand[len(root):])
+            if rel == want or os.path.splitext(rel)[0] == want:
+                return cand                 # the whole path from the root
+            if nearest is None and (_ends_with(rel, want) or
+                                    _ends_with(os.path.splitext(rel)[0], want)):
+                nearest = cand
+        if nearest:
+            return nearest
+    return candidates[0]
+
+
 def _resolve_rel(origin: str, ref: str, universe: set[str]) -> str | None:
     ref = ref.split("#")[0].strip()
+    if "%" in ref:
+        ref = unquote(ref)            # [my note](my%20note.md), as GitHub wants it
     if not ref or ref.startswith(("/", "http")):
         return None
     base = os.path.dirname(origin)
@@ -537,10 +718,166 @@ def note_tags(text: str) -> list[str]:
         take(raw)
 
     body = RE_FRONTMATTER.sub("", text, count=1)
-    body = RE_FENCE.sub("", body)          # a shell script is not a tag list
-    body = RE_INLINE_CODE.sub("", body)
+    body = _strip_code(body)               # a shell script is not a tag list
     for raw in RE_TAG.findall(body):
         take(raw)
         if len(found) >= MAX_TAGS_PER_FILE:
             break
     return found[:MAX_TAGS_PER_FILE]
+
+
+# --- ghosts -----------------------------------------------------------------
+
+
+def ghost_key(name: str) -> str:
+    """What every spelling of one missing note has in common.
+
+    `[[Meeting Notes]]`, `[[meeting  notes]]` and `[[Meeting Notes.md]]` are
+    one note nobody has written yet, so they are one ghost.
+    """
+    key = _fold(name)
+    if key.endswith(".md"):
+        key = key[:-3].rstrip()
+    return key
+
+
+def _is_attachment(name: str) -> bool:
+    return os.path.splitext(name)[1].lower() in ATTACHMENT_EXT
+
+
+# --- suggested links --------------------------------------------------------
+
+
+def note_terms(text: str, vocab: dict | None = None) -> dict[str, int]:
+    """The words a note is about, with how often it uses each.
+
+    Prose only: code, URLs and link targets are examples and addresses, not
+    what the note says. A plural folds into its singular so `forecasts` meets
+    `forecast`, and no further: a real stemmer would be a dependency, and
+    `forecasting` meeting `forecast` is not worth one.
+
+    `vocab`, shared across notes, keeps one copy of each word: otherwise a
+    word in a thousand notes is a thousand strings, and that is most of the
+    memory the pairing needs.
+    """
+    match = RE_FRONTMATTER.match(text)
+    if match:
+        text = RE_YAML_KEY.sub(" ", match.group(1)) + "\n" + text[match.end():]
+    text = _strip_code(text)
+    text = RE_LINK_TARGET.sub(" ", text)
+    text = RE_URL.sub(" ", text)
+
+    terms: dict[str, int] = {}
+    for word, count in Counter(RE_TERM.findall(text.lower())).items():
+        if word in STOPWORDS or word.isdigit():
+            continue
+        # `ss`, `us` and `is` end words rather than plurals: class, focus,
+        # analysis. Folding those would show "focu" as a reason to link.
+        if len(word) > 4 and word[-1] == "s" and word[-2] not in "isu":
+            word = word[:-1]
+            if word in STOPWORDS:
+                continue
+        if vocab is not None:
+            word = vocab.setdefault(word, word)
+        terms[word] = terms.get(word, 0) + count
+    return terms
+
+
+def suggest_links(docs: list, joined=frozenset(),
+                  over_budget=None) -> list | None:
+    """Pairs of notes that talk about the same things but do not link.
+
+    `docs` is [(path, {term: count}), ...] and `joined` holds the (a, b) pairs,
+    a < b, that already link one way or the other. The answer is
+    [[a, b, score, [term, ...]], ...] with a < b, strongest first -- or None
+    when `over_budget` calls time part way, since half a pairing is not one.
+
+    Each note becomes a TF-IDF vector cut to its strongest words, and is only
+    compared with the notes that share one of them, through an inverted index.
+    All pairs of four thousand notes is eight million comparisons, and nearly
+    all of them are between notes with nothing in common.
+    """
+    n = len(docs)
+    if n < 3:
+        return []                   # a word cannot be rare among two notes
+
+    df: Counter = Counter()
+    for _, terms in docs:
+        df.update(terms.keys())
+    # A word in one note cannot pair it with anything, and a word in most of
+    # them tells none of them apart. Under six notes "most" has to mean all:
+    # half of five is two, and two notes sharing a word is the whole point.
+    most = n / 2 if n >= 6 else n - 1
+    idf = {t: math.log(n / d) for t, d in df.items() if 1 < d <= most}
+
+    vectors: list[dict[str, float]] = []
+    postings: dict[str, tuple[list[int], list[float]]] = {}
+    for i, (_, terms) in enumerate(docs):
+        weights = [(t, (1 + math.log(c)) * idf[t])
+                   for t, c in terms.items() if t in idf]
+        norm = math.sqrt(sum(w * w for _, w in weights))
+        if len(weights) > SUGGEST_KEEP_TERMS:
+            weights = heapq.nlargest(SUGGEST_KEEP_TERMS, weights,
+                                     key=lambda tw: tw[1])
+        vec: dict[str, float] = {}
+        for t, w in weights:
+            w /= norm
+            vec[t] = w
+            ids, ws = postings.setdefault(t, ([], []))
+            ids.append(i)
+            ws.append(w)
+        vectors.append(vec)
+
+    best: list[list] = [[] for _ in range(n)]   # min-heaps of (score, partner)
+    for i, vec in enumerate(vectors):
+        if over_budget is not None and over_budget():
+            return None
+        dots: dict[int, float] = {}
+        for t, w in vec.items():
+            ids, ws = postings[t]
+            # Postings are in note order, so only the tail after this note is
+            # read: each pair is scored once, from its first note.
+            start = bisect_right(ids, i)
+            for j, wj in zip(ids[start:], ws[start:]):
+                dots[j] = dots.get(j, 0.0) + w * wj
+        here = docs[i][0]
+        for j, score in dots.items():
+            if score < SUGGEST_MIN:
+                continue
+            if not (_has_room(best[i], score) or _has_room(best[j], score)):
+                continue
+            there = docs[j][0]
+            if (here, there) in joined or (there, here) in joined:
+                continue
+            if sum(1 for t in vec if t in vectors[j]) < SUGGEST_MIN_SHARED:
+                continue
+            _offer(best[i], score, j)
+            _offer(best[j], score, i)
+
+    pairs: dict[tuple[int, int], float] = {}
+    for i, heap in enumerate(best):
+        for score, j in heap:
+            pairs[(i, j) if i < j else (j, i)] = score
+
+    out: list[list] = []
+    for (i, j), score in pairs.items():
+        a, b = sorted((docs[i][0], docs[j][0]))
+        shared = sorted((-vectors[i][t] * vectors[j][t], t)
+                        for t in vectors[i] if t in vectors[j])
+        out.append([a, b, round(score, 2),
+                    [t for _, t in shared[:SUGGEST_TERMS]]])
+    out.sort(key=lambda s: (-s[2], s[0], s[1]))
+    return out
+
+
+def _has_room(heap: list, score: float) -> bool:
+    return len(heap) < SUGGEST_PER_NOTE or score > heap[0][0]
+
+
+def _offer(heap: list, score: float, partner: int) -> None:
+    """Keep the best SUGGEST_PER_NOTE partners, in a min-heap so the worst
+    of them is the one at hand to replace."""
+    if len(heap) < SUGGEST_PER_NOTE:
+        heapq.heappush(heap, (score, partner))
+    elif score > heap[0][0]:
+        heapq.heapreplace(heap, (score, partner))
