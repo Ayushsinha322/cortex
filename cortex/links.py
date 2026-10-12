@@ -138,6 +138,10 @@ RE_YAML_TAGS = re.compile(r"^(tags?|keywords)[ \t]*:[ \t]*(.*)$", re.M | re.I)
 # --- code links -------------------------------------------------------------
 
 RE_PY_FROM = re.compile(r"^\s*from\s+([.\w]+)\s+import", re.M)
+# `from . import reader, grep` names modules, not things inside one, and is
+# how a package's files import each other -- so what follows `import` is read
+# too, parenthesised lists across lines included.
+RE_PY_FROM_LIST = re.compile(r"^\s*from\s+([.\w]+)\s+import\s+(\([^)]*\)|[^\n#;]+)", re.M)
 RE_PY_IMPORT = re.compile(r"^\s*import\s+([.\w]+)", re.M)
 RE_JS_FROM = re.compile(r"""(?:from|import)\s*\(?\s*['"](\.{1,2}/[^'"]+)['"]""")
 RE_JS_REQUIRE = re.compile(r"""require\s*\(\s*['"](\.{1,2}/[^'"]+)['"]""")
@@ -464,11 +468,20 @@ def _code_targets(path: str, text: str, universe: set[str]):
     out: list[str] = []
 
     if ext in {".py", ".pyi"}:
-        for mod in RE_PY_FROM.findall(text) + RE_PY_IMPORT.findall(text):
-            for cand in _py_candidates(base, mod):
-                if cand in universe:
-                    out.append(cand)
-                    break
+        found = lambda mod: next((c for c in _py_candidates(base, mod) if c in universe),
+                                 None)
+        for mod, names in RE_PY_FROM_LIST.findall(text):
+            # a name that is a module of its own is the link; failing that,
+            # the module it was imported from
+            subs = [hit for hit in (found(mod + name if not mod.strip(".") else f"{mod}.{name}")
+                                    for name in _py_names(names)) if hit]
+            if subs:
+                out.extend(subs)
+            elif found(mod):
+                out.append(found(mod))
+        for mod in RE_PY_IMPORT.findall(text):
+            if found(mod):
+                out.append(found(mod))
     elif ext in {".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx"}:
         for ref in RE_JS_FROM.findall(text) + RE_JS_REQUIRE.findall(text):
             stem = os.path.normpath(os.path.join(base, ref))
@@ -492,6 +505,16 @@ def _code_targets(path: str, text: str, universe: set[str]):
             cand = os.path.normpath(os.path.join(base, ref))
             if cand in universe:
                 out.append(cand)
+    return out
+
+
+def _py_names(listed: str) -> list[str]:
+    """The names in `import a, b as c, (d, e)`, without aliases or stars."""
+    out = []
+    for item in listed.strip().strip("()").replace("\\", " ").split(","):
+        words = item.split()
+        if words and words[0] != "*" and words[0].isidentifier():
+            out.append(words[0])
     return out
 
 
