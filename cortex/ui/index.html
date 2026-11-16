@@ -72,6 +72,7 @@
 
 <!-- bottom middle: the modes -- each is a different way of looking -->
 <nav id="dock" class="glass">
+  <button id="d-agents" title="Agents — coding agents at work on this project, each in a copy of its own (a)"><i class="led"></i>agents</button>
   <button id="d-live" title="Live — watch files change as they change (w)"><i class="led"></i>live</button>
   <button id="d-history" title="History — replay this folder through git (h)">history</button>
   <button id="d-tours" title="Tours — walk someone through this project (T)">tours</button>
@@ -192,6 +193,24 @@
   </div>
 </div>
 
+<!-- a task for an agent: what, which agent, where, and how freely -->
+<div id="agent-new" class="modal">
+  <div class="sheet glass agent-new">
+    <h2>New agent</h2>
+    <textarea id="an-prompt" spellcheck="true"
+              placeholder="What should it do? Say it the way you would to a colleague."></textarea>
+    <div class="an-row"><span class="an-label">who</span><div id="an-agents" class="an-chips"></div></div>
+    <div class="an-row"><span class="an-label">where</span><div id="an-where" class="an-chips"></div></div>
+    <div class="an-row"><span class="an-label">it may</span><div id="an-perm" class="an-chips"></div></div>
+    <p id="an-note" class="muted small"></p>
+    <div class="ask-btns">
+      <span class="muted small an-hint"><kbd>ctrl</kbd> <kbd>enter</kbd> starts it</span>
+      <button id="an-cancel" class="ghost">cancel</button>
+      <button id="an-ok" class="primary">start</button>
+    </div>
+  </div>
+</div>
+
 <!-- ctrl-k: everything cortex can do, and every file, by typing -->
 <div id="palette" class="modal">
   <div class="sheet glass palette">
@@ -263,6 +282,8 @@
       <dt><kbd>p</kbd></dt><dd>open another folder, or a saved project</dd>
       <dt><kbd>ctrl k</kbd></dt><dd>everything cortex can do, and every file, by name</dd>
       <dt><kbd>shift-click</kbd></dt><dd>the chain of links from the selection to there</dd>
+      <dt><kbd>a</kbd></dt><dd>agents: give one a task, or see what each is doing</dd>
+      <dt><kbd>A</kbd></dt><dd>go to the agent that is waiting on you</dd>
       <dt><kbd>w</kbd></dt><dd>live: watch files light up as they change</dd>
       <dt><kbd>h</kbd></dt><dd>history: replay this folder through git</dd>
       <dt><kbd>T</kbd></dt><dd>tours: play one, or record your own</dd>

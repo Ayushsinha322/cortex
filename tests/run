@@ -60,6 +60,7 @@ step "python: live changes" python3 tests/test_activity.py
 step "python: history" python3 tests/test_history.py
 step "python: disk usage" python3 tests/test_du.py
 step "python: ghosts and suggestions" python3 tests/test_suggest.py
+step "python: agents" python3 tests/test_agents.py
 
 # --- browser-side logic -----------------------------------------------------
 if command -v node >/dev/null; then
@@ -75,6 +76,7 @@ if command -v node >/dev/null; then
   step "read-only" node tests/readonly.test.js
   step "modes" node tests/modes.test.js
   step "notes" node tests/notes.test.js
+  step "agents" node tests/agents.test.js
   step "quick capture" node tests/capture.test.js
   step "snapshot" node tests/snapshot.test.js
   step "performance" node tests/perf.test.js

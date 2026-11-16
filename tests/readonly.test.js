@@ -22,6 +22,7 @@ const { boot, pump, el, sent, net } = harness({
   config: { readOnly: true },
   api: {
     "/api/preview": () => ({ kind: "markdown", text: "# a", ext: ".md" }),
+    "/api/agents": () => ({ off: true, rev: 0, sessions: [], conflicts: [], agents: [] }),
   },
 });
 
@@ -48,6 +49,13 @@ const settle = async (ms = 40) => { await new Promise((r) => setTimeout(r, ms));
   D.key("Delete");
   await settle();
   check("new, rename and trash do nothing", !el("ask").classList.contains("open"));
+
+  // an agent exists to change files
+  D.key("a");
+  await settle();
+  check("there are no agents to start", el("d-agents").hidden === true
+        && el("pop").children.length === 0 && !el("agent-new").classList.contains("open")
+        && !sent.some((s) => s.url.includes("/api/agents") && s.body));
 
   const { cam } = D();
   const n = D.at(A);

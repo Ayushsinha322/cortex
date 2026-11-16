@@ -8,13 +8,14 @@ import logging
 import os
 import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import threading
 import webbrowser
 from urllib.request import pathname2url
 
-from . import __version__, desktop, files, places
+from . import __version__, agents, desktop, files, places
 from .actions import ActionRunner, C
 from .lifecycle import Lifecycle
 from .links import LinkIndex
@@ -233,7 +234,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-layout", action="store_true",
                    help="do not remember where the nodes were last time")
     p.add_argument("--read-only", action="store_true",
-                   help="never change a file: no editing, new, rename or trash")
+                   help="never change a file: no agents, editing, new, rename "
+                        "or trash")
 
     g = p.add_argument_group("projects")
     g.add_argument("-P", "--project", metavar="NAME",
@@ -390,6 +392,15 @@ def main(argv=None) -> int:
     threading.Thread(target=httpd.serve_forever, daemon=True,
                      name="cortex-http").start()
 
+    # Logging out, or the desktop shutting down, ends cortex with a signal
+    # rather than a key. It should leave the same way either way: a save
+    # finished, and no agent left running with nobody to answer it.
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            signal.signal(sig, lambda *_: lifecycle.quit("asked to stop"))
+        except (OSError, ValueError):
+            pass
+
     editors = [e["label"] for e in runner.editors()]
     print(f"{C['blue']}{BANNER.format(v=VERSION)}{C['off']}")
     print(f"  {C['b']}mapping{C['off']}   {_short(root)}"
@@ -400,6 +411,10 @@ def main(argv=None) -> int:
     print(f"  {C['b']}editors{C['off']}   {', '.join(editors) or C['dim'] + 'none found' + C['off']}")
     if args.read_only:
         print(f"  {C['b']}files{C['off']}     read-only")
+    else:
+        found = [a["label"] for a in agents.available()]
+        if found:
+            print(f"  {C['b']}agents{C['off']}    {', '.join(found)}")
     print(f"  {C['b']}url{C['off']}       {C['dim']}{url}{C['off']}")
 
     opened = launch_window(url, args.window, args.browser, ctx.bootstrap,
@@ -431,6 +446,8 @@ def main(argv=None) -> int:
         runner.stop.set()
         files.quiesce()             # a save in progress finishes, whole
         httpd.shutdown()
+        if ctx.agents is not None:
+            ctx.agents.stop_all()       # nothing cortex started outlives it
         ctx.links.stop()
         ctx.stop_feed()
         ctx.forget_bootstrap()

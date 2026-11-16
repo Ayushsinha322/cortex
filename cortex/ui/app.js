@@ -625,6 +625,7 @@ async function setScope(rawRoot) {
   if (depth > 0) await autoGrow(depth, AUTO.budget || 700);
 
   applySemantic();
+  syncAgentNodes();
   updateScopeUI();
   if (sidebarOpen && rootDirs) renderSidebar();
   needsFit = true;
@@ -876,9 +877,22 @@ function draw() {
   for (const l of links) {
     const a = nodes.get(l.a), b = nodes.get(l.b);
     if (!a || !b || !visible(a) || !visible(b)) continue;
+    const lit = sel && (l.a === sel.id || l.b === sel.id);
+    if (l.kind === "agent") {
+      // an agent and a file it is changing: drawn in the agent's colour,
+      // whatever the links toggle says
+      ctx.strokeStyle = agentColor(a.session || b.session || {}) + (lit ? "ee" : "77");
+      ctx.lineWidth = lit ? 1.8 : 1.2;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      ctx.moveTo(toScreenX(a.x), toScreenY(a.y));
+      ctx.lineTo(toScreenX(b.x), toScreenY(b.y));
+      ctx.stroke();
+      ctx.setLineDash([]);
+      continue;
+    }
     const semantic = l.kind !== "tree";
     if (semantic && !showSemantic) continue;
-    const lit = sel && (l.a === sel.id || l.b === sel.id);
     if (semantic) {
       ctx.strokeStyle = lit ? "#34d399dd"
         : l.kind === "code" ? "#60a5fa2e"
@@ -901,6 +915,17 @@ function draw() {
     const x = toScreenX(n.x), y = toScreenY(n.y);
     const r = Math.max(1.8, n.r * cam.s);
     if (x < -60 || x > W + 60 || y < -60 || y > H + 60) continue;
+    if (n.agent) {
+      drawAgentNode(n, x, y, r, Date.now());
+      if (n === sel) {
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(x, y, Math.max(6, r * 1.25) + 11, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      continue;
+    }
     const c = COLOR[n.group] || COLOR.other;
     const active = n === sel || n === hover || matches.has(n.id);
 
@@ -1004,7 +1029,7 @@ function draw() {
     if (!visible(n)) continue;
     const active = n === sel || n === hover || matches.has(n.id);
     if (!active && cam.s < 0.4) continue;
-    if (!active && !n.dir && cam.s < 0.85) continue;
+    if (!active && !n.dir && !n.agent && cam.s < 0.85) continue;
     const bypass = n === sel || n === hover;
     const x = toScreenX(n.x), y = toScreenY(n.y);
     if (x < -40 || x > W + 40 || y < -40 || y > H + 40) continue;
@@ -1015,7 +1040,8 @@ function draw() {
     const cap = disk ? 46 : 34;
     const text = full.length > cap ? full.slice(0, cap - 2) + "…" : full;
     const w = ctx.measureText(text).width;
-    const bx = x - w / 2, by = y + r + 3, bh = size + 3;
+    // an agent's label clears the ring that says what it is doing
+    const bx = x - w / 2, by = y + r + (n.agent ? 13 : 3), bh = size + 3;
     if (!bypass && !fits(bx, by, w, bh)) continue;
     boxes.push([bx, by, w, bh]);
     nextShown.add(n.id);
@@ -1027,7 +1053,7 @@ function draw() {
       ctx.fillRect(bx - 4, by - 2, w + 8, bh + 2);
     }
     ctx.fillStyle = active ? "#f4f7fc"
-      : n.dir ? "#c4d0e4" : "#7f8da6";
+      : n.dir || n.agent ? "#c4d0e4" : "#7f8da6";
     ctx.fillText(text, x, by);
   }
   shownLabels = nextShown;
@@ -1080,6 +1106,14 @@ CFG.debug.select = (id) => {
   return !!n;
 };
 CFG.debug.visible = (id) => { const n = nodes.get(id); return !!n && visible(n); };
+CFG.debug.agents = () => ({
+  rev: agentState.rev, watching: !!agentLoop,
+  sessions: agentState.sessions.map((s) => s.id),
+  marks: [...agentMarks.keys()], clashes: [...agentClash],
+  pings: agentPings.map((p) => p.path),
+  view: agentView ? { id: agentView.id, mode: agentView.mode, shown: agentView.shown } : null,
+  links: links.filter((l) => l.kind === "agent").map((l) => [l.a, l.b]),
+});
 CFG.debug.modes = () => ({
   live: !!live, disk: !!disk, history: hist ? hist.v : null,
   path: pathHops ? pathHops.map((h) => h.id) : null,
@@ -1231,6 +1265,8 @@ function closePanel() {
   closeEditor(false);
   setMax(false);
   panel.classList.remove("open");
+  panel.classList.remove("agent");
+  agentView = null;
   $("p-links").hidden = true;
   sel = null; selLine = null; focusMode = false; recomputeNeighbours();
   dirty = true;
@@ -1261,10 +1297,14 @@ function select(n) {
   focusMode = false;
   recomputeNeighbours();
   panel.classList.add("open");
-  $("p-kind").textContent = n.ghost ? "unwritten" : n.tag ? "tag"
+  // an agent's conversation fills the reader, with its reply box at the foot
+  panel.classList.toggle("agent", !!n.agent);
+  if (!n.agent) agentView = null;
+  $("p-kind").textContent = n.agent ? "agent" : n.ghost ? "unwritten" : n.tag ? "tag"
     : n.missing ? "gone" : n.dir ? "folder" : (n.group === "other" ? "file" : n.group);
   $("p-name").textContent = n.name;
-  $("p-path").textContent = n.ghost ? "linked to, but not written yet"
+  $("p-path").textContent = n.agent ? agentLine(n.session)
+    : n.ghost ? "linked to, but not written yet"
     : n.tag ? "a tag, not a file" : n.id.replace(ROOT, "~");
   describe(n);
   renderGitChip(n);
@@ -1279,6 +1319,7 @@ let editBtn = null;               // the reader's "edit", shown once we know it 
 let openDropdown = null;          // the one action menu that may be open
 
 function describe(n) {
+  if (n.agent) { $("p-meta").textContent = agentMeta(n.session); return; }
   $("p-meta").textContent = n.tag || n.missing ? ""
     : (n.dir ? `${n.kids || 0} item${n.kids === 1 ? "" : "s"}` : fmtSize(n.size)) +
       (n.mtime ? "  ·  " + new Date(n.mtime * 1000).toLocaleString() : "");
@@ -1289,6 +1330,7 @@ function buildActions(n) {
   bar.textContent = "";
   editBtn = null;
 
+  if (n.agent) return agentActions(n, bar);
   if (n.tag) {
     // nothing on disk to edit, page or open
     const b = document.createElement("button");
@@ -1422,6 +1464,7 @@ async function renderBody(n) {
   if (editing && editing.path === n.id) return;
   const body = $("p-body");
   body.classList.remove("fill");     // reset before any early return below
+  if (n.agent) return renderAgentBody(n, body);
   if (n.ghost) return renderGhostBody(n, body);
   if (n.tag) return renderTagBody(n, body);
   if (n.missing) {
@@ -2295,6 +2338,7 @@ function menuFor(n, prior = null) {
     return READ_ONLY || SNAPSHOT ? []
       : [{ label: "Create this note", run: () => createGhost(n) }];
   }
+  if (n.agent) return agentMenu(n);
   if (n.tag) {
     return [{ label: focusMode ? "Show everything" : "Focus on this tag", key: "f",
               run: () => { focusMode = !focusMode; recomputeNeighbours(); } }];
@@ -2328,6 +2372,9 @@ function menuFor(n, prior = null) {
     if (TERMINAL) {
       items.push({ label: "Open a terminal here", run: () => act("shell", n.id) });
     }
+    if (!READ_ONLY && !agentsOff) {
+      items.push({ label: "New agent here…", run: () => openAgentNew(n.id) });
+    }
   }
   items.push("-");
   return items.concat(fileItems(n));
@@ -2340,6 +2387,7 @@ function backgroundMenu() {
   if (!READ_ONLY) {
     items.push({ label: `New note in ${name}…`, key: "n", run: () => newEntry(viewRoot) });
     items.push({ label: "New folder…", run: () => newEntry(viewRoot, "dir") });
+    if (!agentsOff) items.push({ label: "New agent…", run: () => openAgentNew() });
     items.push("-");
   }
   items.push({ label: "Open another folder…", key: "p", run: () => openPlaces() });
@@ -2929,6 +2977,7 @@ function arrowHead(x1, y1, x2, y2, back, size) {
 function drawOverlays() {
   const now = Date.now();
   drawHeat(now);
+  drawAgents(now);
   drawPath();
   if (tourPlay && sel) {
     const x = toScreenX(sel.x), y = toScreenY(sel.y);
@@ -3582,6 +3631,12 @@ function commands() {
   const list = [
     { label: "Open another folder…", key: "p", run: () => openPlaces(), on: !SNAPSHOT },
     { label: "Today's note", key: "d", run: () => openToday(), on: write },
+    { label: "New agent…", run: () => openAgentNew(), on: write && !agentsOff },
+    { label: "Agents…", key: "a", run: () => openAgents(), on: write && !agentsOff },
+    { label: "Agents: go to the one that needs you", key: "A", run: () => nextAgent(),
+      on: agentState.sessions.some((s) => s.unread) },
+    ...agentState.sessions.map((s) => ({ label: `Agent: ${s.title}`,
+                                         run: () => goToAgent(s) })),
     { label: "New note…", key: "n", on: write,
       run: () => newEntry(sel && !sel.tag ? parentOfNode(sel) : viewRoot) },
     { label: live ? "Live: stop watching" : "Live: watch files change", key: "w",
@@ -4924,6 +4979,7 @@ function sceneSVG() {
   for (const l of links) {
     const a = nodes.get(l.a), b = nodes.get(l.b);
     if (!a || !b || !visible(a) || !visible(b)) continue;
+    if (l.kind === "agent") continue;
     const semantic = l.kind !== "tree";
     if (semantic && !showSemantic) continue;
     const stroke = !semantic ? "#1e293b"
@@ -4939,6 +4995,7 @@ function sceneSVG() {
     const x = toScreenX(n.x), y = toScreenY(n.y);
     if (x < -60 || x > W + 60 || y < -60 || y > H + 60) continue;
     const r = Math.max(1.8, n.r * cam.s);
+    if (n.agent) continue;
     const c = COLOR[n.group] || COLOR.other;
     const hollow = n.tag || (n.dir && expanded.has(n.id));
     out.push(`<circle cx="${round(x)}" cy="${round(y)}" r="${round(r)}" ` +
@@ -5069,8 +5126,11 @@ function updateStats() {
   if (booted) placeChrome();
   let shown = 0;
   for (const n of nodes.values()) if (visible(n)) shown++;
-  let semantic = 0;
-  for (const l of links) if (l.kind !== "tree") semantic++;
+  let semantic = 0, tree = 0;
+  for (const l of links) {
+    if (l.kind === "tree") tree++;
+    else if (l.kind !== "agent") semantic++;
+  }
   $("stat-nodes").textContent = `${shown} node${shown === 1 ? "" : "s"}`;
   const gitEl = $("stat-git");
   if (gitEl) {
@@ -5081,8 +5141,1088 @@ function updateStats() {
       ? `${gitBranch}${changed ? ` · ${changed} changed` : ""}` : "";
   }
   const pool = semanticEdges ? semanticEdges.length : 0;
-  $("stat-links").textContent = `${links.length - semantic} tree · ${semantic}`
+  $("stat-links").textContent = `${tree} tree · ${semantic}`
     + (pool ? ` of ${pool} semantic` : " semantic");
+}
+
+/* ----------------------------------------------------------------- agents
+
+   Coding agents -- Claude Code, Codex, whatever is installed -- started from
+   here and drawn on the map. Each is a node of its own colour, joined to the
+   files it has changed. A file it reads pings as it is read. A file two
+   agents are both changing is ringed in red, before either is merged. Select
+   an agent and the reader is the conversation with it: what it said, what it
+   did, the question it is waiting on, and a box to answer in.
+
+   The server keeps one feed for all of them, read with a long poll that only
+   runs while there is an agent to watch: nobody who never starts one pays
+   for it. */
+const AGENT_PREFIX = "agent:";
+const AGENT_COLORS = ["#22d3ee", "#f472b6", "#a3e635", "#fb923c",
+                      "#818cf8", "#facc15", "#2dd4bf", "#f87171"];
+const agentColor = (s) => AGENT_COLORS[(s.color || 0) % AGENT_COLORS.length];
+const STATE_WORD = { starting: "starting", working: "working", waiting: "needs you",
+                     idle: "done", failed: "stopped on an error" };
+const PERM_WORD = { ask: "ask first", edits: "edit freely", plan: "plan only",
+                    auto: "its own judgement" };
+const PERM_NOTE = {
+  ask: "It asks before every change and every command.",
+  edits: "It may edit files without asking; commands are asked about.",
+  plan: "It may read and think, and change nothing.",
+  auto: "It decides for itself what is safe to do without asking.",
+};
+
+let agentState = { rev: 0, sessions: [], conflicts: [], agents: [], git: false };
+let agentLoop = null;            // the long poll, once there is anything to watch
+let agentView = null;            // what the reader is showing of one, see renderAgentBody
+let agentsOff = false;           // read-only: there are none, and none can be started
+let agentNew = null;             // the choices in the new-agent sheet
+const agentLogs = new Map();     // id -> {seq, events}, so reopening one asks only for news
+const agentDrafts = new Map();   // id -> a reply typed and not yet sent
+const agentPinged = new Map();   // id -> the newest touch already shown
+const reviewNotes = new Map();   // id -> [{path, line, text, note}]
+let agentPings = [];             // [{path, color, t, write}]
+let agentMarks = new Map();      // path -> the colours of the agents changing it
+let agentClash = new Set();      // paths more than one agent is changing
+
+const sessionOf = (id) => agentState.sessions.find((s) => s.id === id) || null;
+const agentBusy = (s) =>
+  s.state === "starting" || s.state === "working" || s.state === "waiting";
+/* An agent belongs on this map when the folder it was given is in it. */
+const agentHere = (s) => s.folder === ROOT || s.folder.startsWith(ROOT + "/");
+const looking = () => typeof document.hasFocus !== "function" || document.hasFocus();
+const relPath = (p) => p.startsWith(ROOT + "/") ? p.slice(ROOT.length + 1) : p;
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+function agentWord(s) {
+  if (s.ended === "kept") return `kept on ${s.branch}`;
+  if (s.ended) return "its copy is gone";
+  return STATE_WORD[s.state] || s.state;
+}
+
+function agentStats(s) {
+  const st = s.stats;
+  return st && st.files ? `${plural(st.files, "file")} +${st.added} −${st.removed}` : "";
+}
+
+function agentLine(s) {
+  const where = s.mode === "copy" ? "in a copy of its own" : "in your folder";
+  return `${s.label} · ${where} · ${agentWord(s)}`;
+}
+
+function agentMeta(s) {
+  const bits = [`started ${ago(s.started)}${ago(s.started) === "now" ? "" : " ago"}`];
+  if (s.mode === "copy" && s.branch && s.ended !== "kept") bits.push(s.branch);
+  if (agentStats(s)) bits.push(agentStats(s));
+  if (typeof s.cost === "number") bits.push(`$${s.cost.toFixed(2)}`);
+  return bits.join("  ·  ");
+}
+
+async function loadAgents() {
+  let r;
+  try { r = await api("/api/agents", { since: 0, wait: 0 }); }
+  catch (err) { return; }
+  if (!r || !Array.isArray(r.sessions)) return;
+  if (r.off) { agentsOff = true; $("d-agents").hidden = true; return; }
+  // what they touched before the window opened is not news
+  for (const s of r.sessions) agentPinged.set(s.id, Date.now() / 1000);
+  await absorbAgents(r);
+  if (r.sessions.length) watchAgents();
+}
+
+async function refreshAgents() {
+  try {
+    const r = await api("/api/agents", { since: 0, wait: 0 });
+    if (r && Array.isArray(r.sessions)) await absorbAgents(r);
+  } catch (err) { /* the long poll will say so */ }
+}
+
+function watchAgents() {
+  if (agentLoop || agentsOff || SNAPSHOT) return;
+  const me = agentLoop = {
+    abort: typeof AbortController === "function" ? new AbortController() : null };
+  (async () => {
+    while (agentLoop === me && !gone) {
+      let r;
+      try {
+        r = await api("/api/agents",
+                      { since: agentState.rev, wait: 25, focused: looking() ? 1 : 0 },
+                      me.abort ? { signal: me.abort.signal } : undefined);
+      } catch (err) {
+        if (agentLoop !== me || (err && err.name === "AbortError")) return;
+        if (staleToken(err)) { serverGone(); return; }
+        await sleep(2000);
+        continue;
+      }
+      if (agentLoop !== me) return;
+      if (!r || !Array.isArray(r.sessions)) break;
+      await absorbAgents(r);
+      if (!r.sessions.length) break;        // nothing left to watch
+    }
+    if (agentLoop === me) agentLoop = null;
+  })();
+}
+
+/* Everything the server knows about the agents, taken in: their nodes, the
+   marks on the files they are changing, the pings for what they just
+   touched, and whatever the reader is showing of one. */
+async function absorbAgents(r) {
+  const before = new Map(agentState.sessions.map((s) => [s.id, s]));
+  agentState = r;
+  agentClash = new Set((r.conflicts || []).map((c) => c.path));
+  agentMarks = new Map();
+  const reveal = [];
+  for (const s of r.sessions) {
+    if (!agentHere(s)) continue;
+    const colour = agentColor(s);
+    if (!s.ended) {
+      for (const [path, how] of Object.entries(s.files || {})) {
+        if (how !== "w") continue;
+        let list = agentMarks.get(path);
+        if (!list) agentMarks.set(path, (list = []));
+        list.push(colour);
+        if (!nodes.has(path) && inView(path)) reveal.push(path);
+      }
+    }
+    const seen = agentPinged.get(s.id) || 0;
+    let newest = seen;
+    for (const [path, how, t] of s.recent || []) {
+      if (t <= seen) continue;
+      newest = Math.max(newest, t);
+      agentPings.push({ path, color: colour, t: Date.now(), write: how === "w" });
+    }
+    agentPinged.set(s.id, newest);
+  }
+  if (agentPings.length > 200) agentPings = agentPings.slice(-200);
+  // said in the window too, unless its conversation is what is on show
+  for (const s of before.size ? r.sessions : []) {
+    const prev = before.get(s.id);
+    if (!prev || (agentView && agentView.id === s.id && agentView.mode === "chat")) continue;
+    if (s.ask && (!prev.ask || prev.ask.id !== s.ask.id)) {
+      toast(`${s.label} needs you — ${s.title}  (A)`, true);
+    } else if (agentBusy(prev) && !agentBusy(s) && s.unread) {
+      toast(`${s.label} ${s.state === "failed" ? "stopped on an error" : "finished"} — ${s.title}  (A)`,
+            s.state === "failed");
+    }
+  }
+  // a few changed files are worth bringing into the graph; a flood is not
+  if (reveal.length && reveal.length <= 150) await ensureNodes(reveal);
+  syncAgentNodes();
+  renderAgentBadge();
+  if (popFor === "agents") fillAgentsPop($("pop"));
+  if (agentView) refreshAgentView(before.get(agentView.id));
+  animateFor(PING_MS);
+}
+
+/* One node per agent, joined to what it is changing and to nothing it has
+   put back. Called again after the graph is rebuilt around another folder,
+   which throws every node away. */
+function syncAgentNodes() {
+  const want = new Map();
+  for (const s of agentState.sessions) {
+    if (agentHere(s)) want.set(AGENT_PREFIX + s.id, s);
+  }
+  const doomed = new Set([...nodes.keys()].filter(
+    (id) => id.startsWith(AGENT_PREFIX) && !want.has(id)));
+  let changed = forget(doomed);
+  for (const [id, s] of want) {
+    let n = nodes.get(id);
+    if (!n) {
+      n = addNode({ id, name: s.title, dir: false, group: "agent", size: 0,
+                    mtime: 0, parent: null },
+                  nodes.get(s.folder) || nodes.get(viewRoot));
+      n.tag = true;                  // not a file: no editor, no path, no size
+      n.agent = s.id;
+      n.r = 9;
+      changed = true;
+    }
+    n.name = s.title;
+    n.session = s;
+    const written = new Set(s.ended ? []
+      : Object.keys(s.files || {}).filter((p) => s.files[p] === "w"));
+    const had = links.length;
+    links = links.filter((l) => {
+      if (l.kind !== "agent" || l.a !== id) return true;
+      if (written.has(l.b) && nodes.has(l.b)) return true;
+      linkKeys.delete(l.key);
+      return false;
+    });
+    if (links.length !== had) changed = true;
+    for (const path of written) if (addLink(id, path, "agent")) changed = true;
+  }
+  if (changed) {
+    if (sel) recomputeNeighbours();
+    updateStats();
+    reheat(0.2);
+  }
+  repaint();
+}
+
+function renderAgentBadge() {
+  const needing = agentState.sessions.filter((s) => s.unread).length;
+  const busy = agentState.sessions.some(agentBusy);
+  const btn = $("d-agents");
+  btn.textContent = "";
+  const led = document.createElement("i");
+  led.className = busy ? "led on" : "led";
+  btn.append(led, document.createTextNode("agents"));
+  if (needing) {
+    const c = document.createElement("span");
+    c.className = "count need";
+    c.textContent = String(needing);
+    btn.appendChild(c);
+  }
+  btn.classList.toggle("need", needing > 0);
+  // the one place a window you are not looking at can still say something
+  document.title = `${needing ? `(${needing}) ` : ""}cortex — ${CFG.title || ROOT}`;
+}
+
+/* ------------------------------------------------------- agents: drawing */
+function hexagon(x, y, r) {
+  ctx.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const a = Math.PI / 6 + (i * Math.PI) / 3;
+    const px = x + Math.cos(a) * r, py = y + Math.sin(a) * r;
+    if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+  }
+  ctx.closePath();
+}
+
+/* An agent is a hexagon, so it is never mistaken for a file. What it is
+   doing is said around it: an arc going round while it works, an amber ring
+   that breathes while it waits on you, a dot when it has finished and you
+   have not looked. */
+function drawAgentNode(n, x, y, r, now) {
+  const s = n.session, c = agentColor(s);
+  const size = Math.max(6, r * 1.25);
+  ctx.shadowColor = c;
+  ctx.shadowBlur = s.ended ? 0 : 14;
+  hexagon(x, y, size);
+  ctx.fillStyle = s.ended ? "#0b1120" : c;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = c;
+  ctx.lineWidth = 1.6;
+  ctx.stroke();
+  if (s.state === "working" || s.state === "starting") {
+    const turn = (now / 520) % (Math.PI * 2);
+    ctx.strokeStyle = c;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(x, y, size + 6, turn, turn + Math.PI * 1.1);
+    ctx.stroke();
+    animateFor(120);
+  } else if (s.state === "waiting") {
+    const breathe = 0.5 + 0.5 * Math.sin(now / 300);
+    ctx.strokeStyle = `rgba(245, 165, 36, ${(0.45 + 0.5 * breathe).toFixed(3)})`;
+    ctx.lineWidth = 2.4;
+    ctx.beginPath();
+    ctx.arc(x, y, size + 6 + breathe * 4, 0, Math.PI * 2);
+    ctx.stroke();
+    animateFor(120);
+  } else if (s.state === "failed") {
+    ctx.strokeStyle = "#f43f5e";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(x, y, size + 5, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  if (s.unread && s.state !== "waiting") {
+    ctx.beginPath();
+    ctx.arc(x + size * 0.8, y - size * 0.8, 3.6, 0, Math.PI * 2);
+    ctx.fillStyle = "#ffffff";
+    ctx.fill();
+  }
+}
+
+/* Over the files: a ring in the colour of each agent changing one, a red
+   dashed ring where there is more than one, and a ping for each file an
+   agent has just touched. */
+function drawAgents(now) {
+  for (const [path, colours] of agentMarks) {
+    const n = nodes.get(path);
+    if (!n || !visible(n)) continue;
+    const x = toScreenX(n.x), y = toScreenY(n.y);
+    if (x < -60 || x > W + 60 || y < -60 || y > H + 60) continue;
+    const r = Math.max(1.8, n.r * cam.s);
+    colours.forEach((c, i) => {
+      ctx.strokeStyle = c;
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.arc(x, y, r + 3.5 + i * 3.5, 0, Math.PI * 2);
+      ctx.stroke();
+    });
+    if (agentClash.has(path)) {
+      ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = "#f43f5e";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(x, y, r + 5 + colours.length * 3.5, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+  let pinging = false;
+  agentPings = agentPings.filter((p) => now - p.t < PING_MS);
+  for (const p of agentPings) {
+    const n = nodes.get(p.path);
+    if (!n || !visible(n)) continue;
+    pinging = true;
+    const k = (now - p.t) / PING_MS;
+    const r = Math.max(1.8, n.r * cam.s);
+    ctx.globalAlpha = (1 - k) * (p.write ? 0.95 : 0.6);
+    ctx.strokeStyle = p.color;
+    ctx.lineWidth = p.write ? 2.2 : 1.3;
+    ctx.beginPath();
+    ctx.arc(toScreenX(n.x), toScreenY(n.y), r + 4 + k * (p.write ? 28 : 18), 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+  if (pinging) animateFor(40);
+}
+
+/* --------------------------------------------------------- agents: the list */
+function openAgents() {
+  if (agentsOff) { toast("cortex was started read-only, and an agent changes files", true); return; }
+  closeMenu();
+  openPop("agents", fillAgentsPop);
+}
+
+function fillAgentsPop(pop) {
+  pop.textContent = "";
+  const add = document.createElement("button");
+  add.className = "ghost sm";
+  add.textContent = "new agent…";
+  add.addEventListener("click", () => { closePop(); openAgentNew(); });
+  popHead(pop, "Agents", add);
+  const list = agentState.sessions;
+  if (!list.length) {
+    popText(pop, agentState.agents.length
+      ? "None yet. Give one a task and it works in a copy of this project — a branch "
+        + "of its own — while you carry on; start several and they work side by side. "
+        + "Each shows up on the graph beside the files it is changing."
+      : "No coding agent was found on this machine. Install Claude Code or Codex, or "
+        + "name a program of your own in ~/.config/cortex/agents.json.");
+    return;
+  }
+  // the ones that need you first, then the latest to have done anything
+  const order = [...list].sort((a, b) =>
+    (b.unread ? 1 : 0) - (a.unread ? 1 : 0) || b.updated - a.updated);
+  for (const s of order) {
+    const bits = [s.label, agentWord(s)];
+    if (agentStats(s)) bits.push(agentStats(s));
+    if (!agentHere(s)) bits.push(shortPath(s.folder));
+    const row = popRow(pop, {
+      name: s.title, sub: bits.join(" · "),
+      title: s.ask ? `${s.label} is waiting on you` : s.last || s.title,
+      run: () => { closePop(); goToAgent(s); },
+    });
+    row.classList.add("agent-row");
+    row.classList.toggle("need", !!s.unread);
+    const dot = row.querySelector(".k");
+    if (dot) { dot.classList.add("agent-dot"); dot.style.background = agentColor(s); }
+  }
+  for (const c of agentState.conflicts || []) {
+    const row = popRow(pop, {
+      key: "!", name: baseName(c.path),
+      sub: `${c.sessions.length} agents are changing it`, title: c.path,
+      run: () => { closePop(); revealPath(c.path); },
+    });
+    row.classList.add("clash");
+  }
+}
+
+function goToAgent(s) {
+  const n = nodes.get(AGENT_PREFIX + s.id);
+  if (!n) {
+    toast(`that one is working in ${shortPath(s.folder)} — open that folder to see it`);
+    return;
+  }
+  select(n);
+  flyTo(camOn(n));
+}
+
+/* The agent that most needs you: one waiting on an answer before one that
+   has merely finished, and the latest of either. */
+function nextAgent() {
+  const s = agentState.sessions.filter((x) => x.unread).sort((a, b) =>
+    (b.state === "waiting" ? 1 : 0) - (a.state === "waiting" ? 1 : 0)
+    || b.updated - a.updated)[0];
+  if (!s) { toast("no agent needs you"); return; }
+  goToAgent(s);
+}
+
+async function agentOp(op, id, extra = {}) {
+  let r;
+  try { r = await post("/api/agents", { op, id, ...extra }); }
+  catch (err) { toast("could not reach cortex", true); return null; }
+  if (!r.ok && !r.needs) toast(r.error || "that did not work", true);
+  return r;
+}
+
+/* ----------------------------------------------------- agents: starting one */
+function openAgentNew(folder) {
+  if (agentsOff || READ_ONLY || SNAPSHOT) {
+    toast("cortex was started read-only, and an agent changes files", true);
+    return;
+  }
+  if (!agentState.agents.length) {
+    // the list of what is installed arrives with the feed; ask once, now
+    refreshAgents().then(() => {
+      if (agentState.agents.length) openAgentNew(folder);
+      else toast("no coding agent found — install Claude Code or Codex", true);
+    });
+    return;
+  }
+  closeMenu();
+  closePop();
+  const last = agentNew || {};
+  const known = (id) => agentState.agents.some((a) => a.id === id);
+  agentNew = {
+    folder: folder || viewRoot,
+    picked: new Set([...(last.picked || [])].filter(known)),
+    // without a repository there is nothing to make a copy of
+    mode: gitBranch ? (last.mode || "copy") : "here",
+    perm: last.perm || null,
+  };
+  if (!agentNew.picked.size) agentNew.picked.add(agentState.agents[0].id);
+  $("agent-new").classList.add("open");
+  renderAgentNew();
+  $("an-prompt").focus();
+}
+
+function closeAgentNew() {
+  $("agent-new").classList.remove("open");
+}
+
+function renderAgentNew() {
+  const a = agentNew;
+  const chips = (box, items) => {
+    box.textContent = "";
+    for (const it of items) {
+      const b = document.createElement("button");
+      b.className = it.on ? "ghost sm on" : "ghost sm";
+      b.textContent = it.label;
+      if (it.title) b.title = it.title;
+      b.disabled = !!it.off;
+      b.addEventListener("click", () => { it.run(); renderAgentNew(); });
+      box.appendChild(b);
+    }
+  };
+  chips($("an-agents"), agentState.agents.map((ag) => ({
+    label: ag.label, on: a.picked.has(ag.id),
+    title: ag.converses ? "" : "runs once per message, without remembering the last",
+    run: () => {
+      if (a.picked.has(ag.id)) { if (a.picked.size > 1) a.picked.delete(ag.id); }
+      else a.picked.add(ag.id);
+      // several on one task only makes sense with a copy each
+      if (a.picked.size > 1 && gitBranch) a.mode = "copy";
+    },
+  })));
+  chips($("an-where"), [
+    { label: "a copy of its own", on: a.mode === "copy", off: !gitBranch,
+      title: gitBranch ? "a git worktree on a new branch; nothing reaches your folder until you apply it"
+                       : "this folder is not in a git repository",
+      run: () => { a.mode = "copy"; } },
+    { label: "right here", on: a.mode === "here", off: a.picked.size > 1 && !!gitBranch,
+      title: "it changes the files in this folder as it goes",
+      run: () => { a.mode = "here"; } },
+  ]);
+  const perm = a.perm || (a.mode === "copy" ? "edits" : "ask");
+  chips($("an-perm"), Object.keys(PERM_WORD).map((p) => ({
+    label: PERM_WORD[p], on: perm === p, title: PERM_NOTE[p], run: () => { a.perm = p; },
+  })));
+  const where = a.folder === ROOT ? (ROOT.split("/").pop() || "this folder")
+                                  : relPath(a.folder);
+  const notes = [`In ${where}.`, PERM_NOTE[perm]];
+  if (a.picked.size > 1) {
+    notes.push(`${a.picked.size} agents get the same task, each in a copy of its own: `
+               + "compare what they make, and keep the one you like.");
+  } else if (a.mode === "copy") {
+    notes.push("Nothing it does reaches your folder until you apply it.");
+  }
+  $("an-note").textContent = notes.join(" ");
+}
+
+async function startAgents() {
+  const a = agentNew;
+  const prompt = $("an-prompt").value.trim();
+  if (!a) return;
+  if (!prompt) { toast("say what it should do", true); return; }
+  $("an-ok").disabled = true;
+  let r = null;
+  try {
+    r = await post("/api/agents", { op: "start", agents: [...a.picked], prompt,
+                                    folder: a.folder, mode: a.mode, perm: a.perm });
+  } catch (err) { /* said below */ }
+  $("an-ok").disabled = false;
+  if (!r || !r.ok) { toast((r && r.error) || "could not start the agent", true); return; }
+  if (r.errors && r.errors.length) toast(r.errors[0], true);
+  $("an-prompt").value = "";
+  closeAgentNew();
+  await refreshAgents();
+  watchAgents();
+  const first = sessionOf(r.ids[0]);
+  if (first) goToAgent(first);
+}
+
+/* -------------------------------------------------- agents: the conversation */
+function agentActions(n, bar) {
+  const s = n.session;
+  const mk = (label, cls, fn, title) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.className = cls;
+    if (title) b.title = title;
+    b.addEventListener("click", fn);
+    bar.appendChild(b);
+    return b;
+  };
+  if (agentBusy(s)) {
+    mk("stop", "ghost", () => agentOp("stop", s.id),
+       "stop what it is doing — the conversation stays, and so does its work");
+  }
+  if (s.review) {
+    const reviewing = agentView && agentView.id === s.id && agentView.mode === "review";
+    const st = s.stats;
+    mk(reviewing ? "conversation" : `review${st && st.files ? ` · ${plural(st.files, "file")}` : ""}`,
+       st && st.files && !reviewing ? "primary" : "ghost", () => toggleReview(n),
+       reviewing ? "back to what it said" : "what it changed, line by line");
+  }
+  if (s.mode === "copy" && !s.ended) {
+    mk("apply", "ghost", () => applyAgent(s),
+       "put its changes into your folder, uncommitted, for you to look over");
+    mk("keep on a branch", "ghost", () => keepAgent(s),
+       `commit its work on ${s.branch} and let its copy go`);
+  }
+  const more = [];
+  if (TERMINAL && (!s.ended || s.mode === "here")) {
+    more.push({ label: "Terminal in its folder", run: () => agentTerminal(s, false) });
+  }
+  if (TERMINAL && s.resumable && !s.ended) {
+    more.push({ label: `Carry on in ${s.label} itself`,
+                title: "the same conversation, in the agent's own interface",
+                run: () => agentTerminal(s, true) });
+  }
+  more.push({ label: focusMode ? "Show everything" : "Only what it changed",
+              run: () => { focusMode = !focusMode; recomputeNeighbours(); buildActions(n); } });
+  more.push({ label: "Forget…", run: () => forgetAgent(s) });
+  dropdown(bar, "more ▾", more);
+}
+
+function agentMenu(n) {
+  const s = n.session;
+  const items = [];
+  if (agentBusy(s)) items.push({ label: "Stop", run: () => agentOp("stop", s.id) });
+  if (s.review) items.push({ label: "Review what it changed", run: () => toggleReview(n, true) });
+  if (s.mode === "copy" && !s.ended) {
+    items.push({ label: "Apply to my folder", run: () => applyAgent(s) });
+    items.push({ label: "Keep on a branch", run: () => keepAgent(s) });
+  }
+  items.push({ label: focusMode ? "Show everything" : "Only what it changed", key: "f",
+               run: () => { focusMode = !focusMode; recomputeNeighbours(); } });
+  items.push("-");
+  items.push({ label: "Forget…", run: () => forgetAgent(s) });
+  return items;
+}
+
+async function applyAgent(s) {
+  const r = await agentOp("apply", s.id);
+  if (!r || !r.ok) return;
+  toast(r.files ? `applied to your folder — ${plural(r.files, "file")}, uncommitted`
+                : "it changed nothing");
+  pulse();
+  loadGit();
+}
+
+async function keepAgent(s) {
+  const yes = await ask({
+    title: "Keep its work on a branch?",
+    text: `Everything it changed is committed on ${s.branch}, and its copy of the `
+        + "project is removed. Nothing in your folder changes, and the conversation ends.",
+    ok: "keep" });
+  if (!yes) return;
+  const r = await agentOp("keep", s.id);
+  if (r && r.ok) toast(`kept on ${r.branch}`);
+}
+
+async function forgetAgent(s) {
+  if (agentBusy(s)) {
+    const yes = await ask({ title: "Forget it while it is working?",
+                            text: "It is stopped first.", ok: "stop and forget" });
+    if (!yes) return;
+  }
+  let r = await agentOp("forget", s.id);
+  if (r && r.needs === "discard") {
+    const yes = await ask({
+      title: "Throw its work away?",
+      text: `“${s.title}” has changes that exist nowhere else. Forgetting it deletes `
+          + `its copy of the project and the branch ${s.branch}. Apply them, or keep `
+          + "them on the branch, if you want them.",
+      ok: "throw away", danger: true });
+    if (!yes) return;
+    r = await agentOp("forget", s.id, { discard: true });
+  }
+  if (r && r.ok) {
+    agentLogs.delete(s.id);
+    agentDrafts.delete(s.id);
+    reviewNotes.delete(s.id);
+    await refreshAgents();
+  }
+}
+
+async function agentTerminal(s, takeover) {
+  const r = await agentOp(takeover ? "takeover" : "terminal", s.id);
+  if (!r || !r.ok) return;
+  toast(r.how === "here" ? "→ switch to your terminal" : "opening a terminal window…");
+}
+
+/* The reader, as the conversation: the record above, the question it is
+   waiting on if there is one, and a box to answer in. New events are appended
+   as they arrive; nothing already shown is drawn again. */
+function renderAgentBody(n, body) {
+  const s = n.session;
+  body.textContent = "";
+  const log = document.createElement("div");
+  log.className = "ag-log";
+  const askBox = document.createElement("div");
+  askBox.className = "ag-ask";
+  askBox.hidden = true;
+  const compose = document.createElement("div");
+  compose.className = "ag-compose";
+  const input = document.createElement("textarea");
+  input.className = "ag-input";
+  input.rows = 2;
+  input.spellcheck = true;
+  input.value = agentDrafts.get(s.id) || "";
+  const sendBtn = document.createElement("button");
+  sendBtn.className = "primary";
+  sendBtn.textContent = "send";
+  compose.append(input, sendBtn);
+  body.append(log, askBox, compose);
+  agentView = { id: s.id, mode: "chat", log, askBox, input, sendBtn, shown: 0,
+                tools: new Map(), out: null, askKey: undefined, fetching: false };
+  input.addEventListener("input", () => agentDrafts.set(s.id, input.value));
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      sendToAgent();
+    } else if (e.key === "Escape") {
+      input.blur();
+    }
+  });
+  sendBtn.addEventListener("click", () => sendToAgent());
+  const cached = agentLogs.get(s.id);
+  if (cached) appendAgentEvents(cached.events);
+  renderAgentAsk(s);
+  renderAgentCompose(s);
+  fetchAgentEvents();
+  if (s.unread) agentOp("seen", s.id);
+}
+
+async function fetchAgentEvents() {
+  const view = agentView;
+  if (!view || view.fetching) return;
+  view.fetching = true;
+  const have = agentLogs.get(view.id) || { seq: 0, events: [] };
+  let r = null;
+  try { r = await api("/api/agent", { id: view.id, after: have.seq }); }
+  catch (err) { /* asked again when the feed next moves */ }
+  view.fetching = false;
+  if (!r || !Array.isArray(r.events)) return;
+  have.events.push(...r.events.filter((e) => e.seq > have.seq));
+  if (have.events.length > 4000) have.events = have.events.slice(-4000);
+  have.seq = Math.max(have.seq, r.seq || 0);
+  agentLogs.set(view.id, have);
+  if (agentView !== view) return;
+  if (view.mode === "chat") appendAgentEvents(r.events);
+  const s = sessionOf(view.id);
+  if (s && s.seq > have.seq) fetchAgentEvents();     // more arrived meanwhile
+}
+
+function appendAgentEvents(events) {
+  const view = agentView;
+  if (!view || view.mode !== "chat") return;
+  const log = view.log;
+  const first = view.shown === 0;
+  const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+  const add = (cls, text) => {
+    const d = document.createElement("div");
+    d.className = cls;
+    if (text !== undefined) d.textContent = text;
+    log.appendChild(d);
+    return d;
+  };
+  for (const ev of events) {
+    if (ev.seq <= view.shown) continue;
+    view.shown = ev.seq;
+    if (ev.k !== "out") view.out = null;
+    if (ev.k === "user") {
+      add("ag-msg user", ev.text);
+    } else if (ev.k === "say") {
+      const d = add("ag-msg say md");
+      d.innerHTML = window.MD.render(ev.text, {
+        wiki: () => true,
+        resolve: (u) => /^(https?:|data:)/.test(u) ? u : "#",
+      });
+    } else if (ev.k === "tool") {
+      const row = agentToolRow(ev);
+      log.appendChild(row.el);
+      if (ev.id) view.tools.set(ev.id, row);
+    } else if (ev.k === "done") {
+      const row = view.tools.get(ev.id);
+      if (row) {
+        row.el.classList.add(ev.ok ? "ok" : "bad");
+        if (ev.text) row.more.textContent += (row.more.textContent ? "\n\n" : "") + ev.text;
+        row.el.classList.toggle("has-more", !!row.more.textContent);
+      } else if (!ev.ok && ev.text) {
+        add("ag-note warn", ev.text);
+      }
+    } else if (ev.k === "ask") {
+      add("ag-note", `asked to ${ev.name === "Bash" ? "run " + ev.title
+        : ev.path ? (ev.write ? "change " : "read ") + relPath(ev.path)
+        : "use " + ev.name}`);
+    } else if (ev.k === "answered") {
+      add("ag-note", ev.allow ? "you allowed it" : "you said no");
+    } else if (ev.k === "out") {
+      if (!view.out) view.out = add("ag-out", "");
+      view.out.textContent += (view.out.textContent ? "\n" : "") + ev.text;
+    } else if (ev.k === "note") {
+      add(ev.warn ? "ag-note warn" : "ag-note", ev.text);
+    } else if (ev.k === "turn") {
+      const cost = typeof ev.cost === "number" ? ` · $${ev.cost.toFixed(2)}` : "";
+      add(ev.ok ? "ag-turn" : "ag-turn bad",
+          ev.ok ? (ev.text || "done") + cost : ev.text || "it stopped on an error");
+    }
+  }
+  if (first || atEnd) log.scrollTop = log.scrollHeight;
+}
+
+/* One thing the agent did, on one line: the tool, and the file or command.
+   A file is a way into the graph; anything longer opens on a click. */
+function agentToolRow(ev) {
+  const el = document.createElement("div");
+  el.className = "ag-tool";
+  const head = document.createElement("button");
+  head.className = "ag-tool-head";
+  const name = document.createElement("span");
+  name.className = "tn";
+  name.textContent = ev.name;
+  const what = document.createElement("span");
+  what.className = ev.path ? "tt path" : "tt";
+  what.textContent = ev.path ? relPath(ev.path) : ev.title || "";
+  if (ev.path) {
+    what.title = "show it on the graph";
+    what.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (inView(ev.path) || ev.path.startsWith(ROOT + "/")) revealPath(ev.path);
+      else toast("that file is outside this folder");
+    });
+  }
+  head.append(name, what);
+  const more = document.createElement("pre");
+  more.className = "ag-tool-more";
+  more.textContent = ev.detail || "";
+  el.classList.toggle("has-more", !!more.textContent);
+  head.addEventListener("click", () => el.classList.toggle("open"));
+  el.append(head, more);
+  return { el, more };
+}
+
+/* The question it is waiting on, with the thing itself in it: the command,
+   or the file and the change. That is the difference between a decision and
+   "an agent needs your attention". */
+function renderAgentAsk(s) {
+  const view = agentView;
+  if (!view || view.mode !== "chat") return;
+  const ask_ = s.ask, key = ask_ ? ask_.id : null;
+  if (view.askKey === key) return;
+  view.askKey = key;
+  const box = view.askBox;
+  box.textContent = "";
+  box.hidden = !ask_;
+  if (!ask_) return;
+  const title = document.createElement("div");
+  title.className = "ag-ask-title";
+  title.textContent = `${s.label} wants to ` + (ask_.name === "Bash" ? "run a command"
+    : ask_.path ? (ask_.write ? "change a file" : "read a file") : `use ${ask_.name}`);
+  const what = document.createElement("pre");
+  what.className = "ag-ask-what";
+  what.textContent = ask_.name === "Bash" ? ask_.title
+    : ask_.path ? relPath(ask_.path) : ask_.title || ask_.name;
+  box.append(title, what);
+  if (ask_.detail) {
+    const detail = document.createElement("pre");
+    detail.className = "ag-ask-detail";
+    detail.textContent = ask_.detail;
+    box.appendChild(detail);
+  }
+  const btns = document.createElement("div");
+  btns.className = "ag-ask-btns";
+  const answer = (allow, always) => agentOp("answer", s.id,
+    { request: ask_.id, allow, always: !!always });
+  for (const [label, cls, run, tip] of [
+    ["allow", "primary", () => answer(true), "this once"],
+    [ask_.name === "Bash" ? "always allow this command" : `always allow ${ask_.name}`,
+     "ghost", () => answer(true, true), "for as long as this agent runs"],
+    ["no", "ghost", () => answer(false), "it is told you declined, and carries on"],
+  ]) {
+    const b = document.createElement("button");
+    b.className = cls;
+    b.textContent = label;
+    b.title = tip;
+    b.addEventListener("click", run);
+    btns.appendChild(b);
+  }
+  box.appendChild(btns);
+  view.log.scrollTop = view.log.scrollHeight;
+}
+
+function renderAgentCompose(s) {
+  const view = agentView;
+  if (!view || view.mode !== "chat") return;
+  const blocked = !!s.ended || (agentBusy(s) && !s.live);
+  view.input.disabled = !!s.ended;
+  view.sendBtn.disabled = blocked;
+  view.input.placeholder = s.ended === "kept" ? `kept on ${s.branch} — this conversation is over`
+    : s.ended ? "its copy of the project is gone"
+    : !s.converses ? "another task — this agent starts afresh each time"
+    : agentBusy(s) ? (s.live ? "it is working — say something and it reads it next"
+                             : "it is working…")
+    : "reply — enter sends, shift-enter for a new line";
+}
+
+async function sendToAgent() {
+  const view = agentView;
+  if (!view || view.mode !== "chat" || view.sendBtn.disabled) return;
+  const text = view.input.value.trim();
+  if (!text) return;
+  view.input.value = "";
+  agentDrafts.delete(view.id);
+  const r = await agentOp("send", view.id, { text });
+  if (!r || !r.ok) {
+    // not sent, so not lost
+    if (agentView === view && !view.input.value) view.input.value = text;
+    agentDrafts.set(view.id, text);
+    return;
+  }
+  watchAgents();
+}
+
+/* The feed moved while an agent is open in the reader: bring it up to date,
+   without rebuilding what is already there. `prev` is how it stood before. */
+function refreshAgentView(prev) {
+  const view = agentView;
+  const s = sessionOf(view.id);
+  if (!s) return;                  // forgotten: its node goes, and the reader with it
+  const have = agentLogs.get(s.id);
+  if (!have || s.seq > have.seq) fetchAgentEvents();
+  if (sel && sel.agent === s.id) {
+    $("p-path").textContent = agentLine(s);
+    describe(sel);
+    const moved = !prev || prev.state !== s.state || prev.ended !== s.ended
+      || agentStats(prev) !== agentStats(s);
+    if (moved) buildActions(sel);
+  }
+  renderAgentAsk(s);
+  renderAgentCompose(s);
+  // read, if someone is here to have read it
+  if (s.unread && looking()) agentOp("seen", s.id);
+}
+
+/* ------------------------------------------------------- agents: the review
+
+   What it changed, file by file, against where it started. A line can be
+   given a note; the notes go back to the agent as one message that says
+   which file and which line each is about. */
+function toggleReview(n, on) {
+  const reviewing = agentView && agentView.id === n.agent && agentView.mode === "review";
+  if (sel !== n) select(n);
+  if (on === undefined ? !reviewing : on) renderAgentReview(n);
+  else { renderAgentBody(n, $("p-body")); buildActions(n); }
+}
+
+async function renderAgentReview(n) {
+  const s = n.session, body = $("p-body");
+  body.textContent = "";
+  const view = agentView = { id: s.id, mode: "review" };
+  buildActions(n);
+  const wrap = document.createElement("div");
+  wrap.className = "ag-review";
+  body.appendChild(wrap);
+  const say = (text, cls = "empty") => {
+    const d = document.createElement("div");
+    d.className = cls;
+    d.textContent = text;
+    wrap.appendChild(d);
+    return d;
+  };
+  say("reading what it changed…");
+  let r = null;
+  try { r = await query("/api/agent/diff", { id: s.id }); }
+  catch (err) { /* said below */ }
+  if (agentView !== view) return;
+  wrap.textContent = "";
+  if (!r || !r.ok) { say((r && r.error) || "could not read what it changed"); return; }
+  if (!r.files.length) {
+    say(s.mode === "copy" ? "It has not changed anything yet."
+                          : "Nothing has changed in this folder since it started.");
+    return;
+  }
+  say(`${plural(r.files.length + (r.more || 0), "file")} changed · +${r.added} −${r.removed}`
+      + (s.mode === "copy" ? ` · on ${r.branch}` : " · since it started, in your folder"),
+      "ag-rev-sum");
+
+  // who else is changing these, and what leans on them
+  const homes = new Set(r.files.map((f) => f.home));
+  for (const c of agentState.conflicts || []) {
+    if (!homes.has(c.path) || !c.sessions.includes(s.id)) continue;
+    const others = c.sessions.filter((id) => id !== s.id).map(sessionOf)
+      .filter(Boolean).map((o) => `“${o.title}”`);
+    say(`${relPath(c.path)} is also being changed by ${others.join(" and ") || "another agent"}`
+        + " — whichever is applied second will have to fit around the first.", "ag-rev-warn");
+  }
+  const leaning = new Set();
+  for (const home of homes) {
+    for (const c of (connIndex && connIndex.get(home)) || []) {
+      if (c.kind === "code" && !c.out && !homes.has(c.path)) leaning.add(c.path);
+    }
+  }
+  if (leaning.size) {
+    const b = document.createElement("button");
+    b.className = "ag-rev-lean";
+    b.textContent = `${plural(leaning.size, "other file")} import${leaning.size === 1 ? "s" : ""} `
+      + "what it changed — show them";
+    b.title = "light up everything that could be affected";
+    b.addEventListener("click", async () => {
+      const list = [...leaning].filter(inView).slice(0, 150);
+      await ensureNodes(list);
+      matches = new Set(list.filter((p) => nodes.has(p)));
+      repaint();
+      flyTo(camAround([...matches].map((p) => nodes.get(p)).concat(n)), 600);
+    });
+    wrap.appendChild(b);
+  }
+
+  const notes = () => reviewNotes.get(s.id) || [];
+  const foot = document.createElement("div");
+  foot.className = "ag-rev-foot";
+  const sendNotes = document.createElement("button");
+  sendNotes.className = "primary";
+  const showFoot = () => {
+    foot.hidden = !notes().length || !!s.ended;
+    sendNotes.textContent = `send ${plural(notes().length, "note")} to ${s.label}`;
+  };
+  sendNotes.addEventListener("click", () => sendReviewNotes(n));
+  foot.appendChild(sendNotes);
+
+  for (const f of r.files) {
+    const item = document.createElement("div");
+    item.className = "ag-file";
+    const head = document.createElement("button");
+    head.className = "ag-file-head";
+    const mark = document.createElement("span");
+    mark.className = "st " + f.status;
+    mark.textContent = f.status === "new" ? "new" : f.status === "deleted" ? "gone" : "edit";
+    const nm = document.createElement("span");
+    nm.className = "nm";
+    nm.textContent = f.path;
+    nm.title = f.home;
+    const count = document.createElement("span");
+    count.className = "ct";
+    count.textContent = f.binary ? "binary" : `+${f.added} −${f.removed}`;
+    head.append(mark, nm, count);
+    if (agentClash.has(f.home)) item.classList.add("clash");
+    const lines = document.createElement("div");
+    lines.className = "ag-patch";
+    lines.hidden = true;
+    let loaded = false;
+    head.addEventListener("click", async () => {
+      lines.hidden = !lines.hidden;
+      if (lines.hidden || loaded || f.binary) return;
+      loaded = true;
+      let got = null;
+      try { got = await query("/api/agent/diff", { id: s.id, path: f.path }); }
+      catch (err) { /* said below */ }
+      if (!got || !got.ok) {
+        loaded = false;
+        lines.textContent = (got && got.error) || "could not read that file's changes";
+        return;
+      }
+      fillPatch(lines, got, f, s, showFoot);
+    });
+    item.append(head, lines);
+    wrap.appendChild(item);
+  }
+  if (r.more) say(`…and ${plural(r.more, "more file")}, not listed`);
+  wrap.appendChild(foot);
+  showFoot();
+}
+
+/* A unified diff as lines that can be clicked. The headers git puts above
+   the first hunk say nothing the row above has not said. */
+function fillPatch(box, got, f, s, changed) {
+  box.textContent = "";
+  let line = 0, started = false;
+  for (const raw of got.patch.split("\n")) {
+    if (raw.startsWith("@@")) {
+      started = true;
+      const m = /\+(\d+)/.exec(raw);
+      line = m ? Number(m[1]) : 0;
+      const h = document.createElement("div");
+      h.className = "ag-line hunk";
+      h.textContent = raw;
+      box.appendChild(h);
+      continue;
+    }
+    if (!started || raw.startsWith("\\")) continue;
+    const kind = raw[0] === "+" ? "add" : raw[0] === "-" ? "del" : "same";
+    const row = document.createElement("div");
+    row.className = "ag-line " + kind;
+    row.textContent = raw || " ";
+    const at = kind === "del" ? null : line;
+    if (kind !== "del") line++;
+    if (at !== null && !s.ended) {
+      const existing = (reviewNotes.get(s.id) || [])
+        .find((x) => x.path === f.path && x.line === at);
+      if (existing) { row.classList.add("noted"); row.title = existing.note; }
+      row.addEventListener("click", async () => {
+        const list = reviewNotes.get(s.id) || [];
+        const had = list.find((x) => x.path === f.path && x.line === at);
+        const note = await ask({ title: "A note for the agent",
+                                 text: `${f.path}, line ${at}`,
+                                 value: had ? had.note : "", ok: "add" });
+        if (!note) return;
+        if (had) had.note = note;
+        else list.push({ path: f.path, line: at, text: raw.slice(1).trim(), note });
+        reviewNotes.set(s.id, list);
+        row.classList.add("noted");
+        row.title = note;
+        changed();
+      });
+    }
+    box.appendChild(row);
+  }
+  if (got.truncated) {
+    const t = document.createElement("div");
+    t.className = "ag-line hunk";
+    t.textContent = "… the rest is too long to show here";
+    box.appendChild(t);
+  }
+}
+
+async function sendReviewNotes(n) {
+  const s = n.session;
+  const list = reviewNotes.get(s.id) || [];
+  if (!list.length) return;
+  const text = ["Notes on what you changed:", ""].concat(list.map((x) =>
+    `- ${x.path}, line ${x.line}${x.text ? ` (\`${x.text.slice(0, 120)}\`)` : ""}: ${x.note}`))
+    .join("\n");
+  const r = await agentOp("send", s.id, { text });
+  if (!r || !r.ok) return;
+  reviewNotes.delete(s.id);
+  watchAgents();
+  toggleReview(n, false);
 }
 
 // ----------------------------------------------------------------- keyboard
@@ -5096,6 +6236,11 @@ function keyHandler(e) {
     return;
   }
   if ($("palette").classList.contains("open")) return;
+  if ($("agent-new").classList.contains("open")) {
+    if (e.key === "Escape") closeAgentNew();
+    else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); startAgents(); }
+    return;
+  }
   if ($("share").classList.contains("open")) {
     if (e.key === "Escape") $("share").classList.remove("open");
     return;
@@ -5135,7 +6280,7 @@ function keyHandler(e) {
     return;
   }
   // a snapshot can be looked at, not changed
-  if (SNAPSHOT && ((e.key.length === 1 && "iwhudpnv".includes(e.key))
+  if (SNAPSHOT && ((e.key.length === 1 && "iwhudpnvaA".includes(e.key))
                    || e.key === "F2" || e.key === "Delete")) return;
   if (/^[1-9]$/.test(e.key)) {
     const v = viewsList[Number(e.key) - 1];
@@ -5155,6 +6300,10 @@ function keyHandler(e) {
       else if (maximized) setMax(false);
       else closePanel();
       break;
+    case "a":
+      openAgents(); break;
+    case "A":
+      nextAgent(); break;
     case "w":
       toggleLive(); break;
     case "h":
@@ -5284,6 +6433,17 @@ document.addEventListener("click", (e) => {
 });
 
 // the dock, and what its buttons open
+$("d-agents").addEventListener("click", () => openAgents());
+$("an-ok").addEventListener("click", () => startAgents());
+$("an-cancel").addEventListener("click", () => closeAgentNew());
+$("agent-new").addEventListener("click", (e) => {
+  if (e.target.id === "agent-new") closeAgentNew();
+});
+// coming back to the window is when an agent's news gets read
+window.addEventListener("focus", () => {
+  const s = agentView && sessionOf(agentView.id);
+  if (s && s.unread) agentOp("seen", s.id);
+});
 $("d-live").addEventListener("click", () => toggleLive());
 $("d-history").addEventListener("click", () => toggleHistory());
 $("d-tours").addEventListener("click", () => {
@@ -5394,7 +6554,9 @@ $("gone-retry").addEventListener("click", () => location.reload && location.relo
       e.stopImmediatePropagation();
       toast(`a snapshot taken ${SNAPSHOT.taken} — explore, search, read`);
     }, true);
-    for (const id of ["d-live", "d-history", "d-views", "d-disk", "d-today"]) $(id).hidden = true;
+    for (const id of ["d-agents", "d-live", "d-history", "d-views", "d-disk", "d-today"]) {
+      $(id).hidden = true;
+    }
   }
   loadViews();
 
@@ -5403,7 +6565,9 @@ $("gone-retry").addEventListener("click", () => location.reload && location.relo
   // the browser's own "leave this page?" is the one prompt worth its
   // interruption: closing now would lose typing that was never saved
   window.addEventListener("beforeunload", (e) => {
-    if (!drafts.size || gone) return;
+    // ...or stop agents in the middle of their work: cortex quits with its
+    // window, and takes what it started with it
+    if ((!drafts.size && !agentState.sessions.some(agentBusy)) || gone) return;
     e.preventDefault();
     e.returnValue = "";
   });
@@ -5425,6 +6589,7 @@ $("gone-retry").addEventListener("click", () => location.reload && location.relo
 
   applySemantic();          // not awaited: the graph should paint first
   loadGit();
+  if (!SNAPSHOT) loadAgents();
   if (SNAPSHOT && CFG.view) await applyView(CFG.view);
   if (SNAPSHOT) {
     // the dock has only tours to offer, and only when there are some

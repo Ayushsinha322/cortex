@@ -22,10 +22,16 @@ agent or a build works through them, replay the project's whole git history
 as it grows, find the chain of imports from one file to another, and walk a
 newcomer through the code with a tour that lives in the repository.
 
+And put coding agents to work on it. Give Claude Code or Codex a task from the
+window: each works in a copy of the project on a branch of its own, asks you
+there when it needs a yes, and shows up on the graph beside the files it is
+changing — so you can see two of them heading for the same file before either
+is merged.
+
 ![Clicking a node opens the file; pressing Enter opens it in Neovim in the terminal cortex was launched from](https://raw.githubusercontent.com/Ayushsinha322/cortex/main/docs/demo.gif)
 
 No dependencies. No database. No import step. It reads your disk directly, and
-it is about 14,000 lines of Python standard library and vanilla JavaScript.
+it is about 17,000 lines of Python standard library and vanilla JavaScript.
 
 ---
 
@@ -44,6 +50,7 @@ it is about 14,000 lines of Python standard library and vanilla JavaScript.
 - [Opening files in your editor](#opening-files-in-your-editor)
 - [Working on one project](#working-on-one-project)
 - [Opening another folder](#opening-another-folder)
+- [Agents](#agents) — a task, a copy of its own, and a place on the map
 - [Ways of looking](#ways-of-looking) — live, history, the path, tours, views, disk
 - [Reading the graph](#reading-the-graph)
 - [Every command and key](#every-command-and-key)
@@ -613,11 +620,172 @@ switch can never quietly throw your typing away.
 
 ---
 
+## Agents
+
+Press <kbd>a</kbd>, or **agents** in the dock, and give a coding agent a task:
+Claude Code, Codex, or whatever you have installed. It starts working, and
+three things happen that do not happen when you run one in a terminal tab.
+
+**It works in a copy.** In a git repository each agent gets a worktree of its
+own, on a branch of its own. Several can work on one project at the same
+time without overwriting each other or you, and nothing reaches your folder
+until you put it there.
+
+**It asks you where you are.** When an agent wants to run a command it has
+not been allowed to, the question arrives in the window with the command in
+it, and three buttons. If the window is not what you are looking at, the
+desktop notification says the same thing — not "an agent needs your
+attention", but which agent, on which task, wanting to run what.
+
+**It is on the map.** Each agent is a hexagon of its own colour, joined to the
+files it has changed. A file pings when an agent reads it. And a file two
+agents are both changing gets a red ring — before either of them is merged,
+which is when you want to know.
+
+```
+          report.py ●──────◎ pricing.py ┄┄┄┄┄┄ ⬢ fix the discount     working
+                           ┊ ╲
+        ⬢ add coupons ┄┄┄┄┄┘  ● cart.py                                needs you
+```
+
+### Starting one
+
+<kbd>a</kbd>, then **new agent…** — or right-click a folder and choose **New
+agent here…** to set it to work on that part of the project.
+
+```
+  NEW AGENT
+  ┌─────────────────────────────────────────────────────────────┐
+  │ The discount in pricing.py adds instead of taking off.      │
+  │ Fix it, then run the tests.                                 │
+  └─────────────────────────────────────────────────────────────┘
+  who      [Claude Code]  Codex   Crush
+  where    [a copy of its own]   right here
+  it may    ask first  [edit freely]  plan only   its own judgement
+```
+
+- **who** — pick more than one and they all get the same task, each in a copy
+  of its own. Compare what they make and keep the one you like.
+- **where** — *a copy of its own* is a git worktree at your last commit. *Right
+  here* lets it change the files in the folder as it goes, which is the only
+  choice in a folder that is not a repository — a folder of notes, say.
+- **it may** — how much it does without asking. In a copy the default is to
+  edit freely and ask about commands; in your own folder, to ask about
+  everything. *Plan only* lets it read and think and change nothing.
+
+<kbd>ctrl</kbd> <kbd>enter</kbd> starts it.
+
+### The conversation
+
+Select an agent and the reader is the conversation with it: what you asked,
+each thing it did on a line of its own — click a file name to go to that file
+on the graph, click the line for the detail — and what it said back. The box
+at the bottom is for your reply: <kbd>enter</kbd> sends, <kbd>shift</kbd>
+<kbd>enter</kbd> is a new line.
+
+When it wants something:
+
+```
+  Claude Code wants to run a command
+  ┌───────────────────────────────────────────────┐
+  │ python3 tests/test_pricing.py                 │
+  └───────────────────────────────────────────────┘
+  [allow]  always allow this command   no
+```
+
+*Always* covers that exact command — or, for a tool that is not a command,
+that tool — for as long as the agent runs. *No* tells it you declined, and it
+carries on with what it can do.
+
+<kbd>A</kbd> takes you to whichever agent is waiting on you. The dock counts
+them, and so does the window's title, which is the one thing you can see of a
+window you are not looking at.
+
+**stop** ends what it is doing and keeps the conversation and the work.
+**more ▾** has a terminal in the agent's folder, and **carry on in Claude Code
+itself**, which opens the same conversation in the agent's own interface, in a
+terminal. Send a message from cortex afterwards and it picks up from there.
+
+### Looking at what it did
+
+**review** lists every file it changed against where it started, with the
+lines added and removed. Click a file for the diff. Above the list, two
+things a diff alone does not say:
+
+- **who else is changing it** — if another agent has changed one of the same
+  files, by name;
+- **what leans on it** — how many other files import what it changed. Click,
+  and they light up on the graph.
+
+Click a line in the diff to leave a note on it. The notes go back to the
+agent as one message that says which file and line each is about.
+
+Then one of three things:
+
+| | |
+| --- | --- |
+| **apply** | its changes go into your folder as uncommitted edits, for you to look over and commit. All of them or none: if any part does not fit the folder as it is now, nothing is changed and you are told why. |
+| **keep on a branch** | everything is committed on its branch (`cortex/fix-the-discount`), its copy is removed, and your folder is not touched. Merge it, push it, open a pull request — it is a branch. |
+| **forget…** | takes it off the list. If it has work that exists nowhere else you are asked first, in so many words; saying yes deletes the copy and the branch. |
+
+What a run leaves behind — `__pycache__`, `node_modules`, a virtualenv — is
+never counted as the agent's work, whether or not the project has a
+`.gitignore` that says so.
+
+### Which agents
+
+Claude Code and Codex are spoken to in their own machine-readable modes, so
+you get each step as it happens and, with Claude Code, the questions. OpenCode,
+Gemini and Crush are run once per message, and their output is shown as they
+print it; what they changed is read out of git afterwards.
+
+Anything else that takes a task on its command line can be added in
+`~/.config/cortex/agents.json`:
+
+```json
+{
+  "mine": { "label": "My agent", "argv": ["my-agent", "--task", "{prompt}"] }
+}
+```
+
+`{prompt}` is replaced by what you typed. The window can choose between the
+agents on the list; it cannot name a program of its own.
+
+Agents use whatever account and model each is already set up with. cortex
+adds nothing to that and takes nothing from it.
+
+### What it does not do
+
+Agents run on this machine, for as long as cortex is open: closing the window
+stops them, and asks first if any is in the middle of something. The
+conversations are kept, so one can be picked up the next time. There is no
+terminal pane inside the window, no built-in browser, no phone app and no
+remote machines. `cortex --read-only` has no agents at all.
+
+### Next to Orca and cmux
+
+[Orca](https://github.com/stablyai/orca) and
+[cmux](https://github.com/manaflow-ai/cmux) are the two best-known places to
+run several coding agents at once, and both do things cortex does not. Orca is
+a full desktop app on macOS, Windows and Linux with split panes, a built-in
+browser, GitHub and Linear, a phone app, and agents on SSH hosts and cloud
+machines. cmux is a native macOS terminal with vertical tabs, notification
+rings, a scriptable browser and a socket API. If you want those, use them.
+
+What cortex has is the map. Both of them show you an agent as a pane, a tab or
+a conversation; cortex shows it as a place in your project — which files it is
+in, what those files are imported by, and where it is about to collide with
+another agent. It runs on Linux as well as macOS, installs with one `pipx`
+command, depends on nothing, and works on a folder of notes as well as on a
+repository.
+
+---
+
 ## Ways of looking
 
-Along the bottom of the window is a dock: **live**, **history**, **tours**,
-**views**, **disk** and **today**. Each is a different question to ask of the
-same folder.
+Along the bottom of the window is a dock. After **agents** come **live**,
+**history**, **tours**, **views**, **disk** and **today**: each is a different
+question to ask of the same folder.
 
 ### Live — watch it change
 
@@ -626,9 +794,11 @@ it is created, amber when it is written, red where it was deleted. A dashed
 trail joins them in the order they happened, and fades over a minute or so.
 A list in the corner says what changed and when.
 
-This is the one to leave open while an AI agent works on your project. You
-see which files it reads its way towards, what it touches, and in what order,
-as it does it — or what a build writes, or what `git pull` brought in.
+This is the one to leave open while an agent you started somewhere else —
+in a terminal, in another app — works on your project. You see what it
+touches, and in what order, as it does it; or what a build writes, or what
+`git pull` brought in. An agent started from cortex itself tells the window
+more than the disk can: see [Agents](#agents).
 
 - **follow** flies the camera to each change as it happens, and stops the
   moment you take the camera yourself.
@@ -862,7 +1032,8 @@ cortex [folder] [options]
       --no-links          skip the semantic index (instant start)
       --no-watch          do not notice files changing while the window is open
       --no-layout         do not remember where the nodes were last time
-      --read-only         never change a file: no editing, new, rename or trash
+      --read-only         never change a file: no agents, editing, new, rename
+                          or trash
 
       --install-launcher  put cortex in your app menu, then exit
       --remove-launcher   take it out again, then exit
@@ -891,6 +1062,8 @@ cortex [folder] [options]
 | <kbd>ctrl</kbd> <kbd>k</kbd> | everything cortex can do, and every file, by name |
 | right-click | everything you can do to a node |
 | <kbd>shift</kbd>-click | the chain of links from the selection to there |
+| <kbd>a</kbd> | agents: give one a task, or see what each is doing |
+| <kbd>A</kbd> | go to the agent that is waiting on you |
 | <kbd>w</kbd> | live: watch files change as they change |
 | <kbd>h</kbd> | history: replay this folder through git |
 | <kbd>space</kbd> <kbd>[</kbd> <kbd>]</kbd> | in the history: play, and step a commit |
@@ -1058,6 +1231,8 @@ cortex/
 │   ├── journal.py        today's note, and quick capture
 │   ├── snapshot.py       the map as one HTML file to send
 │   ├── dismissed.py      suggestions someone said no to
+│   ├── agents.py         coding agents: starting them, what they say, what they ask
+│   ├── worktrees.py      a copy of the project for each agent, and what it changed
 │   ├── actions.py        editor detection, terminal handoff, terminal windows
 │   ├── lifecycle.py      noticing the window has closed
 │   ├── desktop.py        the app-menu launcher
@@ -1079,6 +1254,7 @@ cortex/
     ├── test_history.py      git history, odd filenames and all
     ├── test_du.py           disk usage, hard links, partial answers
     ├── test_suggest.py      ghost notes and suggested links
+    ├── test_agents.py       agents and their worktrees, against stand-in agents
     ├── harness.js           the stub DOM the browser-side tests run against
     ├── markdown.test.js     the markdown renderer
     ├── render-loop.test.js  cooling and repaint gating
@@ -1093,6 +1269,7 @@ cortex/
     ├── readonly.test.js     --read-only, and the window outliving cortex
     ├── modes.test.js        live, history, disk, paths, views, tours, palette
     ├── notes.test.js        ghosts, suggestions, today's note, sharing
+    ├── agents.test.js       agents on the graph, the conversation, the review
     ├── capture.test.js      the quick-note window
     └── snapshot.test.js     a shared map, with no server behind it
 ```
@@ -1110,6 +1287,7 @@ python3 tests/test_activity.py
 python3 tests/test_history.py
 python3 tests/test_du.py
 python3 tests/test_suggest.py
+python3 tests/test_agents.py
 node tests/markdown.test.js
 node tests/render-loop.test.js
 node tests/connections.test.js
@@ -1122,12 +1300,16 @@ node tests/files.test.js
 node tests/readonly.test.js
 node tests/modes.test.js
 node tests/notes.test.js
+node tests/agents.test.js
 node tests/capture.test.js
 node tests/snapshot.test.js
 node tests/perf.test.js
 ```
 
-859 tests, no framework to install — `unittest` and plain `node`. They run on
+956 tests, no framework to install — `unittest` and plain `node`. The agent
+tests need no agent: stand-ins that speak the same lines as Claude Code and
+Codex are put on the `PATH`, so what is tested is cortex's half of the
+conversation. They run on
 every push against Python 3.9 and 3.13 on Linux, and 3.13 on macOS. `tests/run`
 also byte-checks every source file, because raw NUL bytes once got into two UI
 files and made git treat them as binary, silently breaking diffs and `grep`.
@@ -1144,18 +1326,41 @@ answer.
 ## FAQ
 
 **Does it change my files?**
-Only when you ask it to: saving in the editor, or new, rename and trash. A save
-is refused if the file changed since you opened it, and nothing is ever deleted
-— trash is your desktop's trash. Start it with `--read-only` and it changes
-nothing at all. Of its own accord it writes only its own state: saved projects
-in `~/.config/cortex/`, and recent folders, layouts and a log in
-`~/.cache/cortex/`.
+Only when you ask it to: saving in the editor, new, rename and trash, or an
+agent you started. A save is refused if the file changed since you opened it,
+and nothing is ever deleted — trash is your desktop's trash. An agent works in
+a copy unless you tell it to work right here, and its changes reach your
+folder only when you apply them. Start cortex with `--read-only` and it
+changes nothing at all. Of its own accord it writes only its own state: saved
+projects in `~/.config/cortex/`, recent folders, layouts and a log in
+`~/.cache/cortex/`, and agents' copies and conversations in
+`~/.local/share/cortex/`.
 
 **Does anything leave my machine?**
-No. The server binds to `127.0.0.1`, there are no external requests, and no CDN
-— the CSS and JavaScript are served from the folder you cloned. The one way
-anything leaves is a map you choose to share, which is a file you save and send
-yourself, and which holds the text of your files only if you said so.
+Not through cortex. The server binds to `127.0.0.1`, there are no external
+requests, and no CDN — the CSS and JavaScript are served from the folder you
+cloned. A map you choose to share is a file you save and send yourself, and
+holds the text of your files only if you said so. An agent is another matter:
+it is its own program, and it sends what it reads to whichever service it
+works for, exactly as it does when you run it yourself.
+
+**Can an agent do something I did not agree to?**
+It is the same program you would run in a terminal, with the permissions you
+chose when you started it. cortex never starts one in a mode that skips its
+permission checks. In a copy, the worst an edit can do is sit there until you
+forget it. A command is different — it runs on your machine, as you — which is
+why commands are asked about unless you chose otherwise.
+
+**What happens to the agents when I close the window?**
+They stop: cortex quits with its window, and takes what it started with it.
+If one is in the middle of a task, the window asks first. Their copies, their
+branches and their conversations stay, so opening cortex again shows them
+where they were, and a message picks one up.
+
+**Where are the agents' copies?**
+In `~/.local/share/cortex/worktrees/`, one folder per repository. They are
+ordinary git worktrees: `git worktree list` in your project shows them, and
+their branches are named `cortex/…`.
 
 **Can other users on this machine see it?**
 No. It listens on loopback only, every request needs a token that is
@@ -1194,7 +1399,9 @@ terminal may control Finder.
 
 **What are the dashed things on the graph?**
 A dashed node is a note something links to that has not been written yet. A
-dashed ring around a node means it has unsaved changes in the editor. With live
+dashed ring around a node means it has unsaved changes in the editor. A dashed
+line in colour runs from an agent to a file it has changed, and a dashed red
+ring is a file two agents have both changed. With live
 or history on, a dashed outline in red is where a file was just deleted, and the
 dashed gold line is the order things changed in. Dashed cyan lines are suggested
 links.

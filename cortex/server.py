@@ -21,7 +21,8 @@ from urllib.parse import urlparse, parse_qs, quote
 
 from . import (desktop, dismissed, files, gitstatus, grep, journal, layout, places,
                reader, snapshot, tours, views)
-from . import history
+from . import agents, history
+from .agents import Pool
 from .activity import Activity
 from .du import DiskUsage
 
@@ -113,6 +114,18 @@ class Context:
         self.activity = None
         self._activity_lock = threading.Lock()
         self.du = None                     # disk usage, counted on first use
+        # The agents, made the first time anyone asks after them. They belong
+        # to cortex rather than to the folder: opening another folder does
+        # not stop what is working in the last one.
+        self.agents = None
+        self._agents_lock = threading.Lock()
+
+    def pool(self) -> Pool:
+        with self._agents_lock:
+            if self.agents is None:
+                self.agents = Pool(notify=desktop.notify, runner=self.runner,
+                                   state_file=agents.STATE_FILE)
+            return self.agents
 
     def disk(self):
         with self._activity_lock:
@@ -443,6 +456,34 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/views":
             return self._json({"views": views.load(self.ctx.scanner.root)})
 
+        if route == "/api/agents":
+            if self.ctx.read_only:
+                # an agent exists to change files
+                return self._json({"off": True, "rev": 0, "sessions": [],
+                                   "conflicts": [], "agents": []})
+            try:
+                since = int((params.get("since") or ["0"])[0])
+                wait = min(25.0, max(0.0, float((params.get("wait") or ["0"])[0])))
+            except ValueError:
+                return self._json({"error": "bad since"}, 400)
+            focused = (params.get("focused") or [""])[0] == "1"
+            return self._json(self.ctx.pool().state(since, wait, focused))
+
+        if route == "/api/agent":
+            try:
+                after = int((params.get("after") or ["0"])[0])
+            except ValueError:
+                return self._json({"error": "bad after"}, 400)
+            got = self.ctx.pool().events((params.get("id") or [""])[0], after)
+            if got is None:
+                return self._json({"error": "no such agent"}, 404)
+            return self._json(got)
+
+        if route == "/api/agent/diff":
+            got = self.ctx.pool().review((params.get("id") or [""])[0],
+                                         (params.get("path") or [None])[0])
+            return self._json(got)
+
         if route == "/api/tours":
             sc = self.ctx.scanner
             return self._json({"tours": tours.list_all(sc.root, sc.inside)})
@@ -489,6 +530,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/capture": self._capture,
             "/api/snapshot": self._snapshot,
             "/api/dismiss": self._dismiss,
+            "/api/agents": self._agents,
         }
         handler = routes.get(url.path)
         if handler is None:
@@ -741,6 +783,53 @@ class Handler(BaseHTTPRequestHandler):
         except OSError as exc:
             return self._json({"ok": False, "error": f"could not save: {exc.strerror or exc}"})
         return self._json({"ok": True})
+
+    def _agents(self, body):
+        """Start an agent, or do something with one that is running."""
+        if not self._writable():
+            return
+        pool, op, sid = self.ctx.pool(), body.get("op"), body.get("id")
+        if op == "start":
+            raw = body.get("folder")
+            folder = self._inside(raw) if raw else self.ctx.scanner.root
+            if not folder or not os.path.isdir(folder):
+                return self._json({"ok": False, "error": "that folder is not in "
+                                                         "what cortex has open"}, 400)
+            wanted = body.get("agents")
+            if not isinstance(wanted, list) or not wanted or len(wanted) > 6 \
+                    or not all(isinstance(a, str) for a in wanted):
+                return self._json({"ok": False, "error": "which agent?"}, 400)
+            # several at once are one task raced: each in a copy of its own
+            group = secrets.token_hex(4) if len(wanted) > 1 else None
+            started, errors = [], []
+            for agent in wanted:
+                got = pool.start(agent, body.get("prompt"), folder,
+                                 mode="copy" if body.get("mode") != "here" else "here",
+                                 perm=body.get("perm"), title=body.get("title"),
+                                 group=group)
+                (started if got.get("ok") else errors).append(got)
+            if not started:
+                return self._json(errors[0])
+            return self._json({"ok": True, "ids": [g["id"] for g in started],
+                               "errors": [e["error"] for e in errors]})
+        if op == "send":
+            return self._json(pool.send(sid, body.get("text")))
+        if op == "answer":
+            return self._json(pool.answer(sid, body.get("request"), bool(body.get("allow")),
+                                          bool(body.get("always")), body.get("why")))
+        if op == "stop":
+            return self._json(pool.stop(sid))
+        if op == "seen":
+            return self._json(pool.seen(sid))
+        if op == "apply":
+            return self._json(pool.apply(sid))
+        if op == "keep":
+            return self._json(pool.keep(sid))
+        if op == "forget":
+            return self._json(pool.forget(sid, discard=body.get("discard") is True))
+        if op in ("terminal", "takeover"):
+            return self._json(pool.terminal(sid, takeover=op == "takeover"))
+        return self._json({"ok": False, "error": f"unknown operation {op!r}"})
 
     def _quit(self, body):
         if self.ctx.lifecycle is None:

@@ -15,7 +15,8 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Ayush Sinha" }]
 keywords = ["graph", "notes", "filesystem", "knowledge-graph", "neovim",
-            "second-brain", "wikilinks", "terminal"]
+            "second-brain", "wikilinks", "terminal", "coding-agents",
+            "git-worktree"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Environment :: Console",
