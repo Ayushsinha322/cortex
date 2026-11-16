@@ -31,7 +31,7 @@ is merged.
 ![Clicking a node opens the file; pressing Enter opens it in Neovim in the terminal cortex was launched from](https://raw.githubusercontent.com/Ayushsinha322/cortex/main/docs/demo.gif)
 
 No dependencies. No database. No import step. It reads your disk directly, and
-it is about 17,000 lines of Python standard library and vanilla JavaScript.
+it is about 20,000 lines of Python standard library and vanilla JavaScript.
 
 ---
 
@@ -139,6 +139,40 @@ menu (Linux) or in `~/Applications` (macOS), and starts like any other app.
 `install.sh` does this for you; with `pipx`, run it once yourself, or click
 **add it to the app menu** in the window's folder sheet (<kbd>p</kbd>).
 `cortex --remove-launcher` takes it out again.
+
+### Its own window, with a browser in it
+
+cortex's page is shown in a browser's window with the tabs taken off, which
+costs nothing to install. It can also have a window of its own, and in that
+one a tab can be a real browser tab — GitHub, your docs, the app the agent
+is building — which a page inside a browser can never do, because nearly
+every site refuses to be shown inside another page.
+
+```bash
+cd ~/cortex/desktop
+npm install          # once; brings Electron, about 290 MB
+```
+
+After that `cortex` opens in its own window by itself, from a terminal or
+from the app menu. `cortex -w app` is the browser's window again, and
+everything that is not a browser tab is the same in both. This needs the
+source — a clone — and Node; the `pipx` package does not carry it yet.
+
+In that window:
+
+- **+ → New browser tab**, or <kbd>ctrl</kbd> <kbd>t</kbd>. Type an address,
+  a bare host, a port for something on this machine, or words to search for.
+- Back, forward, reload, <kbd>ctrl</kbd> <kbd>l</kbd> for the address box,
+  <kbd>F12</kbd> for the developer tools, right-click for the rest. A link
+  that wants a new window gets a new tab.
+- Tabs have their own cookies, kept between launches, so a login stays
+  logged in — and kept apart from your everyday browser's.
+- **pick** — click anything on the page and it goes into your reply to the
+  agent: which element it is, what it says, how it is styled, its markup.
+  That is how "make our button look like this one" gets said. With no agent
+  to give it to, it is copied instead.
+
+A site that asks for your camera, microphone or location is told no.
 
 ---
 
@@ -702,9 +736,68 @@ them, and so does the window's title, which is the one thing you can see of a
 window you are not looking at.
 
 **stop** ends what it is doing and keeps the conversation and the work.
-**more ▾** has a terminal in the agent's folder, and **carry on in Claude Code
-itself**, which opens the same conversation in the agent's own interface, in a
-terminal. Send a message from cortex afterwards and it picks up from there.
+**more ▾** has a terminal in the agent's folder, and **open in Claude Code
+itself**, which opens the same conversation in the agent's own interface —
+both as tabs beside the conversation.
+
+### The window, as a place to work
+
+Around the graph is what you need to keep several things going at once.
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│ ☰ cortex  shop ▾   search…                              links fit share  │
+├───────────────┬───────────────────────────┬──────────────────────────────┤
+│ ⬢ New agent   │                           │ ● fix the discount  >_ shop +│
+│ >_ New term…  │       ● pricing.py        ├──────────────────────────────┤
+│               │      ╱  ┊                 │ …/shop on main               │
+│ AGENTS        │  ● cart.py  ⬢ fix the…    │ ➜ python3 tests/test_pri…    │
+│ ⬢ fix the di… │                           │ ok                           │
+│ TABS          │                           │ ➜ █                          │
+│ >_ shop       │   agents live history …   │                              │
+├───────────────┴───────────────────────────┴──────────────────────────────┤
+│ 10 nodes · main · 1 changed          1 agent  1 terminal  Claude 35% · 2h│
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+**The pane on the right has tabs.** The first is whatever is selected on the
+graph — a file, or an agent's conversation. Beside it are the terminals and
+previews you have opened, which stay open while the selection changes. **+**
+opens another; the pane's left edge drags to give it, or the graph, more
+room, and the graph re-centres itself in what is left.
+
+**A terminal is a real one.** <kbd>`</kbd> opens a shell in the selected
+folder, in a tab: your prompt, colours, `top`, a pager, an editor, a test
+runner on a loop. Keys go to the program, not to cortex. It is written by
+hand like the rest of cortex, and what it understands is what shells,
+full-screen programs and the agents' own interfaces send. A program that
+rings the bell, or asks for you the way agents do, puts a mark on its tab;
+if the window is not in front, the desktop is told too.
+
+**Any agent's own interface, in a tab.** The **+** menu lists each agent
+installed — Claude Code, Codex, Crush, whatever is there — and opens it as
+it would be in a terminal, in the folder you are looking at. For an agent
+started from cortex, **more ▾ → Open in Claude Code itself** opens the same
+conversation in the agent's own interface; close that tab and the
+conversation carries on in the reader.
+
+**A preview is a page on this machine.** **Preview a local address…** shows
+a dev server, or docs being built, beside the agent that is changing them:
+type a port and it is `localhost`. Only local addresses, in a browser's
+window — other sites refuse to be shown inside a page. In cortex's
+[own window](#its-own-window-with-a-browser-in-it) this is a full browser
+tab instead, for any site.
+
+**The rail** down the left lists the agents and the tabs, with what each is
+doing; an agent that needs you is at the top, in amber. **‹** hides it, and
+<kbd>ctrl</kbd> <kbd>k</kbd> brings it back.
+
+**The status bar** counts the agents working and the ones waiting on you —
+click to go to one — and shows how much of each agent's allowance is used
+and when it comes back, as the agent itself reports it.
+
+Terminals live in cortex, not in the page: reloading the window brings each
+one back as it was. Closing the window ends them, and asks first.
 
 ### Looking at what it did
 
@@ -758,22 +851,26 @@ adds nothing to that and takes nothing from it.
 
 Agents run on this machine, for as long as cortex is open: closing the window
 stops them, and asks first if any is in the middle of something. The
-conversations are kept, so one can be picked up the next time. There is no
-terminal pane inside the window, no built-in browser, no phone app and no
-remote machines. `cortex --read-only` has no agents at all.
+conversations are kept, so one can be picked up the next time. The pane does
+not split into more than the graph and one set of tabs. There is no phone
+app and there are no remote machines.
+`cortex --read-only` has no agents and no terminals at all.
 
 ### Next to Orca and cmux
 
 [Orca](https://github.com/stablyai/orca) and
 [cmux](https://github.com/manaflow-ai/cmux) are the two best-known places to
 run several coding agents at once, and both do things cortex does not. Orca is
-a full desktop app on macOS, Windows and Linux with split panes, a built-in
-browser, GitHub and Linear, a phone app, and agents on SSH hosts and cloud
-machines. cmux is a native macOS terminal with vertical tabs, notification
-rings, a scriptable browser and a socket API. If you want those, use them.
+a full desktop app on macOS, Windows and Linux with panes that split any way,
+GitHub and Linear, a phone app, and agents on SSH hosts and cloud machines. cmux is a native macOS terminal with vertical tabs,
+notification rings, a scriptable browser and a socket API. If you want those,
+use them.
 
-What cortex has is the map. Both of them show you an agent as a pane, a tab or
-a conversation; cortex shows it as a place in your project — which files it is
+cortex has the same bones — agents in worktrees, their own interfaces in
+terminal tabs, a browser tab you can pick elements from, a rail, questions
+that come to you, usage in the status bar — and one thing neither has: the
+map. Both of them show you an agent as a pane
+or a tab; cortex also shows it as a place in your project — which files it is
 in, what those files are imported by, and where it is about to collide with
 another agent. It runs on Linux as well as macOS, installs with one `pipx`
 command, depends on nothing, and works on a folder of notes as well as on a
@@ -783,7 +880,7 @@ repository.
 
 ## Ways of looking
 
-Along the bottom of the window is a dock. After **agents** come **live**,
+Above the status bar is a dock. After **agents** come **live**,
 **history**, **tours**, **views**, **disk** and **today**: each is a different
 question to ask of the same folder.
 
@@ -1064,6 +1161,10 @@ cortex [folder] [options]
 | <kbd>shift</kbd>-click | the chain of links from the selection to there |
 | <kbd>a</kbd> | agents: give one a task, or see what each is doing |
 | <kbd>A</kbd> | go to the agent that is waiting on you |
+| <kbd>`</kbd> | a terminal, in a tab, in the selected folder |
+| <kbd>ctrl</kbd> <kbd>t</kbd> | in cortex's own window: a browser tab |
+| <kbd>shift</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> | in a terminal: scroll back through what it printed |
+| <kbd>ctrl</kbd> <kbd>shift</kbd> <kbd>c</kbd> / <kbd>v</kbd> | in a terminal: copy the selection, paste |
 | <kbd>w</kbd> | live: watch files change as they change |
 | <kbd>h</kbd> | history: replay this folder through git |
 | <kbd>space</kbd> <kbd>[</kbd> <kbd>]</kbd> | in the history: play, and step a commit |
@@ -1233,6 +1334,8 @@ cortex/
 │   ├── dismissed.py      suggestions someone said no to
 │   ├── agents.py         coding agents: starting them, what they say, what they ask
 │   ├── worktrees.py      a copy of the project for each agent, and what it changed
+│   ├── terminals.py      programs on pseudo-terminals, for the tabs in the window
+│   ├── shell.py          finding and starting cortex's own window
 │   ├── actions.py        editor detection, terminal handoff, terminal windows
 │   ├── lifecycle.py      noticing the window has closed
 │   ├── desktop.py        the app-menu launcher
@@ -1240,11 +1343,15 @@ cortex/
 │   └── ui/
 │       ├── index.html
 │       ├── style.css
-│       ├── app.js        the graph, the reader and editor, the sheets
+│       ├── app.js        the graph, the reader and editor, the panes, the sheets
+│       ├── terminal.js   a terminal emulator, no dependencies
 │       ├── markdown.js   markdown renderer, no dependencies
 │       ├── highlight.js  syntax highlighter, no dependencies
 │       ├── snapshot.js   the server, played by data inside a shared map
 │       └── icon.svg      the favicon, and the launcher's icon
+├── desktop/              cortex's own window: the same page, in Electron
+│   ├── main.js           the window, browser tabs kept at arm's length
+│   └── preload.js        the little the page is told about the window
 └── tests/
     ├── run                  runs everything
     ├── test_cortex.py       scanner, links, reader, actions, HTTP surface
@@ -1255,6 +1362,8 @@ cortex/
     ├── test_du.py           disk usage, hard links, partial answers
     ├── test_suggest.py      ghost notes and suggested links
     ├── test_agents.py       agents and their worktrees, against stand-in agents
+    ├── test_terminals.py    real shells on real pseudo-terminals
+    ├── test_shell.py        finding the window, and handing it the address
     ├── harness.js           the stub DOM the browser-side tests run against
     ├── markdown.test.js     the markdown renderer
     ├── render-loop.test.js  cooling and repaint gating
@@ -1270,6 +1379,9 @@ cortex/
     ├── modes.test.js        live, history, disk, paths, views, tours, palette
     ├── notes.test.js        ghosts, suggestions, today's note, sharing
     ├── agents.test.js       agents on the graph, the conversation, the review
+    ├── terminal.test.js     the terminal emulator: bytes in, a screen out
+    ├── workspace.test.js    tabs, a terminal in one, the rail, the status bar
+    ├── browser.test.js      browser tabs, addresses, picking for the agent
     ├── capture.test.js      the quick-note window
     └── snapshot.test.js     a shared map, with no server behind it
 ```
@@ -1288,6 +1400,8 @@ python3 tests/test_history.py
 python3 tests/test_du.py
 python3 tests/test_suggest.py
 python3 tests/test_agents.py
+python3 tests/test_terminals.py
+python3 tests/test_shell.py
 node tests/markdown.test.js
 node tests/render-loop.test.js
 node tests/connections.test.js
@@ -1301,12 +1415,15 @@ node tests/readonly.test.js
 node tests/modes.test.js
 node tests/notes.test.js
 node tests/agents.test.js
+node tests/terminal.test.js
+node tests/workspace.test.js
+node tests/browser.test.js
 node tests/capture.test.js
 node tests/snapshot.test.js
 node tests/perf.test.js
 ```
 
-956 tests, no framework to install — `unittest` and plain `node`. The agent
+1,095 tests, no framework to install — `unittest` and plain `node`. The agent
 tests need no agent: stand-ins that speak the same lines as Claude Code and
 Codex are put on the `PATH`, so what is tested is cortex's half of the
 conversation. They run on
@@ -1371,6 +1488,17 @@ of anything other users can read — see [Security](#how-it-works).
 Because the graph needs to be pretty and PDFs need to be readable, and neither
 survives being drawn in text. The browser is the renderer; the terminal is
 there when you want it, and not needed when you do not.
+
+**Do I need the window of its own?**
+No. It adds one thing — browser tabs for any site — and costs an `npm
+install` of Electron. Without it cortex is Python and a browser you already
+have, and everything else is the same.
+
+**What do the browser tabs keep, and where?**
+Their cookies and logins, in `~/.config/cortex-desktop/`, apart from your
+everyday browser. What you open in a tab goes to that site as it would from
+any browser; cortex itself sends nothing anywhere. A tab cannot reach cortex
+or your files: it is a separate, sandboxed process that is given nothing.
 
 **Which editor does <kbd>Enter</kbd> open?**
 Whatever `$VISUAL` or `$EDITOR` says, if either is set and names something

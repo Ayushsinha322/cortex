@@ -64,7 +64,8 @@ let viewRoot = ROOT;
 let sidebarOpen = false;
 let rootDirs = null;              // cached folder list for the sidebar
 const SIDEBAR_W = 260;
-const sidebarInset = () => (sidebarOpen ? SIDEBAR_W : 0);
+const sidebarInset = () =>
+  (sidebarOpen ? SIDEBAR_W : booted && railShown() ? RAIL_W : 0);
 
 /* The layout cools down and then freezes. Without this the graph jitters
    forever, which reads as flicker: labels keep crossing the collision
@@ -1114,6 +1115,18 @@ CFG.debug.agents = () => ({
   view: agentView ? { id: agentView.id, mode: agentView.mode, shown: agentView.shown } : null,
   links: links.filter((l) => l.kind === "agent").map((l) => [l.a, l.b]),
 });
+CFG.debug.terminal = (o) => openTerminal(o);
+CFG.debug.preview = (url) => openPreview(url);
+CFG.debug.browser = (url) => { const t = openBrowser(url); return t && t.id; };
+CFG.debug.address = (text) => toAddress(text);
+CFG.debug.tool = (id) => tools.get(id);
+CFG.debug.pick = (id) => pickFrom(tools.get(id));
+CFG.debug.refreshAgents = () => refreshAgents();
+CFG.debug.workspace = () => ({
+  tabs: [...tools.keys()], active: activeTool, rail: railShown(), panel: panelWidth,
+  terms: [...terms.values()].map((t) => ({ id: t.id, title: t.title, alive: t.alive,
+                                          unread: t.unread, text: t.screen.text() })),
+});
 CFG.debug.modes = () => ({
   live: !!live, disk: !!disk, history: hist ? hist.v : null,
   path: pathHops ? pathHops.map((h) => h.id) : null,
@@ -1130,9 +1143,9 @@ function fit(pad = 90) {
     minX = Math.min(minX, n.x - n.r); maxX = Math.max(maxX, n.x + n.r);
     minY = Math.min(minY, n.y - n.r); maxY = Math.max(maxY, n.y + n.r);
   }
-  const panelW = (panel.classList.contains("open") && !maximized) ? 520 : 0;
+  const panelW_ = panelW();
   const left = sidebarInset();
-  const availW = Math.max(200, W - panelW - left - pad * 2);
+  const availW = Math.max(200, W - panelW_ - left - pad * 2);
   const availH = Math.max(200, H - pad * 2 - 70);
   const s = Math.max(0.06, Math.min(1.15,
     Math.min(availW / Math.max(1, maxX - minX), availH / Math.max(1, maxY - minY))));
@@ -1143,10 +1156,10 @@ function fit(pad = 90) {
 }
 
 function centerOn(n) {
-  const panelW = (panel.classList.contains("open") && !maximized) ? 520 : 0;
+  const panelW_ = panelW();
   const left = sidebarInset();
   cam.s = Math.max(cam.s, 1.1);
-  cam.x = left + (W - left - panelW) / 2 - n.x * cam.s;
+  cam.x = left + (W - left - panelW_) / 2 - n.x * cam.s;
   cam.y = H / 2 - n.y * cam.s;
   showZoom();
 }
@@ -1267,10 +1280,13 @@ function closePanel() {
   panel.classList.remove("open");
   panel.classList.remove("agent");
   agentView = null;
+  hideTool();
   $("p-links").hidden = true;
   sel = null; selLine = null; focusMode = false; recomputeNeighbours();
   dirty = true;
   placeChrome();
+  renderTabs();
+  renderRail();
 }
 
 /* Full-screen the reader. The rendered content is reused as-is, so a PDF is
@@ -1296,6 +1312,7 @@ function select(n) {
   selLine = null;
   focusMode = false;
   recomputeNeighbours();
+  if (activeTool) hideTool();          // a terminal on show steps back; it is not closed
   panel.classList.add("open");
   // an agent's conversation fills the reader, with its reply box at the foot
   panel.classList.toggle("agent", !!n.agent);
@@ -1312,6 +1329,8 @@ function select(n) {
   renderConnections(n);
   renderBody(n);
   placeChrome();
+  renderTabs();
+  renderRail();
   if (tourRec) addStop(n);
 }
 
@@ -2752,9 +2771,9 @@ let flight = null;
 
 /* The camera that puts `n` in the middle of the free part of the window. */
 function camOn(n, s = Math.max(cam.s, 1.15)) {
-  const panelW = (panel.classList.contains("open") && !maximized) ? 520 : 0;
+  const panelW_ = panelW();
   const left = sidebarInset();
-  return { s, x: left + (W - left - panelW) / 2 - n.x * s, y: H / 2 - n.y * s };
+  return { s, x: left + (W - left - panelW_) / 2 - n.x * s, y: H / 2 - n.y * s };
 }
 
 /* The camera that frames all of these, the way fit() frames the graph. */
@@ -2766,9 +2785,9 @@ function camAround(list, pad = 140) {
     minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x);
     minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y);
   }
-  const panelW = (panel.classList.contains("open") && !maximized) ? 520 : 0;
+  const panelW_ = panelW();
   const left = sidebarInset();
-  const availW = Math.max(200, W - panelW - left - pad * 2);
+  const availW = Math.max(200, W - panelW_ - left - pad * 2);
   const availH = Math.max(200, H - pad * 2 - 70);
   const s = Math.max(0.08, Math.min(1.6,
     Math.min(availW / Math.max(1, maxX - minX), availH / Math.max(1, maxY - minY))));
@@ -2806,14 +2825,28 @@ function stepFlight() {
    centre themselves on the part of the canvas the sidebar and the reader are
    not covering. And on a narrow window the dock rides up a row rather than
    sit on top of the counts in the corner. */
+let freeMiddle = null;           // where the middle of the free canvas last was
+
 function placeChrome() {
   const body = document.body;
-  const left = sidebarOpen ? SIDEBAR_W : 0;
-  const right = panel.classList.contains("open") && !maximized ? Math.min(520, W * 0.94) : 0;
+  const left = sidebarInset();
+  const right = panelW();
   if (body.style && body.style.setProperty) {
     body.style.setProperty("--free-left", left + "px");
     body.style.setProperty("--free-right", right + "px");
   }
+  // The graph keeps its place in the part of the window that is free: when a
+  // pane opens, closes or is dragged wider, the view slides over by half of
+  // what changed, instead of being left half under the pane.
+  const middle = left + (W - left - right) / 2;
+  // (Only once the window is up: a remembered camera was saved with the
+  // panes as they are now, and is not to be nudged for them again.)
+  if (booted && freeMiddle !== null && middle !== freeMiddle && !maximized) {
+    cam.x += middle - freeMiddle;
+    if (flight) flight.to.x += middle - freeMiddle;
+    dirty = true;
+  }
+  if (booted && !maximized) freeMiddle = middle;
   const dock = $("dock"), stats = $("stats"), zoom = $("zoomer");
   const d = dock.getBoundingClientRect(), st = stats.getBoundingClientRect();
   const z = zoom.getBoundingClientRect();
@@ -3632,6 +3665,14 @@ function commands() {
     { label: "Open another folder…", key: "p", run: () => openPlaces(), on: !SNAPSHOT },
     { label: "Today's note", key: "d", run: () => openToday(), on: write },
     { label: "New agent…", run: () => openAgentNew(), on: write && !agentsOff },
+    { label: "New terminal", key: "`", on: write && !termsOff,
+      run: () => openTerminal({ cwd: sel && !sel.tag ? parentOfNode(sel) : viewRoot }) },
+    { label: SHELL ? "New browser tab" : "Preview a local address…",
+      run: () => openPreview(), on: !SNAPSHOT },
+    { label: railShut ? "Show the agents rail" : "Hide the agents rail", on: !SNAPSHOT,
+      run: () => { railShut = !railShut; keep.set("rail", railShut ? "shut" : "open"); renderRail(); } },
+    ...[...tools.values()].map((t) => ({ label: `Tab: ${toolTitle(t)}`,
+                                         run: () => showTool(t.id) })),
     { label: "Agents…", key: "a", run: () => openAgents(), on: write && !agentsOff },
     { label: "Agents: go to the one that needs you", key: "A", run: () => nextAgent(),
       on: agentState.sessions.some((s) => s.unread) },
@@ -5309,6 +5350,9 @@ async function absorbAgents(r) {
   if (reveal.length && reveal.length <= 150) await ensureNodes(reveal);
   syncAgentNodes();
   renderAgentBadge();
+  renderRail();
+  renderStatus();
+  if (sel && sel.agent) renderTabs();
   if (popFor === "agents") fillAgentsPop($("pop"));
   if (agentView) refreshAgentView(before.get(agentView.id));
   animateFor(PING_MS);
@@ -5696,13 +5740,13 @@ function agentActions(n, bar) {
        `commit its work on ${s.branch} and let its copy go`);
   }
   const more = [];
-  if (TERMINAL && (!s.ended || s.mode === "here")) {
-    more.push({ label: "Terminal in its folder", run: () => agentTerminal(s, false) });
+  if (!termsOff && (!s.ended || s.mode === "here")) {
+    more.push({ label: "Terminal in its folder", run: () => openTerminal({ agent: s.id }) });
   }
-  if (TERMINAL && s.resumable && !s.ended) {
-    more.push({ label: `Carry on in ${s.label} itself`,
-                title: "the same conversation, in the agent's own interface",
-                run: () => agentTerminal(s, true) });
+  if (!termsOff && s.converses && !s.ended) {
+    more.push({ label: `Open in ${s.label} itself`,
+                title: "the same conversation, in the agent's own interface, in a tab",
+                run: () => openTerminal({ agent: s.id, takeover: true }) });
   }
   more.push({ label: focusMode ? "Show everything" : "Only what it changed",
               run: () => { focusMode = !focusMode; recomputeNeighbours(); buildActions(n); } });
@@ -5771,12 +5815,6 @@ async function forgetAgent(s) {
   }
 }
 
-async function agentTerminal(s, takeover) {
-  const r = await agentOp(takeover ? "takeover" : "terminal", s.id);
-  if (!r || !r.ok) return;
-  toast(r.how === "here" ? "→ switch to your terminal" : "opening a terminal window…");
-}
-
 /* The reader, as the conversation: the record above, the question it is
    waiting on if there is one, and a box to answer in. New events are appended
    as they arrive; nothing already shown is drawn again. */
@@ -5800,6 +5838,7 @@ function renderAgentBody(n, body) {
   sendBtn.textContent = "send";
   compose.append(input, sendBtn);
   body.append(log, askBox, compose);
+  lastAgent = s.id;
   agentView = { id: s.id, mode: "chat", log, askBox, input, sendBtn, shown: 0,
                 tools: new Map(), out: null, askKey: undefined, fetching: false };
   input.addEventListener("input", () => agentDrafts.set(s.id, input.value));
@@ -6225,6 +6264,849 @@ async function sendReviewNotes(n) {
   toggleReview(n, false);
 }
 
+/* -------------------------------------------------------------- workspace
+
+   The window as a place to work rather than a picture to look at. The reader
+   on the right is a pane with tabs: the thing selected on the graph, and
+   beside it any terminals and previews that have been opened, which stay
+   open while the selection changes. Its edge can be dragged. Down the left,
+   once there is anything to list, is a rail of the agents and terminals;
+   along the bottom, a status bar that says how many agents are working, how
+   many want you, and how much of each agent's allowance is used up. */
+const RAIL_W = 232, PANEL_MIN = 360;
+const tools = new Map();          // id -> {id, kind: "term" | "web", ...}, in tab order
+let activeTool = null;            // the tool tab on show; null when it is the selection
+let panelWidth = 520;
+let railShut = false;             // closed by hand, and so kept closed
+let webCount = 0;
+
+/* Remembered between launches where the browser will keep it, and simply
+   not remembered where it will not. */
+const keep = {
+  get(k) { try { return localStorage.getItem("cortex." + k); } catch (err) { return null; } },
+  set(k, v) { try { localStorage.setItem("cortex." + k, String(v)); } catch (err) { /* so be it */ } },
+};
+
+const panelW = () => (panel.classList.contains("open") && !maximized)
+  ? Math.min(panelWidth, W * 0.94) : 0;
+const railShown = () => !railShut && !SNAPSHOT && !CFG.capture;
+
+function setPanelWidth(w, remember) {
+  panelWidth = Math.round(Math.max(PANEL_MIN, Math.min(w, Math.max(PANEL_MIN, W - 280))));
+  const body = document.body;
+  if (body.style && body.style.setProperty) body.style.setProperty("--panel-w", panelWidth + "px");
+  if (remember) keep.set("panel", panelWidth);
+  placeChrome();
+  repaint();
+}
+
+function hideTool() {
+  activeTool = null;
+  panel.classList.remove("tool");
+}
+
+/* A tool's element goes into the pane once and stays there, shown or not:
+   a browser tab taken out of the page and put back is a tab loaded again,
+   with whatever was typed into it gone. */
+function addTool(tool) {
+  tool.el.classList.add("off");
+  $("p-tool").appendChild(tool.el);
+  tools.set(tool.id, tool);
+}
+
+function showTool(id) {
+  const tool = tools.get(id);
+  if (!tool) return;
+  activeTool = id;
+  for (const t of tools.values()) t.el.classList.toggle("off", t.id !== id);
+  panel.classList.add("open");
+  panel.classList.add("tool");
+  placeChrome();
+  renderTabs();
+  renderRail();
+  repaint();
+  if (tool.shown) tool.shown();
+}
+
+/* Back to whatever is selected on the graph -- or, with nothing selected
+   and no tool to show, to no pane at all. */
+function showSelection() {
+  hideTool();
+  if (!sel) panel.classList.remove("open");
+  placeChrome();
+  renderTabs();
+  renderRail();
+  repaint();
+}
+
+function closeTool(id) {
+  const tool = tools.get(id);
+  if (!tool) return;
+  tools.delete(id);
+  const box = $("p-tool");
+  if (tool.el.parentNode === box) box.removeChild(tool.el);
+  else if (Array.isArray(box.children)) {
+    const at = box.children.indexOf(tool.el);
+    if (at !== -1) box.children.splice(at, 1);
+  }
+  if (tool.closed) tool.closed();
+  if (activeTool === id) {
+    const next = [...tools.keys()].pop();
+    if (next) showTool(next); else showSelection();
+  } else {
+    renderTabs();
+    renderRail();
+  }
+  renderStatus();
+}
+
+function closeSelection() {
+  const back = activeTool || [...tools.keys()].pop() || null;
+  closePanel();
+  if (back) showTool(back);
+}
+
+/* The end of a path, which is the part that tells two folders apart. */
+const tailPath = (p) => {
+  const parts = shortPath(p).split("/").filter(Boolean);
+  return parts.length > 2 ? "…/" + parts.slice(-2).join("/") : shortPath(p);
+};
+
+function toolTitle(tool) {
+  return tool.kind === "term" ? tool.term.title || "terminal" : tool.title;
+}
+
+function renderTabs() {
+  const bar = $("p-tabs");
+  bar.textContent = "";
+  const tab = (label, o) => {
+    const b = document.createElement("button");
+    b.className = "p-tab" + (o.on ? " on" : "") + (o.need ? " need" : "");
+    b.title = o.title || label;
+    const g = document.createElement("span");
+    g.className = "g";
+    g.textContent = o.glyph;
+    if (o.color) g.style.color = o.color;
+    const nm = document.createElement("span");
+    nm.className = "nm";
+    nm.textContent = label;
+    b.append(g, nm);
+    if (o.close) {
+      const x = document.createElement("span");
+      x.className = "x";
+      x.textContent = "✕";
+      x.title = o.closeTitle || "close";
+      x.addEventListener("click", (e) => { e.stopPropagation(); o.close(); });
+      b.appendChild(x);
+    }
+    b.addEventListener("click", o.run);
+    bar.appendChild(b);
+    return b;
+  };
+  if (sel) {
+    tab(sel.name, {
+      on: !activeTool, glyph: sel.agent ? "⬢" : sel.dir ? "▸" : sel.tag ? "#" : "•",
+      color: sel.agent ? agentColor(sel.session) : null,
+      title: sel.agent ? sel.name : sel.id,
+      run: () => showSelection(), close: () => closeSelection(),
+    });
+  }
+  for (const tool of tools.values()) {
+    const term = tool.kind === "term" ? tool.term : null;
+    tab(toolTitle(tool), {
+      on: activeTool === tool.id, glyph: term ? ">_" : "◍",
+      need: !!(term && term.unread),
+      title: term ? `${term.title} — ${shortPath(term.cwd)}` : tool.url || tool.title,
+      run: () => showTool(tool.id),
+      close: () => (term ? closeTerm(tool.id) : closeTool(tool.id)),
+      closeTitle: term && term.alive ? "close, and end what is running in it" : "close",
+    });
+  }
+  const add = document.createElement("button");
+  add.className = "p-tab add";
+  add.textContent = "+";
+  add.title = "a terminal, an agent, or a preview";
+  add.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const r = add.getBoundingClientRect();
+    openMenu(r.left, r.bottom + 4, null, newTabItems());
+  });
+  bar.appendChild(add);
+}
+
+function newTabItems() {
+  const here = sel && !sel.tag ? parentOfNode(sel) : viewRoot;
+  const items = [];
+  if (!termsOff && !READ_ONLY) {
+    items.push({ label: "New terminal", key: "`", run: () => openTerminal({ cwd: here }) });
+    if (!agentsOff) items.push({ label: "New agent…", key: "a", run: () => openAgentNew() });
+  }
+  items.push(SHELL ? { label: "New browser tab", key: "ctrl t", run: () => openBrowser() }
+                   : { label: "Preview a local address…", run: () => openPreview() });
+  if (!termsOff && !READ_ONLY && agentState.agents.length) {
+    // each agent's own interface, as it would be in a terminal -- in a tab
+    items.push("-");
+    for (const a of agentState.agents) {
+      items.push({ label: a.label, run: () => openTerminal({ cwd: here, run: a.id }) });
+    }
+  }
+  return items;
+}
+
+/* ----------------------------------------------------- workspace: the rail */
+function renderRail() {
+  const rail = $("rail"), show = railShown();
+  if (rail.hidden === show) {
+    rail.hidden = !show;
+    document.body.classList.toggle("rail-open", show);
+    placeChrome();
+    repaint();
+  }
+  if (!show) return;
+  const row = (box, o) => {
+    const b = document.createElement("button");
+    b.className = "rail-row" + (o.on ? " on" : "") + (o.need ? " need" : "");
+    b.title = o.title || o.name;
+    const g = document.createElement("span");
+    g.className = "g" + (o.spin ? " spin" : "");
+    g.textContent = o.glyph;
+    if (o.color) g.style.color = o.color;
+    const text = document.createElement("span");
+    text.className = "tx";
+    const nm = document.createElement("span");
+    nm.className = "nm";
+    nm.textContent = o.name;
+    const sub = document.createElement("span");
+    sub.className = "sub";
+    sub.textContent = o.sub;
+    text.append(nm, sub);
+    b.append(g, text);
+    if (o.close) {
+      const x = document.createElement("span");
+      x.className = "x";
+      x.textContent = "✕";
+      x.addEventListener("click", (e) => { e.stopPropagation(); o.close(); });
+      b.appendChild(x);
+    }
+    b.addEventListener("click", o.run);
+    box.appendChild(b);
+  };
+  const doBox = $("rail-do");
+  doBox.textContent = "";
+  const write = !READ_ONLY && !SNAPSHOT;
+  for (const [glyph, name, key, on, run] of [
+    ["⬢", "New agent", "a", write && !agentsOff, () => openAgentNew()],
+    [">_", "New terminal", "`", write && !termsOff, () => openTerminal({ cwd: viewRoot })],
+    SHELL ? ["◍", "New browser tab", "", true, () => openBrowser()]
+          : ["◍", "Preview a local page", "", true, () => openPreview()],
+    ["▸", "Open a folder", "p", !SNAPSHOT, () => openPlaces()],
+  ]) {
+    if (!on) continue;
+    const b = document.createElement("button");
+    b.className = "rail-do";
+    const g = document.createElement("span");
+    g.className = "g";
+    g.textContent = glyph;
+    const nm = document.createElement("span");
+    nm.className = "nm";
+    nm.textContent = name;
+    const k = document.createElement("kbd");
+    k.textContent = key;
+    k.hidden = !key;
+    b.append(g, nm, k);
+    b.addEventListener("click", run);
+    doBox.appendChild(b);
+  }
+  const agentsBox = $("rail-agents");
+  agentsBox.textContent = "";
+  const order = [...agentState.sessions].sort((a, b) =>
+    (b.unread ? 1 : 0) - (a.unread ? 1 : 0) || b.started - a.started);
+  for (const s of order) {
+    const bits = [s.label, agentWord(s)];
+    row(agentsBox, {
+      glyph: "⬢", color: agentColor(s), spin: agentBusy(s) && s.state !== "waiting",
+      name: s.title, sub: bits.join(" · ") + (agentStats(s) ? `  +${s.stats.added} −${s.stats.removed}` : ""),
+      on: !activeTool && !!sel && sel.agent === s.id, need: !!s.unread,
+      title: s.ask ? `${s.label} is waiting on you` : s.last || s.title,
+      run: () => goToAgent(s),
+    });
+  }
+  if (!order.length) {
+    const e = document.createElement("div");
+    e.className = "rail-empty";
+    e.textContent = agentsOff ? "Not while read-only." : "None yet.";
+    agentsBox.appendChild(e);
+  }
+  const termsBox = $("rail-terms");
+  termsBox.textContent = "";
+  for (const tool of tools.values()) {
+    const term = tool.kind === "term" ? tool.term : null;
+    row(termsBox, {
+      glyph: term ? ">_" : "◍", name: toolTitle(tool),
+      sub: term ? (term.alive ? tailPath(term.screen.cwd || term.cwd) : "ended")
+        : tool.browser ? hostOf(tool.url) : tool.url,
+      on: activeTool === tool.id, need: !!(term && term.unread),
+      run: () => showTool(tool.id),
+      close: () => (term ? closeTerm(tool.id) : closeTool(tool.id)),
+    });
+  }
+  $("rail-terms-head").hidden = !tools.size && (termsOff || READ_ONLY);
+}
+
+/* ------------------------------------------------ workspace: the status bar */
+const pct = (v) => `${Math.round(v * 100)}%`;
+function timeLeft(until) {
+  const s = Math.max(0, until - Date.now() / 1000);
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
+}
+
+function renderStatus() {
+  const box = $("st-right");
+  box.textContent = "";
+  const chip = (text, cls, title, run) => {
+    const b = document.createElement("button");
+    b.className = "st-chip" + (cls ? " " + cls : "");
+    b.textContent = text;
+    b.title = title;
+    if (run) b.addEventListener("click", run);
+    box.appendChild(b);
+    return b;
+  };
+  const list = agentState.sessions;
+  const need = list.filter((s) => s.unread).length, busy = list.filter(agentBusy).length;
+  if (list.length) {
+    chip(need ? `${plural(need, "agent")} ${need === 1 ? "needs" : "need"} you`
+         : busy ? `${plural(busy, "agent")} working` : plural(list.length, "agent"),
+         need ? "need" : busy ? "busy" : "",
+         need ? "go to the one that is waiting (A)" : "the agents (a)",
+         () => (need ? nextAgent() : openAgents()));
+  }
+  const open = [...tools.values()].filter((t) => t.kind === "term");
+  if (open.length) {
+    chip(plural(open.length, "terminal"), open.some((t) => t.term.unread) ? "need" : "",
+         "go to a terminal",
+         () => showTool((open.find((t) => t.term.unread) || open[open.length - 1]).id));
+  }
+  // how much of each agent's allowance is gone, as the agent itself reports it
+  for (const u of Object.values(agentState.usage || {})) {
+    const five = u.windows && u.windows.five_hour, week = u.windows && u.windows.seven_day;
+    const first = five || week;
+    if (!first) continue;
+    const name = u.label.split(" ")[0];
+    const parts = [`${name} ${pct(first.used)}`];
+    if (first.resets) parts.push(timeLeft(first.resets));
+    const tip = [];
+    if (five) tip.push(`${pct(five.used)} of the five-hour allowance used`
+                       + (five.resets ? `, back in ${timeLeft(five.resets)}` : ""));
+    if (week) tip.push(`${pct(week.used)} of the week's` + (week.resets ? `, back in ${timeLeft(week.resets)}` : ""));
+    chip(parts.join(" · "), first.used >= 0.9 ? "need" : "", `${u.label}: ${tip.join("; ")}`);
+  }
+}
+
+/* ------------------------------------------------- workspace: the terminals
+
+   A terminal is a program on the server's pseudo-terminal and a screen here
+   that its bytes are played onto (terminal.js). All of them are read through
+   one long poll, which runs only while there is one to read. A screen is
+   kept up to date whether or not its tab is showing, so switching to it
+   shows what is there now. */
+const terms = new Map();          // id -> {id, title, screen, view, host, alive, unread, ...}
+let termLoop = null, termSeq = 0, termsOff = false;
+
+async function loadTerms() {
+  if (!window.Term) { termsOff = true; return; }
+  let r;
+  try { r = await api("/api/terms", { since: 0, wait: 0 }); }
+  catch (err) { return; }
+  if (!r || !Array.isArray(r.terms)) return;
+  if (r.off) { termsOff = true; return; }
+  termSeq = r.seq || 0;
+  for (const t of r.terms) await adoptTerm(t, true);
+  if (terms.size) watchTerms();
+}
+
+function decodeChunk(term, b64) {
+  const bin = atob(b64);
+  if (!term.decoder) return bin;
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  // a character cut in two by the pipe is held until its other half arrives
+  return term.decoder.decode(bytes, { stream: true });
+}
+
+async function adoptTerm(t, replay) {
+  const had = terms.get(t.id);
+  if (had) return had;
+  const host = document.createElement("div");
+  host.className = "term";
+  const term = {
+    id: t.id, title: t.title, kind: t.kind, owner: t.owner, cwd: t.cwd,
+    alive: t.alive, code: t.code, host, view: null, from: 0, unread: false,
+    bells: 0, out: "", sending: false,
+    screen: new window.Term.Screen(t.cols || 100, t.rows || 30),
+    decoder: typeof TextDecoder === "function" ? new TextDecoder("utf-8") : null,
+  };
+  terms.set(t.id, term);
+  addTool({
+    id: t.id, kind: "term", term, el: host,
+    shown: () => {
+      if (!term.view) {
+        term.view = window.Term.mount(host, term.screen, {
+          send: (text) => termSend(term, text),
+          resize: (cols, rows) => post("/api/term", { op: "resize", id: term.id, cols, rows })
+            .catch(() => {}),
+          changed: () => termNews(term),
+        });
+      }
+      term.unread = false;
+      term.view.fit();
+      term.view.refresh();
+      term.view.focus();
+      renderTabs();
+      renderRail();
+      renderStatus();
+    },
+  });
+  if (replay) {
+    try {
+      const got = await api("/api/term/replay", { id: t.id });
+      term.from = got.seq;
+      term.screen.write(decodeChunk(term, got.data));
+    } catch (err) { /* it starts from what comes next */ }
+  }
+  // Only now: what a program asked while this window was not there was
+  // answered then, by the window that was. Answering again on replay would
+  // type the answers into whatever is at the prompt today.
+  term.screen.onReply = (s) => termSend(term, s);
+  if (!term.alive) termEnded(term);
+  termNews(term, true);
+  renderTabs();
+  renderRail();
+  renderStatus();
+  return term;
+}
+
+function watchTerms() {
+  if (termLoop || termsOff) return;
+  const me = termLoop = {
+    abort: typeof AbortController === "function" ? new AbortController() : null };
+  (async () => {
+    while (termLoop === me && !gone && terms.size) {
+      let r;
+      try {
+        r = await api("/api/terms", { since: termSeq, wait: 25 },
+                      me.abort ? { signal: me.abort.signal } : undefined);
+      } catch (err) {
+        if (termLoop !== me || (err && err.name === "AbortError")) return;
+        if (staleToken(err)) { serverGone(); return; }
+        await sleep(2000);
+        continue;
+      }
+      if (termLoop !== me) return;
+      if (!r || !Array.isArray(r.terms)) break;
+      for (const [seq, id, data] of r.chunks || []) {
+        const term = terms.get(id);
+        if (!term || seq <= term.from) continue;
+        term.screen.write(decodeChunk(term, data));
+        if (term.view) term.view.refresh();
+        termNews(term);
+      }
+      termSeq = r.seq;
+      const listed = new Set(r.terms.map((t) => t.id));
+      for (const t of r.terms) {
+        const term = terms.get(t.id);
+        // one this window did not open, or fell too far behind on: from its replay
+        if (!term) await adoptTerm(t, true);
+        else if (r.lost) await rejoinTerm(term);
+        if (term && term.alive && !t.alive) { term.alive = false; term.code = t.code; termEnded(term); }
+      }
+      for (const id of [...terms.keys()]) if (!listed.has(id)) dropTerm(id);
+    }
+    if (termLoop === me) termLoop = null;
+  })();
+}
+
+async function rejoinTerm(term) {
+  try {
+    const got = await api("/api/term/replay", { id: term.id });
+    const answer = term.screen.onReply;
+    term.screen.onReply = null;              // as above: old questions, already answered
+    term.screen.reset();
+    term.from = got.seq;
+    term.screen.write(decodeChunk(term, got.data));
+    term.screen.onReply = answer;
+    if (term.view) term.view.refresh();
+  } catch (err) { /* the next poll tries again */ }
+}
+
+function termEnded(term) {
+  term.screen.write(`\r\n\x1b[0;2m[ended${term.code > 0 ? ` with status ${term.code}` : ""}`
+                    + " — enter closes this tab]\x1b[0m");
+  if (term.view) term.view.refresh();
+  renderTabs();
+  renderRail();
+  renderStatus();
+}
+
+/* What a terminal has to say for itself beyond its screen: a new title, a
+   bell, or a program asking for the person. A tab that is not on show gets
+   a mark; a program that asked in words gets them passed on. */
+function termNews(term, quiet) {
+  const s = term.screen;
+  let changed = false;
+  if (s.title && s.title !== term.title) { term.title = s.title; changed = true; }
+  const said = s.notes.length ? s.notes[s.notes.length - 1] : "";
+  if (s.notes.length || s.bells !== term.bells) {
+    s.notes.length = 0;
+    term.bells = s.bells;
+    const watching = activeTool === term.id && looking();
+    if (!quiet && !watching) {
+      term.unread = true;
+      changed = true;
+      if (said) {
+        toast(`${term.title} — ${said}`, true);
+        if (!looking()) {
+          post("/api/term", { op: "attention", title: term.title, body: said }).catch(() => {});
+        }
+      }
+    }
+  }
+  if (changed) { renderTabs(); renderRail(); renderStatus(); }
+}
+
+/* What is typed goes in the order it was typed: one request at a time, with
+   whatever was typed meanwhile sent together in the next. */
+async function termSend(term, text) {
+  if (!term.alive) {
+    if (text === "\r") closeTerm(term.id);
+    return;
+  }
+  term.out += text;
+  if (term.sending) return;
+  term.sending = true;
+  while (term.out) {
+    const data = term.out;
+    term.out = "";
+    try { await post("/api/term", { op: "input", id: term.id, data }); }
+    catch (err) { break; }
+  }
+  term.sending = false;
+}
+
+async function openTerminal(o = {}) {
+  if (termsOff || READ_ONLY || SNAPSHOT) {
+    toast(READ_ONLY ? "cortex was started read-only" : "there are no terminals here", true);
+    return null;
+  }
+  // a first guess at the size; the tab measures itself once it is on show
+  const cols = Math.max(40, Math.floor((panelWidth - 30) / 7.9));
+  const rows = Math.max(10, Math.floor((H - 130) / 17));
+  let r = null;
+  try {
+    r = await post("/api/term", { op: "open", cwd: o.cwd, agent: o.agent, run: o.run,
+                                  takeover: !!o.takeover, cols, rows });
+  } catch (err) { /* said below */ }
+  if (!r || !r.ok) { toast((r && r.error) || "could not open a terminal", true); return null; }
+  const term = await adoptTerm(r.term, false);
+  watchTerms();
+  showTool(term.id);
+  return term;
+}
+
+function dropTerm(id) {
+  const term = terms.get(id);
+  if (!term) return;
+  terms.delete(id);
+  if (term.view) term.view.dispose();
+  closeTool(id);
+}
+
+async function closeTerm(id) {
+  const term = terms.get(id);
+  if (!term) return;
+  try { await post("/api/term", { op: "close", id }); }
+  catch (err) { /* it is gone from here either way */ }
+  dropTerm(id);
+}
+
+/* ---------------------------------------------------- workspace: a preview
+
+   A page served on this machine -- a dev server, the docs being built --
+   beside the agent that is changing it. Only local addresses: anything else
+   would mostly refuse to be shown inside another page, and is a browser's
+   job in any case. */
+const LOCAL_URL = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?(\/.*)?$/i;
+
+async function openPreview(url) {
+  if (SHELL) return openBrowser(url);
+  if (!url) {
+    url = await ask({ title: "Preview a local address",
+                      text: "A page served on this machine, such as a dev server.",
+                      value: keep.get("preview") || "http://localhost:3000", ok: "open" });
+    if (!url) return;
+  }
+  if (/^(localhost|127\.0\.0\.1)/i.test(url) || /^:\d+/.test(url) || /^\d{2,5}$/.test(url)) {
+    url = "http://" + (/^\d/.test(url) ? "localhost:" + url : url.startsWith(":") ? "localhost" + url : url);
+  }
+  if (!LOCAL_URL.test(url)) {
+    toast("only pages on this machine can be shown here — that one is for your browser", true);
+    return;
+  }
+  keep.set("preview", url);
+  const id = "web:" + (++webCount);
+  const el = document.createElement("div");
+  el.className = "web";
+  const bar = document.createElement("div");
+  bar.className = "web-bar";
+  const where = document.createElement("input");
+  where.type = "text";
+  where.spellcheck = false;
+  where.value = url;
+  const frame = document.createElement("iframe");
+  frame.className = "web-frame";
+  frame.setAttribute && frame.setAttribute("sandbox",
+    "allow-scripts allow-forms allow-same-origin allow-popups allow-modals");
+  frame.src = url;
+  const tool = { id, kind: "web", el, url, title: url.replace(/^https?:\/\//, "").replace(/\/$/, "") };
+  const go = (next) => {
+    if (!LOCAL_URL.test(next)) { toast("only pages on this machine can be shown here", true); return; }
+    tool.url = next;
+    tool.title = next.replace(/^https?:\/\//, "").replace(/\/$/, "");
+    frame.src = next;
+    keep.set("preview", next);
+    renderTabs();
+    renderRail();
+  };
+  const btn = (label, title, run) => {
+    const b = document.createElement("button");
+    b.className = "ghost sm";
+    b.textContent = label;
+    b.title = title;
+    b.addEventListener("click", run);
+    return b;
+  };
+  where.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") go(where.value.trim());
+  });
+  bar.append(btn("↻", "load it again", () => { frame.src = tool.url; }), where,
+             btn("⧉", "open it in your browser", () => {
+               if (typeof window.open === "function") window.open(tool.url, "_blank", "noopener");
+             }));
+  el.append(bar, frame);
+  addTool(tool);
+  showTool(id);
+  renderStatus();
+}
+
+/* ----------------------------------------------- workspace: a browser tab
+
+   In a browser's window cortex can only show pages served on this machine,
+   because every other site refuses to be put inside a page. In its own
+   window (desktop/) the page may make a real browser tab instead: any site,
+   with its own cookies, so a login stays logged in. The page knows it is
+   there by window.cortexShell, and everything below is offered only then.
+
+   What a tab adds over a browser beside the window is that it is beside the
+   agent: **pick** lets you click anything on the page, and puts what you
+   clicked -- where it is, what it says, its markup -- into your reply to the
+   agent, which is how "make this button look like that one" gets said. */
+const SHELL = window.cortexShell && window.cortexShell.browser ? window.cortexShell : null;
+const SEARCH = "https://duckduckgo.com/?q=";
+let lastAgent = null;             // the agent whose conversation was last on show
+
+/* What was typed in the address box, as somewhere to go: an address as it
+   is, a bare host as https, a port or localhost as this machine, and
+   anything else as a search. */
+function toAddress(text) {
+  const t = String(text || "").trim();
+  if (!t) return "";
+  if (/^https?:\/\/\S+$/i.test(t)) return t;
+  if (/^:?\d{2,5}$/.test(t)) return "http://localhost:" + t.replace(":", "");
+  if (/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/\S*)?$/i.test(t)) return "http://" + t;
+  if (/^[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?(\/\S*)?$/i.test(t)) return "https://" + t;
+  return SEARCH + encodeURIComponent(t);
+}
+
+const hostOf = (url) => {
+  try { return new URL(url).host || url; } catch (err) { return url; }
+};
+
+/* Run in the tab's page: a box follows the pointer, a click answers with
+   what was under it, esc answers with nothing. */
+const PICKER = `(() => new Promise((resolve) => {
+  const box = document.createElement("div");
+  box.style.cssText = "position:fixed;z-index:2147483647;pointer-events:none;"
+    + "border:2px solid #4c8dff;background:rgba(76,141,255,.16);border-radius:3px";
+  const tip = document.createElement("div");
+  tip.style.cssText = "position:fixed;z-index:2147483647;pointer-events:none;top:10px;left:50%;"
+    + "transform:translateX(-50%);background:#0a0e17;color:#e6ebf4;font:12px system-ui;"
+    + "padding:6px 12px;border-radius:8px;border:1px solid #2c4a86";
+  tip.textContent = "click something to give it to the agent — esc to cancel";
+  document.documentElement.append(box, tip);
+  let cur = null;
+  const where = (el) => {
+    const parts = [];
+    for (let n = el; n && n.nodeType === 1 && parts.length < 5; n = n.parentElement) {
+      if (n.id) { parts.unshift("#" + CSS.escape(n.id)); break; }
+      let s = n.tagName.toLowerCase();
+      s += [...n.classList].slice(0, 2).map((c) => "." + CSS.escape(c)).join("");
+      const same = n.parentElement
+        ? [...n.parentElement.children].filter((c) => c.tagName === n.tagName) : [];
+      if (same.length > 1) s += ":nth-of-type(" + (same.indexOf(n) + 1) + ")";
+      parts.unshift(s);
+    }
+    return parts.join(" > ");
+  };
+  const move = (e) => {
+    cur = e.target;
+    const r = cur.getBoundingClientRect();
+    box.style.left = r.left + "px"; box.style.top = r.top + "px";
+    box.style.width = r.width + "px"; box.style.height = r.height + "px";
+  };
+  const done = (answer) => {
+    removeEventListener("mousemove", move, true);
+    removeEventListener("click", click, true);
+    removeEventListener("keydown", key, true);
+    box.remove(); tip.remove();
+    resolve(answer);
+  };
+  const click = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const el = cur || e.target, r = el.getBoundingClientRect(), st = getComputedStyle(el);
+    done({ selector: where(el), html: el.outerHTML.slice(0, 3000),
+           text: (el.innerText || "").trim().slice(0, 300), url: location.href,
+           size: Math.round(r.width) + "×" + Math.round(r.height),
+           look: st.color + " on " + st.backgroundColor + ", " + st.fontSize + " "
+                 + st.fontFamily.split(",")[0] });
+  };
+  const key = (e) => { if (e.key === "Escape") { e.preventDefault(); done(null); } };
+  addEventListener("mousemove", move, true);
+  addEventListener("click", click, true);
+  addEventListener("keydown", key, true);
+}))()`;
+
+function openBrowser(url) {
+  if (!SHELL) return openPreview(url);
+  const id = "web:" + (++webCount);
+  const start = toAddress(url);
+  const el = document.createElement("div");
+  el.className = "web";
+  const bar = document.createElement("div");
+  bar.className = "web-bar";
+  const where = document.createElement("input");
+  where.type = "text";
+  where.spellcheck = false;
+  where.placeholder = "an address, or something to search for";
+  where.value = start;
+  const view = document.createElement("webview");
+  view.className = "web-frame";
+  view.setAttribute("partition", SHELL.partition);
+  view.setAttribute("allowpopups", "");
+  view.setAttribute("src", start || "about:blank");
+  const tool = { id, kind: "web", browser: true, el, view, url: start,
+                 title: start ? hostOf(start) : "New tab",
+                 shown: () => { if (!tool.url) where.focus(); },
+                 address: () => { where.focus(); where.select(); } };
+  const can = (name) => { try { return !!view[name](); } catch (err) { return false; } };
+  const btn = (label, title, run) => {
+    const b = document.createElement("button");
+    b.className = "ghost sm";
+    b.textContent = label;
+    b.title = title;
+    b.addEventListener("click", run);
+    return b;
+  };
+  const back = btn("←", "back (alt ←)", () => { if (can("canGoBack")) view.goBack(); });
+  const fwd = btn("→", "forward (alt →)", () => { if (can("canGoForward")) view.goForward(); });
+  const again = btn("↻", "load it again (ctrl r)", () => {
+    try { el.classList.contains("loading") ? view.stop() : view.reload(); } catch (err) { /* not up yet */ }
+  });
+  const pick = btn("pick", "click something on the page to give it to the agent",
+                   () => pickFrom(tool));
+  const out = btn("⧉", "open it in your browser", () => { if (tool.url) SHELL.external(tool.url); });
+  const settle = () => {
+    back.disabled = !can("canGoBack");
+    fwd.disabled = !can("canGoForward");
+    renderTabs();
+    renderRail();
+  };
+  const go = (text) => {
+    const to = toAddress(text);
+    if (!to) return;
+    tool.url = to;
+    where.value = to;
+    try { view.loadURL(to).catch(() => {}); } catch (err) { view.setAttribute("src", to); }
+    if (view.focus) view.focus();
+  };
+  where.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") go(where.value);
+    else if (e.key === "Escape") { where.value = tool.url; where.blur(); }
+  });
+  where.addEventListener("focus", () => where.select && where.select());
+  const moved = (e) => {
+    if (e.isMainFrame === false) return;
+    tool.url = e.url === "about:blank" ? "" : e.url;
+    if (!tool.title || tool.title === "New tab" || e.type === "did-navigate") {
+      tool.title = tool.url ? hostOf(tool.url) : "New tab";
+    }
+    if (document.activeElement !== where) where.value = tool.url;
+    settle();
+  };
+  view.addEventListener("did-navigate", moved);
+  view.addEventListener("did-navigate-in-page", moved);
+  view.addEventListener("page-title-updated", (e) => {
+    if (e.title) { tool.title = e.title; settle(); }
+  });
+  view.addEventListener("did-start-loading", () => { el.classList.add("loading"); again.textContent = "✕"; });
+  view.addEventListener("did-stop-loading", () => { el.classList.remove("loading"); again.textContent = "↻"; settle(); });
+  view.addEventListener("did-fail-load", (e) => {
+    // -3 is "stopped": the person, or the page going somewhere else instead
+    if (e.isMainFrame && e.errorCode !== -3) {
+      toast(`could not load ${hostOf(e.validatedURL || tool.url)} — ${e.errorDescription || "no answer"}`, true);
+    }
+  });
+  bar.append(back, fwd, again, where, pick, out);
+  el.append(bar, view);
+  back.disabled = fwd.disabled = true;
+  addTool(tool);
+  showTool(id);
+  renderStatus();
+  return tool;
+}
+
+/* Which agent a picked element is for: the one whose conversation was last
+   on show, or the only one there is. */
+function pickTarget() {
+  const open = agentState.sessions.filter((s) => !s.ended && agentHere(s));
+  return open.find((s) => s.id === lastAgent) || (open.length === 1 ? open[0] : null);
+}
+
+async function pickFrom(tool) {
+  let got = null;
+  try { got = await tool.view.executeJavaScript(PICKER, true); }
+  catch (err) { toast("that page will not let itself be picked from", true); return; }
+  if (!got) return;
+  const text = [`From ${got.url}`, `Element: \`${got.selector}\` — ${got.size}, ${got.look}`,
+                got.text ? `It says: ${got.text.replace(/\s+/g, " ").slice(0, 200)}` : null,
+                "```html", got.html, "```", ""].filter((l) => l !== null).join("\n");
+  const s = pickTarget();
+  if (s) {
+    const had = agentDrafts.get(s.id) || "";
+    agentDrafts.set(s.id, (had ? had.replace(/\s*$/, "\n\n") : "") + text + "\n");
+    goToAgent(s);
+    toast(`added to your reply to “${s.title}” — say what to do with it`);
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("copied — paste it into a message to an agent");
+  } catch (err) { toast("could not copy it", true); }
+}
+
+
 // ----------------------------------------------------------------- keyboard
 window.addEventListener("keydown", (e) => keyHandler(e));
 
@@ -6236,6 +7118,11 @@ function keyHandler(e) {
     return;
   }
   if ($("palette").classList.contains("open")) return;
+  if (SHELL && (e.ctrlKey || e.metaKey) && (e.key === "t" || e.key === "T")) {
+    e.preventDefault();
+    openBrowser();
+    return;
+  }
   if ($("agent-new").classList.contains("open")) {
     if (e.key === "Escape") closeAgentNew();
     else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); startAgents(); }
@@ -6280,7 +7167,7 @@ function keyHandler(e) {
     return;
   }
   // a snapshot can be looked at, not changed
-  if (SNAPSHOT && ((e.key.length === 1 && "iwhudpnvaA".includes(e.key))
+  if (SNAPSHOT && ((e.key.length === 1 && "iwhudpnvaA`".includes(e.key))
                    || e.key === "F2" || e.key === "Delete")) return;
   if (/^[1-9]$/.test(e.key)) {
     const v = viewsList[Number(e.key) - 1];
@@ -6302,6 +7189,10 @@ function keyHandler(e) {
       break;
     case "a":
       openAgents(); break;
+    case "`":
+      e.preventDefault();
+      openTerminal({ cwd: sel && !sel.tag ? parentOfNode(sel) : viewRoot });
+      break;
     case "A":
       nextAgent(); break;
     case "w":
@@ -6434,6 +7325,29 @@ document.addEventListener("click", (e) => {
 
 // the dock, and what its buttons open
 $("d-agents").addEventListener("click", () => openAgents());
+$("rail-new").addEventListener("click", () => openAgentNew());
+$("rail-term").addEventListener("click", () => openTerminal({ cwd: viewRoot }));
+$("rail-shut").addEventListener("click", () => {
+  railShut = true;
+  keep.set("rail", "shut");
+  renderRail();
+});
+/* The pane's edge: drag it to give the conversation, or the graph, more room. */
+$("p-resize").addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  const move = (ev) => setPanelWidth(W - ev.clientX);
+  const up = () => {
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+    document.body.classList.remove("resizing");
+    setPanelWidth(panelWidth, true);
+    const tool = activeTool && tools.get(activeTool);
+    if (tool && tool.kind === "term" && tool.term.view) tool.term.view.fit();
+  };
+  document.body.classList.add("resizing");
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up);
+});
 $("an-ok").addEventListener("click", () => startAgents());
 $("an-cancel").addEventListener("click", () => closeAgentNew());
 $("agent-new").addEventListener("click", (e) => {
@@ -6567,7 +7481,9 @@ $("gone-retry").addEventListener("click", () => location.reload && location.relo
   window.addEventListener("beforeunload", (e) => {
     // ...or stop agents in the middle of their work: cortex quits with its
     // window, and takes what it started with it
-    if ((!drafts.size && !agentState.sessions.some(agentBusy)) || gone) return;
+    // or end whatever is running in a terminal
+    const running = [...terms.values()].some((t) => t.alive);
+    if ((!drafts.size && !agentState.sessions.some(agentBusy) && !running) || gone) return;
     e.preventDefault();
     e.returnValue = "";
   });
@@ -6589,7 +7505,21 @@ $("gone-retry").addEventListener("click", () => location.reload && location.relo
 
   applySemantic();          // not awaited: the graph should paint first
   loadGit();
-  if (!SNAPSHOT) loadAgents();
+  if (SHELL) {
+    // a link in a tab that wanted a window of its own gets a tab; and the
+    // browser's keys reach here from inside a tab
+    SHELL.onOpen((url) => openBrowser(url));
+    SHELL.onKey((name) => {
+      const tool = activeTool && tools.get(activeTool);
+      if (name === "address" && tool && tool.address) tool.address();
+    });
+  }
+  railShut = keep.get("rail") === "shut";
+  setPanelWidth(Number(keep.get("panel")) || 520);
+  renderTabs();
+  renderRail();
+  renderStatus();
+  if (!SNAPSHOT) { loadAgents(); loadTerms(); }
   if (SNAPSHOT && CFG.view) await applyView(CFG.view);
   if (SNAPSHOT) {
     // the dock has only tours to offer, and only when there are some

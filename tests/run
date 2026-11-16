@@ -27,7 +27,7 @@ syntax() {
     python3 -m py_compile "$f" || bad=1
   done
   if command -v node >/dev/null; then
-    for f in cortex/ui/*.js tests/*.js; do
+    for f in cortex/ui/*.js tests/*.js desktop/*.js; do
       node --check "$f" >/dev/null || bad=1
     done
   fi
@@ -61,6 +61,8 @@ step "python: history" python3 tests/test_history.py
 step "python: disk usage" python3 tests/test_du.py
 step "python: ghosts and suggestions" python3 tests/test_suggest.py
 step "python: agents" python3 tests/test_agents.py
+step "python: terminals" python3 tests/test_terminals.py
+step "python: its own window" python3 tests/test_shell.py
 
 # --- browser-side logic -----------------------------------------------------
 if command -v node >/dev/null; then
@@ -77,6 +79,9 @@ if command -v node >/dev/null; then
   step "modes" node tests/modes.test.js
   step "notes" node tests/notes.test.js
   step "agents" node tests/agents.test.js
+  step "terminal" node tests/terminal.test.js
+  step "workspace" node tests/workspace.test.js
+  step "browser tabs" node tests/browser.test.js
   step "quick capture" node tests/capture.test.js
   step "snapshot" node tests/snapshot.test.js
   step "performance" node tests/perf.test.js

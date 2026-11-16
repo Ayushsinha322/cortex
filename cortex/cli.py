@@ -15,7 +15,7 @@ import threading
 import webbrowser
 from urllib.request import pathname2url
 
-from . import __version__, agents, desktop, files, places
+from . import __version__, agents, desktop, files, places, shell
 from .actions import ActionRunner, C
 from .lifecycle import Lifecycle
 from .links import LinkIndex
@@ -168,6 +168,11 @@ def launch_window(url: str, mode: str, browser: str | None,
     """
     if mode == "none":
         return None
+    if mode == "desktop":
+        # the window of its own, where it has been set up; a browser's otherwise
+        if not browser and shell.launch(url):
+            return "cortex desktop"
+        mode = "app"
 
     profile = os.path.join(CACHE, "window")
     os.makedirs(profile, exist_ok=True)
@@ -215,10 +220,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="directory to map (default: your home directory)")
     p.add_argument("-p", "--port", type=int, default=0,
                    help="port to bind (default: pick a free one)")
-    p.add_argument("-w", "--window", choices=["app", "tab", "none"],
-                   default="app",
-                   help="app = chromeless window, tab = normal browser tab, "
-                        "none = just print the URL")
+    p.add_argument("-w", "--window", choices=["desktop", "app", "tab", "none"],
+                   default=None,
+                   help="desktop = cortex's own window, with real browser tabs "
+                        "(the default once it is set up: npm install in desktop/), "
+                        "app = a browser's window with no tabs or address bar, "
+                        "tab = a normal browser tab, none = just print the URL")
     p.add_argument("-b", "--browser", default=None,
                    help="force a specific browser binary")
     p.add_argument("-a", "--hidden", action="store_true",
@@ -273,6 +280,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    if args.window is None:
+        # its own window when there is one; and the quick-note window is too
+        # small a thing to start a second program for
+        args.window = "desktop" if shell.find() and not args.capture \
+            and not args.browser else "app"
     launched = args.launcher
     projects = load_projects()
 
@@ -448,6 +460,8 @@ def main(argv=None) -> int:
         httpd.shutdown()
         if ctx.agents is not None:
             ctx.agents.stop_all()       # nothing cortex started outlives it
+        if ctx.terminals is not None:
+            ctx.terminals.stop_all()
         ctx.links.stop()
         ctx.stop_feed()
         ctx.forget_bootstrap()

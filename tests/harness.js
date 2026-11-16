@@ -88,6 +88,9 @@ function element(id, ctx2d) {
     /* Enough of a selector engine for the class and tag lookups app.js does. */
     querySelectorAll(sel) { return descend(el, sel, []); },
     querySelector(sel) { return descend(el, sel, [], true)[0] || null; },
+    /* Attributes, for the few elements that are configured through them. */
+    setAttribute(k, v) { (el.attrs = el.attrs || {})[k] = String(v); },
+    getAttribute(k) { return el.attrs && k in el.attrs ? el.attrs[k] : null; },
     focus() { el.focused = true; },
     blur() { el.focused = false; el.blurs = (el.blurs || 0) + 1; },
     select() {}, scrollTo() {}, scrollIntoView() {},

@@ -812,3 +812,188 @@ body.capture #dock,body.capture #panel{display:none}
   padding-right:max(20px,calc(50% - 46ch))}
 /* not a path: words, which break between themselves */
 #panel.agent #p-path{word-break:normal;font-family:var(--sans);font-size:12px;cursor:default}
+
+
+/* ------------------------------------------------------------- workspace
+
+   The window as panes that are docked rather than panels that float: a bar
+   across the top, a rail down the left, the reader as a tabbed pane on the
+   right with an edge to drag, a status bar along the bottom. The graph is
+   still the whole window underneath; these sit over its edges, and the
+   graph centres itself in what they leave. */
+:root{--bar-h:46px;--status-h:26px;--rail-w:232px;--panel-w:520px;--pane:#090d16}
+
+#bar{top:0;left:0;right:0;height:var(--bar-h);z-index:25;padding:0 10px;border:none;
+  border-bottom:1px solid var(--line);border-radius:0;background:#0a0e17;
+  backdrop-filter:none;box-shadow:none}
+body.sidebar-open #bar{left:0}
+#bar .ghost,#bar .place,#bar .scope{padding-top:5px;padding-bottom:5px}
+#q{padding-top:6px;padding-bottom:6px}
+
+#sidebar{top:var(--bar-h);bottom:var(--status-h);background:var(--pane);
+  backdrop-filter:none;box-shadow:none}
+
+#rail{position:fixed;top:var(--bar-h);left:0;bottom:var(--status-h);width:var(--rail-w);
+  z-index:14;display:flex;flex-direction:column;background:var(--pane);
+  border-right:1px solid var(--line);overflow-y:auto;padding-bottom:10px}
+#rail[hidden]{display:none}
+#rail::-webkit-scrollbar{width:8px}
+#rail::-webkit-scrollbar-thumb{background:#1c2740;border-radius:6px}
+#rail-do{padding:8px 6px 4px;border-bottom:1px solid var(--line)}
+.rail-do{display:flex;align-items:center;gap:9px;width:100%;text-align:left;background:none;
+  border:none;border-radius:7px;padding:6px 8px;cursor:pointer;color:var(--fg-dim);
+  font-size:12.5px}
+.rail-do:hover{background:#111a2b;color:var(--fg)}
+.rail-do .g{flex:none;width:18px;text-align:center;font:11px var(--mono);color:var(--fg-faint)}
+.rail-do .nm{flex:1}
+.rail-do kbd{font:10px var(--mono);color:var(--fg-faint);background:none;border:none;padding:0}
+.rail-do kbd[hidden]{display:none}
+.rail-head{display:flex;align-items:center;gap:2px;padding:14px 8px 5px 14px;flex:none}
+.rail-head[hidden]{display:none}
+.rail-title{flex:1;font-size:10px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--fg-faint);font-weight:700}
+.rail-btn{background:none;border:none;color:var(--fg-faint);width:22px;height:22px;
+  border-radius:6px;cursor:pointer;font-size:15px;line-height:1}
+.rail-btn:hover{background:#141d2f;color:var(--fg)}
+.rail-row{display:flex;align-items:flex-start;gap:8px;width:calc(100% - 12px);margin:1px 6px;
+  text-align:left;background:none;border:none;border-radius:8px;padding:6px 8px;
+  cursor:pointer;color:var(--fg-dim)}
+.rail-row:hover{background:#111a2b}
+.rail-row.on{background:#12203a;color:#dbe7ff}
+.rail-row .g{flex:none;width:18px;text-align:center;font:11px/18px var(--mono);
+  color:var(--fg-faint)}
+.rail-row .g.spin{animation:rail-turn 2.4s linear infinite}
+@keyframes rail-turn{to{transform:rotate(360deg)}}
+.rail-row .tx{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.rail-row .nm{font-size:12.5px;line-height:18px;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.rail-row .sub{font-size:10.5px;color:var(--fg-faint);overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.rail-row.need .nm{color:var(--fg);font-weight:600}
+.rail-row.need .sub{color:#f5a524}
+.rail-row .x{flex:none;opacity:0;font-size:10px;line-height:18px;padding:0 5px;border-radius:5px;
+  color:var(--fg-faint)}
+.rail-row:hover .x{opacity:.7}
+.rail-row .x:hover{opacity:1;background:#1c2740;color:#ff9db0}
+.rail-empty{padding:1px 16px 6px;font-size:11.5px;color:var(--fg-faint)}
+
+/* the reader, as a pane */
+#panel{top:var(--bar-h);bottom:var(--status-h);width:var(--panel-w);background:#080c14;
+  backdrop-filter:none;box-shadow:none}
+#panel.max{top:0;bottom:0;z-index:30}
+body.resizing{cursor:col-resize;user-select:none}
+body.resizing #panel{transition:none}
+body.resizing iframe{pointer-events:none}
+#p-resize{position:absolute;left:-3px;top:0;bottom:0;width:7px;cursor:col-resize;z-index:3}
+#p-resize:hover,body.resizing #p-resize{background:#4c8dff66}
+#panel.max #p-resize{display:none}
+#p-tabs{flex:none;display:flex;align-items:stretch;height:34px;background:#0a0e17;
+  border-bottom:1px solid var(--line);overflow-x:auto;scrollbar-width:none}
+#p-tabs::-webkit-scrollbar{display:none}
+.p-tab{flex:none;display:flex;align-items:center;gap:7px;max-width:230px;padding:0 8px 0 12px;
+  background:none;border:none;border-right:1px solid var(--line);color:var(--fg-faint);
+  font-size:12px;cursor:pointer;white-space:nowrap}
+.p-tab:hover{color:var(--fg-dim);background:#0d1320}
+.p-tab.on{background:#080c14;color:var(--fg);box-shadow:inset 0 2px 0 var(--accent)}
+.p-tab .g{flex:none;font:10.5px var(--mono);color:var(--fg-faint)}
+.p-tab .nm{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.p-tab .x{flex:none;opacity:0;font-size:9.5px;padding:3px 5px;border-radius:5px}
+.p-tab:hover .x,.p-tab.on .x{opacity:.55}
+.p-tab .x:hover{opacity:1;background:#1c2740}
+.p-tab.need .g{color:#f5a524}
+.p-tab.need .nm::after{content:"";display:inline-block;width:6px;height:6px;margin-left:7px;
+  border-radius:50%;background:#f5a524;vertical-align:middle}
+.p-tab.add{border-right:none;font-size:16px;padding:0 13px;color:var(--fg-faint)}
+#panel.tool #p-head,#panel.tool #p-acts,#panel.tool #p-links,#panel.tool #p-body{display:none}
+/* Out of sight, a tool is made to take no room rather than not displayed: a
+   browser tab that is not displayed is a tab that is thrown away. */
+#p-tool{flex:1;min-height:0;display:flex;position:relative}
+#panel:not(.tool) #p-tool,#p-tool > .off{position:absolute;visibility:hidden;width:0;height:0;
+  flex:none;overflow:hidden;pointer-events:none}
+
+/* along the bottom */
+#status{position:fixed;left:0;right:0;bottom:0;height:var(--status-h);z-index:25;
+  display:flex;align-items:center;gap:12px;padding:0 6px 0 12px;background:#0a0e17;
+  border-top:1px solid var(--line);font-size:11.5px;color:var(--fg-dim)}
+#status .spacer{flex:1}
+#stats{position:static;padding:0;gap:9px;font-size:11.5px;white-space:nowrap;overflow:hidden}
+body.sidebar-open #stats{left:auto}
+#zoomer{position:static;padding:0;gap:0}
+#zoomer button{width:22px;height:20px;font-size:14px;border-radius:5px}
+#z-level{min-width:40px;font-size:10.5px}
+#st-right{display:flex;align-items:center;gap:4px;flex:none}
+.st-chip{background:none;border:none;border-radius:5px;padding:2px 8px;cursor:pointer;
+  color:var(--fg-dim);font:11px var(--mono);white-space:nowrap}
+.st-chip:hover{background:#141d2f;color:var(--fg)}
+.st-chip.busy{color:#7fe3ea}
+.st-chip.need{color:#1a1204;background:#f5a524}
+
+/* what floated at the bottom now floats above the status bar, at one height */
+#dock,body.dock-high #dock{bottom:calc(var(--status-h) + 10px)}
+#pop,body.dock-high #pop{bottom:calc(var(--status-h) + 58px)}
+#feed,#timeline,body.dock-high #timeline,#tourcard,body.dock-high #tourcard{
+  bottom:calc(var(--status-h) + 58px)}
+#toast{bottom:calc(var(--status-h) + 110px)}
+
+/* ----------------------------------------------------------- a terminal */
+.term{flex:1;min-width:0;position:relative;display:flex;background:#070910;
+  --t-fg:#d7deea;--t-bg:#070910}
+/* the scrollbar's room is kept whether or not it is showing, so the number
+   of columns that fit does not change the moment there is something to
+   scroll */
+.t-scroll{flex:1;min-width:0;overflow-y:auto;overflow-x:hidden;padding:6px 4px 0 10px;
+  scrollbar-gutter:stable;
+  font:13px/17px var(--mono);color:var(--t-fg);cursor:text;font-variant-ligatures:none}
+.t-scroll::-webkit-scrollbar{width:10px}
+.t-scroll::-webkit-scrollbar-thumb{background:#1c2740;border-radius:6px;
+  border:3px solid transparent;background-clip:content-box}
+.t-row{height:17px;white-space:pre;overflow:hidden}
+.t-probe{display:inline-block;position:absolute;visibility:hidden;white-space:pre}
+.t-in{position:absolute;left:0;bottom:0;width:2px;height:2px;opacity:0;border:none;padding:0;
+  resize:none;outline:none;overflow:hidden}
+.t-w1,.t-w2{display:inline-block;height:17px;vertical-align:top;text-align:center;
+  overflow:visible}
+.t-w1{width:1ch}
+.t-w2{width:2ch}
+.t-b{font-weight:700}
+.t-d{opacity:.6}
+.t-i{font-style:italic}
+.t-u{text-decoration:underline}
+.t-s{text-decoration:line-through}
+.t-h{visibility:hidden}
+.t-fi{color:var(--t-bg)}
+.t-gi{background:var(--t-fg)}
+.t-cur{outline:1px solid #8996ad;outline-offset:-1px}
+.term.focus .t-cur{outline:none;background:#e6ebf4;color:#070910}
+.t-f0{color:#1b2434}.t-g0{background:#1b2434}
+.t-f1{color:#f2616f}.t-g1{background:#f2616f}
+.t-f2{color:#3ecf8e}.t-g2{background:#3ecf8e}
+.t-f3{color:#f5b041}.t-g3{background:#f5b041}
+.t-f4{color:#5b9dff}.t-g4{background:#5b9dff}
+.t-f5{color:#c58af9}.t-g5{background:#c58af9}
+.t-f6{color:#39c5cf}.t-g6{background:#39c5cf}
+.t-f7{color:#c9d1e0}.t-g7{background:#c9d1e0}
+.t-f8{color:#5c6880}.t-g8{background:#5c6880}
+.t-f9{color:#ff8b96}.t-g9{background:#ff8b96}
+.t-f10{color:#6ee7b0}.t-g10{background:#6ee7b0}
+.t-f11{color:#ffd166}.t-g11{background:#ffd166}
+.t-f12{color:#8fb8ff}.t-g12{background:#8fb8ff}
+.t-f13{color:#d8b4fe}.t-g13{background:#d8b4fe}
+.t-f14{color:#7fe3ea}.t-g14{background:#7fe3ea}
+.t-f15{color:#f4f7fc}.t-g15{background:#f4f7fc}
+
+/* ------------------------------------------------------------ a preview */
+.web{flex:1;min-width:0;display:flex;flex-direction:column}
+.web-bar{flex:none;display:flex;align-items:center;gap:6px;padding:6px 8px;
+  border-bottom:1px solid var(--line)}
+.web-bar input{flex:1;min-width:0;background:#0a0e17;border:1px solid var(--line);
+  border-radius:7px;padding:4px 9px;outline:none;font:12px var(--mono);color:var(--fg-dim)}
+.web-bar input:focus{border-color:#2c4a86;color:var(--fg)}
+.web-frame{flex:1;min-height:0;border:none;background:#fff}
+webview.web-frame{display:flex}
+.web-bar button:disabled{opacity:.3;cursor:default}
+.web.loading .web-bar{box-shadow:inset 0 -2px 0 var(--accent)}
+body.resizing webview{pointer-events:none}
+
+/* every scrollbar in the window is a dark, thin one */
+*{scrollbar-width:thin;scrollbar-color:#1f2b45 transparent}

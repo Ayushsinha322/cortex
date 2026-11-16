@@ -168,6 +168,8 @@ def build(scanner, links, root: str, request: dict) -> tuple[bytes, dict]:
                      _script(_read("snapshot.js")) + "\n" + _script(_read("markdown.js")))
             .replace('<script src="/static/highlight.js"></script>',
                      _script(_read("highlight.js")))
+            # a shared map has nothing to run a terminal on
+            .replace('<script src="/static/terminal.js"></script>\n', "")
             .replace('<script src="/static/app.js"></script>',
                      _script(_read("app.js"))))
     body = page.encode("utf-8")

@@ -16,13 +16,15 @@ import posixpath
 import secrets
 import socketserver
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, quote
 
 from . import (desktop, dismissed, files, gitstatus, grep, journal, layout, places,
                reader, snapshot, tours, views)
-from . import agents, history
+from . import agents, history, terminals
 from .agents import Pool
+from .terminals import Terminals
 from .activity import Activity
 from .du import DiskUsage
 
@@ -34,12 +36,14 @@ log = logging.getLogger("cortex")
 # second lock: nothing may execute except our own scripts, and the only inline
 # script is the config blob, which carries a fresh nonce each time the page is
 # served.  Remote images are still allowed, because notes legitimately use them.
+# A frame may also hold a page served on this machine -- the preview tab,
+# showing a dev server -- which is another origin and cannot reach into ours.
 CSP = ("default-src 'none'; "
        "script-src 'self' 'nonce-{nonce}'; "
        "style-src 'self'; "
        "img-src 'self' data: https:; "
        "media-src 'self'; "
-       "frame-src 'self'; "
+       "frame-src 'self' http://localhost:* http://127.0.0.1:*; "
        "connect-src 'self'; "
        "base-uri 'none'; "
        "form-action 'none'; "
@@ -118,14 +122,22 @@ class Context:
         # to cortex rather than to the folder: opening another folder does
         # not stop what is working in the last one.
         self.agents = None
+        self.terminals = None              # and the terminals in the window, likewise
         self._agents_lock = threading.Lock()
+        self._noted = 0.0                  # when a terminal last rang the desktop
 
     def pool(self) -> Pool:
         with self._agents_lock:
             if self.agents is None:
-                self.agents = Pool(notify=desktop.notify, runner=self.runner,
+                self.agents = Pool(notify=desktop.notify,
                                    state_file=agents.STATE_FILE)
             return self.agents
+
+    def terms(self) -> Terminals:
+        with self._agents_lock:
+            if self.terminals is None:
+                self.terminals = Terminals()
+            return self.terminals
 
     def disk(self):
         with self._activity_lock:
@@ -479,6 +491,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": "no such agent"}, 404)
             return self._json(got)
 
+        if route == "/api/terms":
+            if self.ctx.read_only or not terminals.supported():
+                return self._json({"off": True, "seq": 0, "chunks": [], "terms": []})
+            try:
+                since = int((params.get("since") or ["0"])[0])
+                wait = min(25.0, max(0.0, float((params.get("wait") or ["0"])[0])))
+            except ValueError:
+                return self._json({"error": "bad since"}, 400)
+            return self._json(self.ctx.terms().poll(since, wait))
+
+        if route == "/api/term/replay":
+            got = self.ctx.terms().replay((params.get("id") or [""])[0])
+            if got is None:
+                return self._json({"error": "no such terminal"}, 404)
+            return self._json(got)
+
         if route == "/api/agent/diff":
             got = self.ctx.pool().review((params.get("id") or [""])[0],
                                          (params.get("path") or [None])[0])
@@ -531,6 +559,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/snapshot": self._snapshot,
             "/api/dismiss": self._dismiss,
             "/api/agents": self._agents,
+            "/api/term": self._term,
         }
         handler = routes.get(url.path)
         if handler is None:
@@ -813,6 +842,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True, "ids": [g["id"] for g in started],
                                "errors": [e["error"] for e in errors]})
         if op == "send":
+            if self.ctx.terminals is not None and self.ctx.terminals.holds(sid):
+                return self._json({"ok": False, "error": "it is open in a terminal tab - "
+                                   "close that tab to talk to it here"})
             return self._json(pool.send(sid, body.get("text")))
         if op == "answer":
             return self._json(pool.answer(sid, body.get("request"), bool(body.get("allow")),
@@ -826,9 +858,67 @@ class Handler(BaseHTTPRequestHandler):
         if op == "keep":
             return self._json(pool.keep(sid))
         if op == "forget":
-            return self._json(pool.forget(sid, discard=body.get("discard") is True))
-        if op in ("terminal", "takeover"):
-            return self._json(pool.terminal(sid, takeover=op == "takeover"))
+            got = pool.forget(sid, discard=body.get("discard") is True)
+            if got.get("ok") and self.ctx.terminals is not None:
+                self.ctx.terminals.close_owned(sid)     # its folder has gone
+            return self._json(got)
+        return self._json({"ok": False, "error": f"unknown operation {op!r}"})
+
+    def _term(self, body):
+        """A terminal in the window: open one, type into it, size it, close it."""
+        if not self._writable():
+            return
+        terms, op, tid = self.ctx.terms(), body.get("op"), body.get("id")
+        if op == "open":
+            cols, rows = body.get("cols") or 100, body.get("rows") or 30
+            if not isinstance(cols, int) or not isinstance(rows, int):
+                return self._json({"ok": False, "error": "bad size"}, 400)
+            owner = body.get("agent")
+            if owner:
+                # an agent's folder, and if asked, the agent itself: both
+                # are the pool's to name, never the page's
+                if terms.holds(owner):
+                    return self._json({"ok": False, "error": "it is already open in a tab"})
+                spec = self.ctx.pool().handoff(owner, takeover=bool(body.get("takeover")))
+                if not spec.get("ok"):
+                    return self._json(spec)
+                return self._json(terms.open(spec["argv"], spec["cwd"], spec["title"],
+                                             kind=spec["kind"], owner=owner,
+                                             cols=cols, rows=rows))
+            raw = body.get("cwd")
+            cwd = self._inside(raw) if raw else self.ctx.scanner.root
+            if cwd and os.path.isfile(cwd):
+                cwd = os.path.dirname(cwd)
+            if not cwd or not os.path.isdir(cwd):
+                return self._json({"ok": False, "error": "that folder is not in "
+                                                         "what cortex has open"}, 400)
+            wanted = body.get("run")
+            if wanted:
+                # an agent's own interface, started fresh in this folder: one
+                # of the programs cortex knows, chosen by name
+                agent = next((a for a in agents.available() if a["id"] == wanted), None)
+                if agent is None:
+                    return self._json({"ok": False, "error": f"{wanted} is not installed"})
+                return self._json(terms.open([agent["exe"]], cwd, agent["label"],
+                                             kind="agent", cols=cols, rows=rows))
+            return self._json(terms.open(terminals.default_shell(), cwd,
+                                         os.path.basename(cwd) or cwd,
+                                         cols=cols, rows=rows))
+        if op == "input":
+            return self._json(terms.write(tid, body.get("data")))
+        if op == "resize":
+            return self._json(terms.resize(tid, body.get("cols"), body.get("rows")))
+        if op == "close":
+            return self._json(terms.close(tid))
+        if op == "attention":
+            # a program in a tab rang its bell while the window was not being
+            # looked at; at most one of these every few seconds
+            now = time.monotonic()
+            if now - self.ctx._noted > 3.0:
+                self.ctx._noted = now
+                desktop.notify(str(body.get("title") or "cortex")[:120],
+                               str(body.get("body") or "")[:240])
+            return self._json({"ok": True})
         return self._json({"ok": False, "error": f"unknown operation {op!r}"})
 
     def _quit(self, body):

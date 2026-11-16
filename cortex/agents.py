@@ -212,6 +212,14 @@ def read_claude(obj: dict) -> list[dict]:
         if req.get("subtype") == "can_use_tool":
             out.append({"k": "ask", "id": obj.get("request_id"), "input": req.get("input"),
                         **describe_tool(req.get("tool_name") or "tool", req.get("input"))})
+    elif kind == "rate_limit_event":
+        windows = (obj.get("rate_limit_info") or {}).get("unifiedWindows")
+        if isinstance(windows, dict):
+            seen = {name: {"used": w.get("utilization"), "resets": w.get("resetsAt")}
+                    for name, w in windows.items()
+                    if isinstance(w, dict) and isinstance(w.get("utilization"), (int, float))}
+            if seen:
+                out.append({"k": "usage", "windows": seen})
     elif kind == "result":
         out.append({"k": "turn", "ok": not obj.get("is_error"),
                     "cost": obj.get("total_cost_usd"), "ms": obj.get("duration_ms"),
@@ -360,14 +368,13 @@ class Pool:
     events are asked for separately, by the window that has it open.
     """
 
-    def __init__(self, notify=None, runner=None, config: str | None = None,
+    def __init__(self, notify=None, config: str | None = None,
                  state_file: str | None = None, tree_root: str | None = None) -> None:
         self._lock = threading.RLock()
         self._changed = threading.Condition(self._lock)
         self._sessions: dict[str, Session] = {}
         self._rev = 1
         self._notify = notify
-        self._runner = runner
         self._config = config
         self._state_file = state_file        # None: nothing is kept across a restart
         self._tree_root = tree_root          # where worktrees go; tests set it
@@ -376,6 +383,7 @@ class Pool:
         self._stopping = False
         self._listed: list[dict] | None = None
         self._listed_at = 0.0
+        self._usage: dict[str, dict] = {}
         self._load()
 
     # -- what the window reads ---------------------------------------------
@@ -401,7 +409,7 @@ class Pool:
                     break
                 self._changed.wait(left)
             sessions = [s.summary() for s in self._sessions.values()]
-            rev = self._rev
+            rev, usage = self._rev, dict(self._usage)
         writers: dict[str, list[str]] = {}
         for s in sessions:
             if s["ended"]:
@@ -412,7 +420,7 @@ class Pool:
         conflicts = [{"path": p, "sessions": ids}
                      for p, ids in sorted(writers.items()) if len(ids) > 1]
         return {"rev": rev, "sessions": sessions, "conflicts": conflicts,
-                "agents": self.agents(), "git": worktrees.available()}
+                "agents": self.agents(), "git": worktrees.available(), "usage": usage}
 
     def events(self, sid: str, after: int = 0) -> dict | None:
         with self._lock:
@@ -669,31 +677,37 @@ class Pool:
         self._save()
         return {"ok": True}
 
-    def terminal(self, sid, takeover: bool = False) -> dict:
-        """A terminal in the agent's folder -- or the agent itself in one,
-        carrying on the same conversation."""
+    def handoff(self, sid, takeover: bool = False) -> dict:
+        """What to run in a terminal for this agent: a shell in its folder,
+        or the agent's own interface carrying on the same conversation.
+
+        {"ok", "argv", "cwd", "title", "kind"}. cortex lets go of the
+        conversation first: two programs writing one is how they are lost.
+        """
         s = self.get(sid)
         if s is None:
             return {"ok": False, "error": "no such agent"}
-        if self._runner is None or self._runner.mode is None:
-            return {"ok": False, "error": "there is no terminal to open"}
         if not os.path.isdir(s.cwd):
             return {"ok": False, "error": "the folder it was working in is gone"}
         if not takeover:
-            shell = os.environ.get("SHELL", "/bin/sh")
-            return self._runner.run([shell], s.cwd, f"shell in {s.title}", hold=False)
-        if not s.sid or s.agent["speaks"] not in ("claude", "codex"):
-            return {"ok": False, "error": "this agent has no conversation to pick up"}
+            shell = os.environ.get("SHELL") or "/bin/sh"
+            return {"ok": True, "argv": [shell], "cwd": s.cwd, "kind": "shell",
+                    "title": s.title}
+        if s.ended:
+            return {"ok": False, "error": "this one is finished: its work was " + s.ended}
+        if s.agent["speaks"] not in ("claude", "codex"):
+            return {"ok": False, "error": "this agent has no interface of its own to open"}
         if self._busy(s):
             return {"ok": False, "error": "it is still working - wait, or stop it first"}
-        # two programs writing one conversation is how conversations are lost
         self._end_process(s)
-        argv = ([s.agent["exe"], "--resume", s.sid] if s.agent["speaks"] == "claude"
-                else [s.agent["exe"], "resume", s.sid])
+        argv = [s.agent["exe"]]
+        if s.sid:
+            argv += ["--resume", s.sid] if s.agent["speaks"] == "claude" else ["resume", s.sid]
         with self._lock:
-            self._emit(s, {"k": "note", "text": f"carried on in {s.agent['label']} itself, "
-                           "in a terminal; a message here picks it up afterwards"})
-        return self._runner.run(argv, s.cwd, f"{s.agent['label']}: {s.title}")
+            self._emit(s, {"k": "note", "text": f"opened in {s.agent['label']} itself; "
+                           "a message here picks the conversation up afterwards"})
+        return {"ok": True, "argv": argv, "cwd": s.cwd, "kind": "agent",
+                "title": f"{s.agent['label']} · {s.title}"}
 
     def stop_all(self) -> None:
         """cortex is quitting: nothing it started is left running."""
@@ -862,6 +876,14 @@ class Pool:
             if kind == "sid":
                 if event.get("sid"):
                     s.sid = event["sid"]
+                return
+            if kind == "usage":
+                # how much of the account's allowance is gone: about the
+                # agent, not this task, so it is kept for all of them
+                self._usage[s.agent["id"]] = {"label": s.agent["label"],
+                                              "windows": event["windows"],
+                                              "at": time.time()}
+                self._bump()
                 return
             if kind == "tool":
                 self._touch(s, event)
@@ -1065,6 +1087,8 @@ class Pool:
         with self._lock:
             data = {"colors": self._colors,
                     "sessions": [s.saved() for s in self._sessions.values()]}
+        if not data["sessions"] and not os.path.exists(self._state_file):
+            return                       # nothing to remember, and nothing to forget
         folder = os.path.dirname(self._state_file)
         try:
             os.makedirs(folder, exist_ok=True)

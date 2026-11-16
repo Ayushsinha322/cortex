@@ -24,6 +24,22 @@
   <div class="sb-foot">Closing brings the whole map back</div>
 </aside>
 
+<!-- left rail: the agents at work, and the terminals open -->
+<aside id="rail" hidden>
+  <div id="rail-do"></div>
+  <div class="rail-head">
+    <span class="rail-title">Agents</span>
+    <button id="rail-new" class="rail-btn" title="New agent (a)">+</button>
+    <button id="rail-shut" class="rail-btn" title="Hide this rail — ctrl-k brings it back">&#8249;</button>
+  </div>
+  <div id="rail-agents"></div>
+  <div id="rail-terms-head" class="rail-head">
+    <span class="rail-title">Tabs</span>
+    <button id="rail-term" class="rail-btn" title="New terminal (`)">+</button>
+  </div>
+  <div id="rail-terms"></div>
+</aside>
+
 <!-- top command bar -->
 <header id="bar">
   <button id="sb-toggle" class="ghost icon" title="Directories (s)">&#9776;</button>
@@ -57,8 +73,9 @@
   <button id="btn-help" class="ghost" title="Keyboard shortcuts">?</button>
 </header>
 
-<!-- bottom left: what you are looking at -->
-<div id="stats" class="glass">
+<!-- along the bottom: what you are looking at, who is working, the zoom -->
+<footer id="status">
+<div id="stats">
   <span id="stat-nodes">0 nodes</span>
   <span class="sep"></span>
   <span id="stat-links">0 links</span>
@@ -69,6 +86,14 @@
   <span id="stat-drafts" class="drafts" hidden></span>
   <span id="stat-ro" class="muted" hidden>read-only</span>
 </div>
+<span class="spacer"></span>
+<div id="st-right"></div>
+<div id="zoomer">
+  <button id="z-out" title="Zoom out">−</button>
+  <span id="z-level">100%</span>
+  <button id="z-in" title="Zoom in">+</button>
+</div>
+</footer>
 
 <!-- bottom middle: the modes -- each is a different way of looking -->
 <nav id="dock" class="glass">
@@ -116,15 +141,11 @@
 <!-- the chain between two files -->
 <div id="pathcard" class="glass" hidden></div>
 
-<!-- bottom right: zoom -->
-<div id="zoomer" class="glass">
-  <button id="z-out" title="Zoom out">−</button>
-  <span id="z-level">100%</span>
-  <button id="z-in" title="Zoom in">+</button>
-</div>
-
 <!-- right: the reader -->
 <aside id="panel">
+  <div id="p-resize" title="Drag to resize"></div>
+  <!-- what is open in this pane: the selection, terminals, previews -->
+  <div id="p-tabs"></div>
   <div id="p-head">
     <div class="row">
       <span id="p-kind" class="chip"></span>
@@ -145,6 +166,8 @@
   <section id="p-links" hidden></section>
 
   <div id="p-body"></div>
+  <!-- a terminal or a preview, when that is the tab on show -->
+  <div id="p-tool"></div>
 </aside>
 
 <!-- overlays -->
@@ -284,6 +307,7 @@
       <dt><kbd>shift-click</kbd></dt><dd>the chain of links from the selection to there</dd>
       <dt><kbd>a</kbd></dt><dd>agents: give one a task, or see what each is doing</dd>
       <dt><kbd>A</kbd></dt><dd>go to the agent that is waiting on you</dd>
+      <dt><kbd>`</kbd></dt><dd>a terminal, in a tab, in the selected folder</dd>
       <dt><kbd>w</kbd></dt><dd>live: watch files light up as they change</dd>
       <dt><kbd>h</kbd></dt><dd>history: replay this folder through git</dd>
       <dt><kbd>T</kbd></dt><dd>tours: play one, or record your own</dd>
@@ -313,6 +337,7 @@
 <script nonce="__NONCE__">window.CORTEX = __CONFIG__;</script>
 <script src="/static/markdown.js"></script>
 <script src="/static/highlight.js"></script>
+<script src="/static/terminal.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

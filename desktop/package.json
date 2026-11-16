@@ -1,0 +1,14 @@
+{
+  "name": "cortex-desktop",
+  "version": "0.2.0",
+  "private": true,
+  "description": "cortex in a window of its own, with a real browser in its tabs",
+  "main": "main.js",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^45.3.3"
+  }
+}

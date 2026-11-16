@@ -761,27 +761,43 @@ class TestOtherAgents(Fixture):
         self.assertEqual(self.launches(), [])        # the stand-in for claude never ran
 
 
-class TestTerminal(Fixture):
+class TestHandingOver(Fixture):
     def test_a_shell_in_its_folder_and_the_agent_itself(self):
-        runner = ActionRunner(tty=True)
-        self.pool = self.new_pool(runner=runner)
         s = self.settled(self.start("edit", mode="here"))
-        got = self.pool.terminal(s.id)
-        self.assertEqual((got["ok"], got["how"]), (True, "here"))
-        job = runner.q.get_nowait()
-        self.assertEqual((job["kind"], job["cwd"], job["hold"]), ("run", self.repo, False))
+        got = self.pool.handoff(s.id)
+        self.assertEqual((got["ok"], got["cwd"], got["kind"]), (True, self.repo, "shell"))
 
-        got = self.pool.terminal(s.id, takeover=True)
+        got = self.pool.handoff(s.id, takeover=True)
         self.assertTrue(got["ok"], got)
-        job = runner.q.get_nowait()
-        self.assertEqual(job["argv"][1:], ["--resume", s.sid])
-        self.assertEqual(os.path.basename(job["argv"][0]), "claude")
+        self.assertEqual(got["argv"][1:], ["--resume", s.sid])
+        self.assertEqual(os.path.basename(got["argv"][0]), "claude")
+        self.assertEqual((got["kind"], got["cwd"]), ("agent", self.repo))
+        # cortex has let go of the conversation: two writers is how one is lost
         until(lambda: s.proc is None, what="cortex to let go of the conversation")
 
-    def test_no_terminal_no_offer(self):
-        self.pool = self.new_pool(runner=ActionRunner(tty=False, terminal=[]))
+    def test_only_a_conversation_that_is_resting_can_be_handed_over(self):
+        s = self.start("hang")
+        until(lambda: "tool" in self.kinds(s), what="it to be busy")
+        self.assertFalse(self.pool.handoff(s.id, takeover=True)["ok"])
+        self.assertFalse(self.pool.handoff("nope")["ok"])
+        plain = self.settled(self.start("tidy", agent="plain", mode="here"))
+        self.assertFalse(self.pool.handoff(plain.id, takeover=True)["ok"])
+
+    def test_claude_says_how_much_of_the_allowance_is_gone(self):
+        got = read_claude({"type": "rate_limit_event", "rate_limit_info": {
+            "status": "allowed", "unifiedWindows": {
+                "five_hour": {"utilization": 0.25, "resetsAt": 1794839400, "status": "allowed"},
+                "seven_day": {"utilization": 0.08, "resetsAt": 1795114800}}}})
+        self.assertEqual(got, [{"k": "usage", "windows": {
+            "five_hour": {"used": 0.25, "resets": 1794839400},
+            "seven_day": {"used": 0.08, "resets": 1795114800}}}])
+        self.assertEqual(read_claude({"type": "rate_limit_event", "rate_limit_info": {}}), [])
         s = self.settled(self.start("edit", mode="here"))
-        self.assertFalse(self.pool.terminal(s.id)["ok"])
+        self.pool._take(s, got[0])
+        usage = self.pool.state()["usage"]["claude"]
+        self.assertEqual((usage["label"], usage["windows"]["five_hour"]["used"]),
+                         ("Claude Code", 0.25))
+        self.assertNotIn("usage", self.kinds(s))       # about the account, not the task
 
 
 # ----------------------------------------------------------- over the wire

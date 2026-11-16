@@ -333,20 +333,6 @@ class ActionRunner:
         how = "app" if gui else self.mode
         return {"ok": True, "terminal": how == "here", "how": how}
 
-    # called from the HTTP thread
-    def run(self, argv: list[str], cwd: str, label: str, hold: bool = True) -> dict:
-        """A program in a terminal, in `cwd`: the one cortex was started in,
-        or a window of its own. For commands cortex builds itself -- an
-        agent's own interface, a shell in its folder -- never one a page sent.
-        """
-        if self.mode is None:
-            return {"ok": False, "error": "there is no terminal to run that in"}
-        if not os.path.isdir(cwd):
-            return {"ok": False, "error": "that folder no longer exists"}
-        self.q.put({"kind": "run", "argv": list(argv), "cwd": cwd, "label": label,
-                    "hold": hold})
-        return {"ok": True, "terminal": self.mode == "here", "how": self.mode}
-
     # main thread
     def run_forever(self, until=None) -> None:
         """Run actions as they arrive, until stopped or `until()` says so."""
@@ -363,10 +349,6 @@ class ActionRunner:
                 print(f"{C['red']}  action failed: {exc}{C['off']}")
 
     def _run(self, job: dict) -> None:
-        if job["kind"] == "run":
-            self._foreground(job["argv"], job["label"], cwd=job["cwd"],
-                             hold=job.get("hold", True))
-            return
         kind, path, editor = job["kind"], job["path"], job.get("editor")
         line = job.get("line")
         short = path.replace(os.path.expanduser("~"), "~", 1)
