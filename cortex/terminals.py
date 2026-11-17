@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import base64
 import fcntl
+import json
 import os
 import signal
 import struct
@@ -36,7 +37,9 @@ import time
 import uuid
 from collections import deque
 
-MAX_TERMINALS = 16
+MAX_TERMINALS = 32
+MAX_LAYOUTS = 32                 # arrangements of panes remembered, one per tab
+MAX_LAYOUT = 16 * 1024           # bytes of one, as JSON
 LOG_BYTES = 4 * 1024 * 1024      # held for the long poll, across all terminals
 REPLAY_BYTES = 256 * 1024        # held per terminal, for a window that reloads
 MAX_INPUT = 1024 * 1024          # one write; a paste can be long, not endless
@@ -85,6 +88,7 @@ def default_shell() -> list[str]:
 class Terminal:
     def __init__(self, tid: str, title: str, cwd: str, kind: str, owner: str | None) -> None:
         self.id = tid
+        self.mux = tid                  # the tab it is a pane of; its own, until told
         self.title = title
         self.cwd = cwd
         self.kind = kind                # "shell", or "agent" for an agent's own interface
@@ -98,7 +102,8 @@ class Terminal:
         self.started = time.time()
 
     def summary(self) -> dict:
-        return {"id": self.id, "title": self.title, "cwd": self.cwd, "kind": self.kind,
+        return {"id": self.id, "mux": self.mux, "title": self.title, "cwd": self.cwd,
+                "kind": self.kind,
                 "owner": self.owner, "alive": self.alive, "code": self.code,
                 "cols": self.cols, "rows": self.rows, "started": self.started}
 
@@ -113,12 +118,16 @@ class Terminals:
         self._seq = 0
         self._first = 1                 # the oldest seq still in the log
         self._stopping = False
+        # How each tab's panes are arranged. The window decides that and only
+        # the window reads it; it is kept here so that a window which reloads
+        # finds its panes where it left them.
+        self._layouts: dict[str, object] = {}
 
     # -- starting and stopping ------------------------------------------------
 
     def open(self, argv: list[str], cwd: str, title: str, kind: str = "shell",
              owner: str | None = None, cols: int = 100, rows: int = 30,
-             env: dict | None = None) -> dict:
+             env: dict | None = None, mux: str | None = None) -> dict:
         if not supported():
             return {"ok": False, "error": "this system has no terminals to give"}
         if not os.path.isdir(cwd):
@@ -128,6 +137,8 @@ class Terminals:
                 return {"ok": False, "error": "that is a great many terminals - "
                                               "close some first"}
         term = Terminal(uuid.uuid4().hex[:8], title, cwd, kind, owner)
+        if isinstance(mux, str) and 0 < len(mux) <= 64:
+            term.mux = mux
         term.cols, term.rows = _clamp(cols, 20, 400), _clamp(rows, 5, 200)
         try:
             master, slave = os.openpty()
@@ -143,7 +154,7 @@ class Terminals:
             _resize(master, term.cols, term.rows)
             term.proc = subprocess.Popen(
                 [sys.executable, "-c", SHIM, os.ttyname(slave), cwd, *argv],
-                stdin=slave, stdout=slave, stderr=slave, env=full,
+                stdin=slave, stdout=slave, stderr=slave, env=full, cwd=cwd,
                 start_new_session=True, close_fds=True)
         except OSError as exc:
             os.close(master)
@@ -166,6 +177,54 @@ class Terminals:
         if term is None:
             return {"ok": False, "error": "no such terminal"}
         self._end(term)
+        return {"ok": True}
+
+    def where(self, tid) -> str | None:
+        """The folder a terminal's program is in right now, for a pane opened
+        beside it -- or the one it started in, where the system will not say."""
+        term = self._get(tid)
+        if term is None:
+            return None
+        if term.alive and term.proc is not None:
+            try:
+                here = os.readlink(f"/proc/{term.proc.pid}/cwd")
+                if os.path.isdir(here):
+                    return here
+            except OSError:
+                pass
+        return term.cwd if os.path.isdir(term.cwd) else None
+
+    def regroup(self, tid, mux) -> dict:
+        """Make a terminal a pane of another tab: a pane broken out into a
+        tab of its own, or brought into one."""
+        term = self._get(tid)
+        if term is None:
+            return {"ok": False, "error": "no such terminal"}
+        if not isinstance(mux, str) or not 0 < len(mux) <= 64:
+            return {"ok": False, "error": "which tab?"}
+        with self._changed:
+            term.mux = mux
+            self._changed.notify_all()
+        return {"ok": True, "term": term.summary()}
+
+    def arrange(self, mux, layout) -> dict:
+        """Remember how a tab's panes are arranged; None forgets it."""
+        if not isinstance(mux, str) or not 0 < len(mux) <= 64:
+            return {"ok": False, "error": "which tab?"}
+        with self._lock:
+            if layout is None:
+                self._layouts.pop(mux, None)
+                return {"ok": True}
+            try:
+                size = len(json.dumps(layout))
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "bad layout"}
+            if size > MAX_LAYOUT or not isinstance(layout, dict):
+                return {"ok": False, "error": "bad layout"}
+            self._layouts.pop(mux, None)
+            self._layouts[mux] = layout
+            while len(self._layouts) > MAX_LAYOUTS:
+                self._layouts.pop(next(iter(self._layouts)))
         return {"ok": True}
 
     def close_owned(self, owner: str) -> None:
@@ -295,8 +354,10 @@ class Terminals:
             chunks = [] if lost else [
                 [seq, tid, base64.b64encode(data).decode("ascii")]
                 for seq, tid, data in self._log if seq > since and data]
+            tabs = {t.mux for t in self._terms.values()}
             return {"seq": self._seq, "chunks": chunks, "lost": lost,
-                    "terms": [t.summary() for t in self._terms.values()]}
+                    "terms": [t.summary() for t in self._terms.values()],
+                    "layouts": {m: v for m, v in self._layouts.items() if m in tabs}}
 
     def replay(self, tid) -> dict | None:
         """What a terminal has printed, and the point in the feed it is true at."""

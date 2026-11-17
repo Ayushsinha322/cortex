@@ -68,7 +68,11 @@ let server = null;
 const homes = new Map();          // each window's webContents id -> the origin of its cortex page
 
 // Its own folder for Chromium's profile, not cortex's config folder next door.
-app.setPath("userData", path.join(app.getPath("appData"), "cortex-desktop"));
+// CORTEX_SHELL_PROFILE names another: a second cortex that is to be a
+// separate program -- a test, say -- rather than a new window of the one
+// already running, since "already running" is decided per profile.
+app.setPath("userData", process.env.CORTEX_SHELL_PROFILE
+  || path.join(app.getPath("appData"), "cortex-desktop"));
 
 /* Start cortex, and resolve with the address it prints. */
 function startCortex(folder) {

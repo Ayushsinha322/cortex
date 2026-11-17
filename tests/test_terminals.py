@@ -200,6 +200,40 @@ class TestTerminals(Base):
         self.assertFalse(self.terms.write(self.terms.poll(0)["terms"][0]["id"],
                                           {"not": "text"})["ok"])
 
+    def test_panes_belong_to_a_tab_and_can_be_moved_to_another(self):
+        a = self.open()
+        b = self.open(mux=a)
+        by = {t["id"]: t["mux"] for t in self.terms.poll(0)["terms"]}
+        self.assertEqual(by, {a: a, b: a})              # a pane of its own tab, until told
+        self.assertEqual(self.terms.regroup(b, "tab-2")["term"]["mux"], "tab-2")
+        self.assertFalse(self.terms.regroup("nope", "tab-2")["ok"])
+        self.assertFalse(self.terms.regroup(b, "")["ok"])
+        self.assertFalse(self.terms.regroup(b, "x" * 200)["ok"])
+
+    def test_a_pane_opened_beside_another_starts_where_that_one_is(self):
+        a = self.open()
+        self.assertEqual(self.terms.where(a), self.tmp)
+        self.terms.write(a, "cd sub && echo mo''ved\n")
+        self.expect(a, "moved")
+        if sys.platform.startswith("linux"):
+            until(lambda: self.terms.where(a) == f"{self.tmp}/sub", what="the shell to be in sub")
+        self.assertIsNone(self.terms.where("nope"))
+
+    def test_how_a_tabs_panes_are_arranged_is_kept_for_a_window_that_reloads(self):
+        a = self.open()
+        layout = {"tree": {"t": "leaf", "id": a}, "floats": [], "name": "api"}
+        self.assertTrue(self.terms.arrange(a, layout)["ok"])
+        self.assertEqual(self.terms.poll(0)["layouts"], {a: layout})
+        # one for a tab with no terminals left is not handed out
+        self.terms.arrange("gone", layout)
+        self.assertEqual(list(self.terms.poll(0)["layouts"]), [a])
+        self.assertTrue(self.terms.arrange(a, None)["ok"])
+        self.assertEqual(self.terms.poll(0)["layouts"], {})
+        self.assertFalse(self.terms.arrange(a, ["not", "a", "layout"])["ok"])
+        self.assertFalse(self.terms.arrange(a, {"big": "x" * 20000})["ok"])
+        self.assertFalse(self.terms.arrange("", layout)["ok"])
+        self.assertFalse(self.terms.arrange(a, {"bad": {1, 2}})["ok"])
+
     def test_an_agents_interface_is_known_to_be_open(self):
         tid = self.open(kind="agent", owner="s1")
         self.assertTrue(self.terms.holds("s1"))
@@ -268,6 +302,18 @@ class TestOverHTTP(Base):
         self.assertFalse(self.post({"op": "input", "id": "nope", "data": "x"})[1]["ok"])
         self.assertFalse(self.post({"op": "open", "agent": "nope"})[1]["ok"])
         self.assertFalse(self.post({"op": "dance"})[1]["ok"])
+        # panes: beside another, in a tab; and what is not a terminal or a layout
+        _, first = self.post({"op": "open", "cols": 80, "rows": 24})
+        _, second = self.post({"op": "open", "mux": first["id"], "beside": first["id"],
+                               "cols": 80, "rows": 24})
+        self.assertEqual((second["term"]["mux"], second["term"]["cwd"]), (first["id"], self.tmp))
+        self.assertTrue(self.post({"op": "layout", "mux": first["id"],
+                                   "layout": {"tree": None}})[1]["ok"])
+        self.assertEqual(self.getj("/api/terms?t=tok&since=0")[1]["layouts"],
+                         {first["id"]: {"tree": None}})
+        self.assertFalse(self.post({"op": "move", "id": "nope", "mux": "x"})[1]["ok"])
+        self.assertTrue(self.post({"op": "move", "id": second["id"], "mux": "other"})[1]["ok"])
+        self.assertFalse(self.post({"op": "open", "scrollback": 5})[1]["ok"])
         # the page may ask for a shell, never name the program
         _, got = self.post({"op": "open", "argv": ["/bin/echo", "owned"], "cols": 80, "rows": 24})
         tid = got["id"]

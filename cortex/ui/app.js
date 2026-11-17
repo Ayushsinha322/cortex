@@ -30,6 +30,23 @@ const COLOR = {
   doc: "#f472b6", media: "#fb7185", archive: "#94a3b8", other: "#64748b",
   tag: "#c084fc", ghost: "#9fb0c8",
 };
+/* What the rest of the graph is drawn with. A canvas reads no stylesheet, so
+   a theme hands these over itself (applyTheme); until one has, these are
+   Midnight's. */
+const PAINT = {
+  bg: "#070910", centre: "#0b1120", hollow: "#0b1120", link: "#1e293b",
+  linkLit: "#a9c8ffcc", ring: "#ffffff", mark: "#ffd166", onMark: "#1a1300",
+  outline: "#070910", labelBg: "#04060bcc", label: "#7f8da6", labelStrong: "#c4d0e4",
+  labelActive: "#f4f7fc", ok: "#34d399", warn: "#f5a524", bad: "#f43f5e",
+  info: "#67e8f9", accent: "#4c8dff", untracked: "#8fa3c4", moved: "#60a5fa", glow: true,
+};
+/* A colour, seen through: for the rings that fade as they go. */
+const sheer = (hex, a) => {
+  const n = parseInt(hex.slice(1, 7), 16);
+  return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+};
+/* How far something glows -- not at all, in a theme that wants the screen dark. */
+const glow = (v) => (PAINT.glow ? v : 0);
 const LABEL = {
   dir: "folders", note: "notes", code: "code", config: "config",
   doc: "docs", media: "media", archive: "archives", other: "other",
@@ -88,8 +105,8 @@ let W = 0, H = 0, DPR = 1, bg = null;
 function makeBackdrop() {
   bg = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2,
                                 Math.max(W, H) * 0.75);
-  bg.addColorStop(0, "#0b1120");
-  bg.addColorStop(1, "#070910");
+  bg.addColorStop(0, PAINT.centre);
+  bg.addColorStop(1, PAINT.bg);
 }
 
 function resize() {
@@ -895,12 +912,12 @@ function draw() {
     const semantic = l.kind !== "tree";
     if (semantic && !showSemantic) continue;
     if (semantic) {
-      ctx.strokeStyle = lit ? "#34d399dd"
-        : l.kind === "code" ? "#60a5fa2e"
-        : l.kind === "tag" ? "#c084fc38" : "#34d3992e";
+      ctx.strokeStyle = lit ? PAINT.ok + "dd"
+        : l.kind === "code" ? COLOR.code + "2e"
+        : l.kind === "tag" ? COLOR.tag + "38" : COLOR.note + "2e";
       ctx.lineWidth = lit ? 1.6 : 1;
     } else {
-      ctx.strokeStyle = lit ? "#a9c8ffcc" : "#1e293b";
+      ctx.strokeStyle = lit ? PAINT.linkLit : PAINT.link;
       ctx.lineWidth = lit ? 1.5 : 1;
     }
     ctx.beginPath();
@@ -919,7 +936,7 @@ function draw() {
     if (n.agent) {
       drawAgentNode(n, x, y, r, Date.now());
       if (n === sel) {
-        ctx.strokeStyle = "#ffffff";
+        ctx.strokeStyle = PAINT.ring;
         ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.arc(x, y, Math.max(6, r * 1.25) + 11, 0, Math.PI * 2);
@@ -932,13 +949,13 @@ function draw() {
 
     if (active || n.fresh) {
       ctx.shadowColor = c;
-      ctx.shadowBlur = active ? 22 : 10;
+      ctx.shadowBlur = glow(active ? 22 : 10);
     }
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
     if (n.ghost) {
       // a note not written yet: an outline where it will go
-      ctx.fillStyle = "#0b1120";
+      ctx.fillStyle = PAINT.hollow;
       ctx.fill();
       ctx.shadowBlur = 0;
       ctx.setLineDash([2.5, 2.5]);
@@ -947,7 +964,7 @@ function draw() {
       ctx.stroke();
       ctx.setLineDash([]);
     } else if (n.tag) {
-      ctx.fillStyle = "#0b1120";
+      ctx.fillStyle = PAINT.hollow;
       ctx.fill();
       ctx.shadowBlur = 0;
       ctx.strokeStyle = c;
@@ -958,7 +975,7 @@ function draw() {
       ctx.fillStyle = c;
       ctx.fill();
     } else if (n.dir && expanded.has(n.id)) {
-      ctx.fillStyle = "#0b1120";
+      ctx.fillStyle = PAINT.hollow;
       ctx.fill();
       ctx.shadowBlur = 0;
       ctx.strokeStyle = c;
@@ -971,7 +988,7 @@ function draw() {
     }
 
     if (n === sel) {
-      ctx.strokeStyle = "#ffffff";
+      ctx.strokeStyle = PAINT.ring;
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.arc(x, y, r + 5, 0, Math.PI * 2);
@@ -981,7 +998,7 @@ function draw() {
     if (drafts.has(n.id)) {
       // unsaved changes: a dashed ring, so a draft set aside is not forgotten
       ctx.setLineDash([3, 3]);
-      ctx.strokeStyle = "#ffd166";
+      ctx.strokeStyle = PAINT.mark;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.arc(x, y, r + (n === sel ? 9 : 4), 0, Math.PI * 2);
@@ -998,7 +1015,7 @@ function draw() {
       ctx.arc(x + off, y - off, gr, 0, Math.PI * 2);
       ctx.fillStyle = GIT_COLOR[state];
       ctx.fill();
-      ctx.strokeStyle = "#070910";
+      ctx.strokeStyle = PAINT.outline;
       ctx.lineWidth = 1.1;
       ctx.stroke();
     }
@@ -1050,11 +1067,11 @@ function draw() {
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
     if (active) {
-      ctx.fillStyle = "#04060bcc";
+      ctx.fillStyle = PAINT.labelBg;
       ctx.fillRect(bx - 4, by - 2, w + 8, bh + 2);
     }
-    ctx.fillStyle = active ? "#f4f7fc"
-      : n.dir || n.agent ? "#c4d0e4" : "#7f8da6";
+    ctx.fillStyle = active ? PAINT.labelActive
+      : n.dir || n.agent ? PAINT.labelStrong : PAINT.label;
     ctx.fillText(text, x, by);
   }
   shownLabels = nextShown;
@@ -1072,6 +1089,13 @@ let frameCount = 0, drawCount = 0;
 
 function frame() {
   frameCount++;
+  if (maximized || work) {
+    // The pane is over the whole window: a terminal, an agent, a page. The
+    // graph underneath cannot be seen, and settling and painting it anyway
+    // takes the time the thing on top wants. It picks up where it was.
+    requestAnimationFrame(frame);
+    return;
+  }
   const moving = simulate();
   if (needsFit) { needsFit = false; warmup(180); fit(); }
   stepFlight();
@@ -1122,11 +1146,28 @@ CFG.debug.address = (text) => toAddress(text);
 CFG.debug.tool = (id) => tools.get(id);
 CFG.debug.pick = (id) => pickFrom(tools.get(id));
 CFG.debug.refreshAgents = () => refreshAgents();
+CFG.debug.theme = () => ({ id: themeNow && themeNow.id, open: themesOpen, prefs: PREFS,
+                           paint: { ...PAINT }, colors: { ...COLOR },
+                           listed: themesOpen ? themeRows().map((t) => t.id) : [] });
+CFG.debug.themes = () => openThemes();
 CFG.debug.workspace = () => ({
-  tabs: [...tools.keys()], active: activeTool, rail: railShown(), panel: panelWidth,
+  tabs: [...tools.keys()], active: activeTool, rail: railShown(), panel: panelWidth, work,
   terms: [...terms.values()].map((t) => ({ id: t.id, title: t.title, alive: t.alive,
-                                          unread: t.unread, text: t.screen.text() })),
+                                          unread: t.unread, text: t.screen.text(),
+                                          cols: t.screen.cols, rows: t.screen.rows,
+                                          following: t.view ? t.view.following() : null })),
 });
+CFG.debug.pane = (id) => (terms.get(id) || {}).host;
+CFG.debug.show = (id) => showTool(id);
+CFG.debug.mux = (id) => {
+  const tool = tools.get(id || activeTool);
+  if (!tool || tool.kind !== "term") return null;
+  return { id: tool.id, mode: tool.mode, focus: tool.focus, tree: tool.tree,
+           tiled: window.Mux.ids(tool.tree), floats: [...tool.floats], shown: tool.showFloats,
+           full: tool.full, frames: tool.frames, sync: tool.sync, name: tool.name,
+           names: Object.fromEntries(muxTerms(tool).map((t) => [t.id, t.name])),
+           search: tool.search.at, bar: tool.bar };
+};
 CFG.debug.modes = () => ({
   live: !!live, disk: !!disk, history: hist ? hist.v : null,
   path: pathHops ? pathHops.map((h) => h.id) : null,
@@ -1287,6 +1328,9 @@ function closePanel() {
   placeChrome();
   renderTabs();
   renderRail();
+  // With the workspace as the window, closing what was being read goes back
+  // to the tab that was there before it, not to an empty window.
+  if (work && tools.size) showTool(tools.has(lastShown) ? lastShown : [...tools.keys()].pop());
 }
 
 /* Full-screen the reader. The rendered content is reused as-is, so a PDF is
@@ -3016,7 +3060,7 @@ function drawOverlays() {
     const x = toScreenX(sel.x), y = toScreenY(sel.y);
     const r = Math.max(1.8, sel.r * cam.s);
     const breathe = 0.5 + 0.5 * Math.sin(now / 380);
-    ctx.strokeStyle = `rgba(255, 209, 102, ${0.35 + 0.4 * breathe})`;
+    ctx.strokeStyle = sheer(PAINT.mark, 0.35 + 0.4 * breathe);
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.arc(x, y, r + 11 + breathe * 4, 0, Math.PI * 2);
@@ -3156,8 +3200,8 @@ function renderPathCard(a, b, found) {
 function drawPath() {
   if (!pathHops) return;
   ctx.lineWidth = 2.6;
-  ctx.strokeStyle = "#ffd166";
-  ctx.fillStyle = "#ffd166";
+  ctx.strokeStyle = PAINT.mark;
+  ctx.fillStyle = PAINT.mark;
   for (let i = 1; i < pathHops.length; i++) {
     const a = nodes.get(pathHops[i - 1].id), b = nodes.get(pathHops[i].id);
     if (!a || !b) continue;
@@ -3182,9 +3226,9 @@ function drawPath() {
     const r = Math.max(1.8, n.r * cam.s);
     ctx.beginPath();
     ctx.arc(x - r - 7, y - r - 7, 8, 0, Math.PI * 2);
-    ctx.fillStyle = "#ffd166";
+    ctx.fillStyle = PAINT.mark;
     ctx.fill();
-    ctx.fillStyle = "#1a1300";
+    ctx.fillStyle = PAINT.onMark;
     ctx.fillText(String(i + 1), x - r - 7, y - r - 6.5);
   });
 }
@@ -3670,7 +3714,12 @@ function commands() {
     { label: SHELL ? "New browser tab" : "Preview a local address…",
       run: () => openPreview(), on: !SNAPSHOT },
     { label: railShut ? "Show the agents rail" : "Hide the agents rail", on: !SNAPSHOT,
-      run: () => { railShut = !railShut; keep.set("rail", railShut ? "shut" : "open"); renderRail(); } },
+      run: () => { railShut = !railShut; savePref("rail", railShut ? "shut" : "open"); renderRail(); } },
+    { label: work ? "Show the graph" : "Back to the workspace — put the graph away", key: "G",
+      run: () => setWork(!work, true), on: canWork() },
+    { label: "Theme…", run: () => openThemes(), on: !!window.Themes },
+    ...(window.Themes ? window.Themes.BUILT_IN : []).map((t) => ({
+      label: `Theme: ${t.name}`, run: () => { chooseTheme(t); } })),
     ...[...tools.values()].map((t) => ({ label: `Tab: ${toolTitle(t)}`,
                                          run: () => showTool(t.id) })),
     { label: "Agents…", key: "a", run: () => openAgents(), on: write && !agentsOff },
@@ -3992,7 +4041,7 @@ function drawHeat(now) {
     const x = toScreenX(pos[0]), y = toScreenY(pos[1]);
     if (prev) {
       const fade = 1 - Math.max(age, prev.age) / HEAT_MS;
-      ctx.strokeStyle = `rgba(255, 209, 102, ${(0.07 + 0.4 * fade).toFixed(3)})`;
+      ctx.strokeStyle = sheer(PAINT.mark, (0.07 + 0.4 * fade).toFixed(3));
       ctx.lineWidth = 1 + 1.4 * fade;
       ctx.beginPath();
       ctx.moveTo(prev.x, prev.y);
@@ -4028,7 +4077,7 @@ function drawHeat(now) {
     ctx.shadowColor = color;
     // a blur per ring is the expensive part of drawing; with hundreds lit
     // at once it is dropped
-    ctx.shadowBlur = heat.size > 60 ? 0 : 16 * fade;
+    ctx.shadowBlur = heat.size > 60 ? 0 : glow(16 * fade);
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
     if (!pos[2]) ctx.setLineDash([2, 3]);       // gone: an outline of where it was
@@ -4298,7 +4347,7 @@ function drawMarks() {
   hist.commits.forEach((cm, i) => {
     const x = n <= 1 ? w : ((i + 1) / n) * (w - 4) + 2;
     const k = Math.log(1 + cm.changes.length) / Math.log(1 + most);
-    g.fillStyle = "#4c8dff";
+    g.fillStyle = PAINT.accent;
     g.globalAlpha = 0.25 + 0.55 * k;
     g.fillRect(x - 0.6, h - 2 - k * (h - 4), 1.2, k * (h - 4) + 2);
   });
@@ -4370,10 +4419,10 @@ function drawCaption() {
   ctx.font = "600 15px ui-sans-serif, system-ui, sans-serif";
   ctx.textAlign = "left";
   ctx.textBaseline = "alphabetic";
-  ctx.fillStyle = "#ffd166";
+  ctx.fillStyle = PAINT.mark;
   ctx.fillText(date, 28, H - 52);
   ctx.font = "400 13px ui-sans-serif, system-ui, sans-serif";
-  ctx.fillStyle = "#c4d0e4";
+  ctx.fillStyle = PAINT.labelStrong;
   ctx.fillText(c ? c.subject.slice(0, 90) : "", 28, H - 32);
 }
 
@@ -4631,7 +4680,7 @@ function drawSuggestions() {
   for (const [a, s] of pairs) {
     const p = nodes.get(a), q = nodes.get(s.path);
     if (!p || !q || !visible(p) || !visible(q)) continue;
-    ctx.strokeStyle = `rgba(103, 232, 249, ${(0.25 + 0.6 * Math.min(1, s.score * 1.6)).toFixed(3)})`;
+    ctx.strokeStyle = sheer(PAINT.info, (0.25 + 0.6 * Math.min(1, s.score * 1.6)).toFixed(3));
     ctx.beginPath();
     ctx.moveTo(toScreenX(p.x), toScreenY(p.y));
     ctx.lineTo(toScreenX(q.x), toScreenY(q.y));
@@ -5014,7 +5063,7 @@ function sceneSVG() {
   const out = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" ` +
     `viewBox="0 0 ${W} ${H}" font-family="ui-sans-serif, system-ui, sans-serif">`,
-    `<rect width="${W}" height="${H}" fill="#070910"/>`,
+    `<rect width="${W}" height="${H}" fill="${PAINT.bg}"/>`,
   ];
 
   for (const l of links) {
@@ -5023,8 +5072,8 @@ function sceneSVG() {
     if (l.kind === "agent") continue;
     const semantic = l.kind !== "tree";
     if (semantic && !showSemantic) continue;
-    const stroke = !semantic ? "#1e293b"
-      : l.kind === "code" ? "#60a5fa" : l.kind === "tag" ? "#c084fc" : "#34d399";
+    const stroke = !semantic ? PAINT.link
+      : l.kind === "code" ? COLOR.code : l.kind === "tag" ? COLOR.tag : COLOR.note;
     const opacity = semantic ? 0.18 : 1;
     out.push(`<line x1="${round(toScreenX(a.x))}" y1="${round(toScreenY(a.y))}" ` +
              `x2="${round(toScreenX(b.x))}" y2="${round(toScreenY(b.y))}" ` +
@@ -5041,7 +5090,7 @@ function sceneSVG() {
     const hollow = n.tag || (n.dir && expanded.has(n.id));
     out.push(`<circle cx="${round(x)}" cy="${round(y)}" r="${round(r)}" ` +
              (hollow
-               ? `fill="#0b1120" stroke="${c}" stroke-width="${round(Math.max(1.2, r * 0.26))}"/>`
+               ? `fill="${PAINT.hollow}" stroke="${c}" stroke-width="${round(Math.max(1.2, r * 0.26))}"/>`
                : `fill="${c}"/>`));
     if (n.tag) {
       out.push(`<circle cx="${round(x)}" cy="${round(y)}" ` +
@@ -5052,13 +5101,13 @@ function sceneSVG() {
       const gr = Math.max(1.8, r * (state === "inside" ? 0.24 : 0.34));
       out.push(`<circle cx="${round(x + r * 0.72)}" cy="${round(y - r * 0.72)}" ` +
                `r="${round(gr)}" fill="${GIT_COLOR[state]}" ` +
-               `stroke="#070910" stroke-width="1.1"/>`);
+               `stroke="${PAINT.outline}" stroke-width="1.1"/>`);
     }
   }
 
   if (showLabels) {
     for (const lab of labelPlan) {
-      const fill = lab.active ? "#f4f7fc" : lab.dir ? "#c4d0e4" : "#7f8da6";
+      const fill = lab.active ? PAINT.labelActive : lab.dir ? PAINT.labelStrong : PAINT.label;
       out.push(`<text x="${round(lab.x)}" y="${round(lab.y)}" ` +
                `text-anchor="middle" dominant-baseline="hanging" ` +
                `font-size="${round(lab.size)}" ` +
@@ -5440,9 +5489,9 @@ function drawAgentNode(n, x, y, r, now) {
   const s = n.session, c = agentColor(s);
   const size = Math.max(6, r * 1.25);
   ctx.shadowColor = c;
-  ctx.shadowBlur = s.ended ? 0 : 14;
+  ctx.shadowBlur = s.ended ? 0 : glow(14);
   hexagon(x, y, size);
-  ctx.fillStyle = s.ended ? "#0b1120" : c;
+  ctx.fillStyle = s.ended ? PAINT.hollow : c;
   ctx.fill();
   ctx.shadowBlur = 0;
   ctx.strokeStyle = c;
@@ -5458,14 +5507,14 @@ function drawAgentNode(n, x, y, r, now) {
     animateFor(120);
   } else if (s.state === "waiting") {
     const breathe = 0.5 + 0.5 * Math.sin(now / 300);
-    ctx.strokeStyle = `rgba(245, 165, 36, ${(0.45 + 0.5 * breathe).toFixed(3)})`;
+    ctx.strokeStyle = sheer(PAINT.warn, (0.45 + 0.5 * breathe).toFixed(3));
     ctx.lineWidth = 2.4;
     ctx.beginPath();
     ctx.arc(x, y, size + 6 + breathe * 4, 0, Math.PI * 2);
     ctx.stroke();
     animateFor(120);
   } else if (s.state === "failed") {
-    ctx.strokeStyle = "#f43f5e";
+    ctx.strokeStyle = PAINT.bad;
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.arc(x, y, size + 5, 0, Math.PI * 2);
@@ -5474,7 +5523,7 @@ function drawAgentNode(n, x, y, r, now) {
   if (s.unread && s.state !== "waiting") {
     ctx.beginPath();
     ctx.arc(x + size * 0.8, y - size * 0.8, 3.6, 0, Math.PI * 2);
-    ctx.fillStyle = "#ffffff";
+    ctx.fillStyle = PAINT.ring;
     ctx.fill();
   }
 }
@@ -5498,7 +5547,7 @@ function drawAgents(now) {
     });
     if (agentClash.has(path)) {
       ctx.setLineDash([4, 3]);
-      ctx.strokeStyle = "#f43f5e";
+      ctx.strokeStyle = PAINT.bad;
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.arc(x, y, r + 5 + colours.length * 3.5, 0, Math.PI * 2);
@@ -6264,6 +6313,202 @@ async function sendReviewNotes(n) {
   toggleReview(n, false);
 }
 
+/* ----------------------------------------------------------------- themes
+
+   One theme changes everything at once: the panes, the graph, the terminal's
+   colours, the code in the reader, the green and red of a diff (themes.js).
+   The list previews as you move through it -- the whole window, not a
+   swatch -- and esc puts back what was there.
+
+   Three things beyond picking one. A pair can follow the system, a light
+   one by day and a dark one by night. A folder can have a colour of its own
+   laid over whatever theme is on, so that two windows are told apart at a
+   glance. And the list is longer than what cortex comes with: your own, in
+   ~/.config/cortex/themes, and every theme Ghostty has, if it is installed,
+   since a terminal's theme is all a theme here needs. */
+const PREFS = Object.assign({ theme: "midnight", light: "paper", follow: false, accents: {} },
+                            CFG.prefs || {});
+const ACCENTS = ["#4c8dff", "#22d3ee", "#34d399", "#a3e635", "#facc15", "#fb923c",
+                 "#f472b6", "#a78bfa"];
+const soundTheme = (raw) => (window.Themes ? window.Themes.check(raw).theme || null : null);
+let moreThemes = (CFG.themes || []).map(soundTheme).filter(Boolean);
+let themeNow = null, themesOpen = false, themesLoaded = false, themeIndex = 0;
+
+const prefersLight = () => typeof matchMedia === "function"
+  && matchMedia("(prefers-color-scheme: light)").matches;
+
+/* The theme that is meant to be on: the one chosen, or with a pair
+   following the system, whichever of the two the system is asking for. */
+function chosenTheme() {
+  const id = PREFS.follow && prefersLight() ? PREFS.light : PREFS.theme;
+  return window.Themes.find(id, moreThemes) || window.Themes.BUILT_IN[0];
+}
+
+function savePref(key, value) {
+  PREFS[key] = value;
+  post("/api/prefs", { set: { [key]: value } }).catch(() => {});
+}
+
+function applyTheme(theme) {
+  if (!window.Themes) return;
+  theme = theme || chosenTheme();
+  const r = window.Themes.resolve(theme, (PREFS.accents || {})[ROOT]);
+  themeNow = theme;
+  const root = document.documentElement;
+  if (root && root.style && root.style.setProperty) {
+    for (const [k, v] of Object.entries(r.vars)) root.style.setProperty(k, v);
+    root.style.colorScheme = r.base;
+  }
+  // the graph is a canvas, and is told its colours rather than reading them
+  const { nodes: byKind, ...rest } = r.paint;
+  Object.assign(PAINT, rest, { termFg: r.vars["--t-fg"], termBg: r.vars["--t-bg"] });
+  Object.assign(COLOR, byKind);
+  Object.assign(GIT_COLOR, { modified: PAINT.warn, staged: PAINT.ok, untracked: PAINT.untracked,
+                             conflict: PAINT.bad, inside: PAINT.warn + "7a" });
+  Object.assign(KIND_COLOR, { created: PAINT.ok, modified: PAINT.warn, deleted: PAINT.bad,
+                              moved: PAINT.moved });
+  for (const [g, chip] of chipEls) chip.style.color = COLOR[g];
+  // a program in a terminal that asks what colour the background is gets the truth
+  for (const t of terms.values()) t.screen.setColours(PAINT.termFg, PAINT.termBg);
+  if (W) makeBackdrop();
+  repaint();
+}
+
+function themeRows() {
+  const term = $("th-filter").value.trim().toLowerCase();
+  return [...window.Themes.BUILT_IN, ...moreThemes]
+    .filter((t) => !term || t.name.toLowerCase().includes(term));
+}
+
+async function openThemes() {
+  if (!window.Themes) return;
+  closeMenu();
+  closePop();
+  themesOpen = true;
+  $("themes").hidden = false;
+  $("th-filter").value = "";
+  themeIndex = Math.max(0, themeRows().findIndex((t) => t.id === (themeNow || {}).id));
+  renderThemes();
+  $("th-filter").focus();
+  if (themesLoaded || SNAPSHOT) return;
+  try {
+    const r = await api("/api/themes");
+    themesLoaded = true;
+    for (const raw of r.themes || []) {
+      const t = soundTheme(raw);
+      if (t && !window.Themes.find(t.id, moreThemes)) moreThemes.push(t);
+    }
+    if (themesOpen) renderThemes();
+  } catch (err) { /* cortex's own are still there */ }
+}
+
+/* Put the list away. Unless one was chosen, what was looked at is put back. */
+function closeThemes() {
+  if (!themesOpen) return;
+  themesOpen = false;
+  $("themes").hidden = true;
+  applyTheme();
+}
+
+function renderThemes() {
+  const list = $("th-list");
+  list.textContent = "";
+  const rows = themeRows();
+  themeIndex = Math.max(0, Math.min(themeIndex, rows.length - 1));
+  rows.forEach((t, i) => {
+    const b = document.createElement("button");
+    b.className = "th-row" + (i === themeIndex ? " on" : "");
+    const sw = document.createElement("span");
+    sw.className = "th-sw";
+    for (const c of window.Themes.swatches(t)) {
+      const dot = document.createElement("i");
+      dot.style.background = c;
+      sw.appendChild(dot);
+    }
+    const nm = document.createElement("span");
+    nm.className = "nm";
+    nm.textContent = t.name;
+    const sub = document.createElement("span");
+    sub.className = "sub";
+    const role = PREFS.follow
+      ? (t.id === PREFS.theme ? "the dark one" : t.id === PREFS.light ? "the light one" : "")
+      : (t.id === PREFS.theme ? "in use" : "");
+    sub.textContent = [t.base, t.source === "ghostty" ? "from Ghostty"
+      : t.source === "yours" ? "yours" : "", role].filter(Boolean).join(" · ");
+    b.classList.toggle("is", !!role);
+    b.append(sw, nm, sub);
+    b.addEventListener("mouseenter", () => previewTheme(i));
+    b.addEventListener("click", () => chooseTheme(t));
+    list.appendChild(b);
+  });
+  if (!rows.length) {
+    const e = document.createElement("div");
+    e.className = "th-empty";
+    e.textContent = "No theme by that name.";
+    list.appendChild(e);
+  }
+  $("th-follow").checked = !!PREFS.follow;
+  const mine = (PREFS.accents || {})[ROOT] || null;
+  const box = $("th-accents");
+  box.textContent = "";
+  for (const c of [null, ...ACCENTS]) {
+    const b = document.createElement("button");
+    b.className = "th-ac" + (c === mine ? " on" : "") + (c ? "" : " none");
+    b.title = c ? "give this folder this colour, whatever the theme" : "the theme's own colour";
+    if (c) b.style.background = c; else b.textContent = "×";
+    b.addEventListener("click", () => {
+      const all = { ...(PREFS.accents || {}) };
+      if (c) all[ROOT] = c; else delete all[ROOT];
+      savePref("accents", all);
+      applyTheme(themeRows()[themeIndex]);
+      renderThemes();
+    });
+    box.appendChild(b);
+  }
+}
+
+/* Look at one: the whole window is repainted in it, and nothing is saved. */
+function previewTheme(i) {
+  const rows = themeRows();
+  if (!rows[i]) return;
+  themeIndex = i;
+  $("th-list").children.forEach
+    ? $("th-list").children.forEach((c, k) => c.classList.toggle("on", k === i))
+    : [...$("th-list").children].forEach((c, k) => c.classList.toggle("on", k === i));
+  applyTheme(rows[i]);
+}
+
+function chooseTheme(t) {
+  // of a pair that follows the system, a light theme is the light one
+  const slot = PREFS.follow && t.base === "light" ? "light" : "theme";
+  savePref(slot, t.id);
+  applyTheme();
+  const shown = themeNow.id === t.id;
+  toast(shown ? `${t.name}` : `${t.name} is the ${t.base} theme now — the system is `
+    + `${prefersLight() ? "light" : "dark"}, so it is not the one on show`);
+  themeIndex = Math.max(0, themeRows().findIndex((x) => x.id === themeNow.id));
+  renderThemes();
+  renderStatus();
+}
+
+function themeKey(e) {
+  e.stopPropagation();
+  const rows = themeRows();
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    previewTheme((themeIndex + (e.key === "ArrowDown" ? 1 : rows.length - 1)) % Math.max(1, rows.length));
+    const row = $("th-list").children[themeIndex];
+    if (row && row.scrollIntoView) row.scrollIntoView({ block: "nearest" });
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    if (rows[themeIndex]) chooseTheme(rows[themeIndex]);
+    closeThemes();
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    closeThemes();
+  }
+}
+
 /* -------------------------------------------------------------- workspace
 
    The window as a place to work rather than a picture to look at. The reader
@@ -6278,14 +6523,9 @@ const tools = new Map();          // id -> {id, kind: "term" | "web", ...}, in t
 let activeTool = null;            // the tool tab on show; null when it is the selection
 let panelWidth = 520;
 let railShut = false;             // closed by hand, and so kept closed
+let work = false;                 // the workspace is the window; the graph is put away
+let lastShown = null;             // the tool tab that was last on show
 let webCount = 0;
-
-/* Remembered between launches where the browser will keep it, and simply
-   not remembered where it will not. */
-const keep = {
-  get(k) { try { return localStorage.getItem("cortex." + k); } catch (err) { return null; } },
-  set(k, v) { try { localStorage.setItem("cortex." + k, String(v)); } catch (err) { /* so be it */ } },
-};
 
 const panelW = () => (panel.classList.contains("open") && !maximized)
   ? Math.min(panelWidth, W * 0.94) : 0;
@@ -6295,7 +6535,7 @@ function setPanelWidth(w, remember) {
   panelWidth = Math.round(Math.max(PANEL_MIN, Math.min(w, Math.max(PANEL_MIN, W - 280))));
   const body = document.body;
   if (body.style && body.style.setProperty) body.style.setProperty("--panel-w", panelWidth + "px");
-  if (remember) keep.set("panel", panelWidth);
+  if (remember) savePref("panel", panelWidth);
   placeChrome();
   repaint();
 }
@@ -6317,7 +6557,9 @@ function addTool(tool) {
 function showTool(id) {
   const tool = tools.get(id);
   if (!tool) return;
-  activeTool = id;
+  const from = tools.get(activeTool);
+  if (from && from !== tool && from.kind === "term") lastTermTab = from.id;
+  activeTool = lastShown = id;
   for (const t of tools.values()) t.el.classList.toggle("off", t.id !== id);
   panel.classList.add("open");
   panel.classList.add("tool");
@@ -6373,7 +6615,9 @@ const tailPath = (p) => {
 };
 
 function toolTitle(tool) {
-  return tool.kind === "term" ? tool.term.title || "terminal" : tool.title;
+  if (tool.kind !== "term") return tool.title;
+  const term = tool.term;
+  return tool.name || (term ? term.name || term.title : "") || "terminal";
 }
 
 function renderTabs() {
@@ -6413,13 +6657,15 @@ function renderTabs() {
   }
   for (const tool of tools.values()) {
     const term = tool.kind === "term" ? tool.term : null;
+    const isTerm = tool.kind === "term";
     tab(toolTitle(tool), {
-      on: activeTool === tool.id, glyph: term ? ">_" : "◍",
-      need: !!(term && term.unread),
-      title: term ? `${term.title} — ${shortPath(term.cwd)}` : tool.url || tool.title,
+      on: activeTool === tool.id, glyph: isTerm ? ">_" : "◍",
+      need: isTerm && muxUnread(tool),
+      title: term ? `${toolTitle(tool)} — ${shortPath(term.cwd)}` : tool.url || tool.title,
       run: () => showTool(tool.id),
-      close: () => (term ? closeTerm(tool.id) : closeTool(tool.id)),
-      closeTitle: term && term.alive ? "close, and end what is running in it" : "close",
+      close: () => (isTerm ? closeTerm(tool.id) : closeTool(tool.id)),
+      closeTitle: isTerm && muxTerms(tool).some((t) => t.alive)
+        ? "close, and end what is running in it" : "close",
     });
   }
   const add = document.createElement("button");
@@ -6453,8 +6699,101 @@ function newTabItems() {
   return items;
 }
 
+/* ------------------------------------------- workspace: first, and the graph
+
+   cortex opens on the place to work: the rail, and a terminal already there
+   to type into. The graph of the folder is the other half of the window, a
+   key (G) or a button away, and it is not drawn until it is asked for.
+
+   Which of the two the window was left on is remembered. Where there can be
+   no terminal -- a snapshot, a read-only folder -- there is only the graph. */
+const canWork = () => !SNAPSHOT && !CFG.capture && !READ_ONLY && !termsOff
+  && !!window.Term && !!window.Mux;
+
+function setWork(on, remember) {
+  work = !!on && canWork();
+  document.body.classList.toggle("work", work);
+  const btn = $("btn-graph");
+  btn.hidden = !canWork();
+  btn.classList.toggle("on", !work);
+  btn.title = work ? "Show the graph of this folder (G)"
+                   : "Put the graph away — back to the workspace (G)";
+  if (remember) savePref("layout", work ? "work" : "graph");
+  if (!work && !sel && !activeTool) panel.classList.remove("open");
+  dirty = true;
+  placeChrome();
+  renderTabs();
+  renderRail();
+  repaint();
+  // the terminals have a different amount of room now
+  const tool = tools.get(activeTool);
+  if (tool && tool.kind === "term") {
+    setTimeout(() => { for (const t of muxTerms(tool)) if (t.view) t.view.fit(); }, 0);
+  }
+}
+
+/* The window is up and the terminals the server still has are in their tabs.
+   On the workspace there is something to type into from the first moment:
+   the tab that was there, or a new terminal in the folder. */
+async function startWork() {
+  if (!canWork()) { if (work) setWork(false); return; }
+  setWork(work);
+  if (!work || activeTool || sel) return;
+  const tabs = termTabs();
+  if (tabs.length) showTool(tabs[0].id);
+  else if (!tools.size) await openTerminal({ cwd: viewRoot });
+}
+
+/* What there is to begin from: on the rail, and in the middle of a workspace
+   with nothing open. [glyph, name, key, whether it can be done, how, more] */
+function beginnings() {
+  const write = !READ_ONLY && !SNAPSHOT;
+  return [
+    ["⬢", "New agent", "a", write && !agentsOff, () => openAgentNew(),
+     "Claude Code, Codex or another, at work in a copy of its own"],
+    [">_", "New terminal", "`", write && !termsOff, () => openTerminal({ cwd: viewRoot }),
+     "a shell in this folder"],
+    SHELL ? ["◍", "New browser tab", "", true, () => openBrowser(), "a page, beside the work"]
+          : ["◍", "Preview a local page", "", true, () => openPreview(),
+             "a dev server, beside the work"],
+    ["▸", "Open a folder", "p", !SNAPSHOT, () => openPlaces(), "another project"],
+    ["◎", work ? "Show the graph" : "Hide the graph", "G", canWork(), () => setWork(!work, true),
+     work ? "this folder as a map of its files" : "back to the workspace"],
+  ];
+}
+
+function renderHome() {
+  const box = $("home-do");
+  box.textContent = "";
+  $("home-where").textContent = shortPath(viewRoot);
+  for (const [glyph, name, key, on, run, more] of beginnings()) {
+    if (!on) continue;
+    const b = document.createElement("button");
+    b.className = "home-do";
+    const g = document.createElement("span");
+    g.className = "g";
+    g.textContent = glyph;
+    const text = document.createElement("span");
+    text.className = "tx";
+    const nm = document.createElement("span");
+    nm.className = "nm";
+    nm.textContent = name;
+    const sub = document.createElement("span");
+    sub.className = "sub";
+    sub.textContent = more;
+    text.append(nm, sub);
+    const k = document.createElement("kbd");
+    k.textContent = key;
+    k.hidden = !key;
+    b.append(g, text, k);
+    b.addEventListener("click", run);
+    box.appendChild(b);
+  }
+}
+
 /* ----------------------------------------------------- workspace: the rail */
 function renderRail() {
+  renderHome();
   const rail = $("rail"), show = railShown();
   if (rail.hidden === show) {
     rail.hidden = !show;
@@ -6493,14 +6832,7 @@ function renderRail() {
   };
   const doBox = $("rail-do");
   doBox.textContent = "";
-  const write = !READ_ONLY && !SNAPSHOT;
-  for (const [glyph, name, key, on, run] of [
-    ["⬢", "New agent", "a", write && !agentsOff, () => openAgentNew()],
-    [">_", "New terminal", "`", write && !termsOff, () => openTerminal({ cwd: viewRoot })],
-    SHELL ? ["◍", "New browser tab", "", true, () => openBrowser()]
-          : ["◍", "Preview a local page", "", true, () => openPreview()],
-    ["▸", "Open a folder", "p", !SNAPSHOT, () => openPlaces()],
-  ]) {
+  for (const [glyph, name, key, on, run] of beginnings()) {
     if (!on) continue;
     const b = document.createElement("button");
     b.className = "rail-do";
@@ -6541,13 +6873,16 @@ function renderRail() {
   termsBox.textContent = "";
   for (const tool of tools.values()) {
     const term = tool.kind === "term" ? tool.term : null;
+    const isTerm = tool.kind === "term";
+    const panes = isTerm ? muxTerms(tool).length : 0;
     row(termsBox, {
-      glyph: term ? ">_" : "◍", name: toolTitle(tool),
-      sub: term ? (term.alive ? tailPath(term.screen.cwd || term.cwd) : "ended")
+      glyph: isTerm ? ">_" : "◍", name: toolTitle(tool),
+      sub: term ? (panes > 1 ? `${panes} panes · ` : "")
+          + (term.alive ? tailPath(term.screen.cwd || term.cwd) : "ended")
         : tool.browser ? hostOf(tool.url) : tool.url,
-      on: activeTool === tool.id, need: !!(term && term.unread),
+      on: activeTool === tool.id, need: isTerm && muxUnread(tool),
       run: () => showTool(tool.id),
-      close: () => (term ? closeTerm(tool.id) : closeTool(tool.id)),
+      close: () => (isTerm ? closeTerm(tool.id) : closeTool(tool.id)),
     });
   }
   $("rail-terms-head").hidden = !tools.size && (termsOff || READ_ONLY);
@@ -6584,9 +6919,9 @@ function renderStatus() {
   }
   const open = [...tools.values()].filter((t) => t.kind === "term");
   if (open.length) {
-    chip(plural(open.length, "terminal"), open.some((t) => t.term.unread) ? "need" : "",
+    chip(plural(open.length, "terminal"), open.some(muxUnread) ? "need" : "",
          "go to a terminal",
-         () => showTool((open.find((t) => t.term.unread) || open[open.length - 1]).id));
+         () => showTool((open.find(muxUnread) || open[open.length - 1]).id));
   }
   // how much of each agent's allowance is gone, as the agent itself reports it
   for (const u of Object.values(agentState.usage || {})) {
@@ -6602,6 +6937,7 @@ function renderStatus() {
     if (week) tip.push(`${pct(week.used)} of the week's` + (week.resets ? `, back in ${timeLeft(week.resets)}` : ""));
     chip(parts.join(" · "), first.used >= 0.9 ? "need" : "", `${u.label}: ${tip.join("; ")}`);
   }
+  if (themeNow) chip(`◐ ${themeNow.name}`, "theme", "change the theme", () => openThemes());
 }
 
 /* ------------------------------------------------- workspace: the terminals
@@ -6611,18 +6947,22 @@ function renderStatus() {
    one long poll, which runs only while there is one to read. A screen is
    kept up to date whether or not its tab is showing, so switching to it
    shows what is there now. */
-const terms = new Map();          // id -> {id, title, screen, view, host, alive, unread, ...}
+const terms = new Map();          // id -> {id, mux, title, screen, view, host, frame, ...}
 let termLoop = null, termSeq = 0, termsOff = false;
+let termLayouts = {};             // how each tab's panes were arranged, as the server kept it
+let termOpening = 0;              // terminals this window has asked for and not yet been given
 
 async function loadTerms() {
-  if (!window.Term) { termsOff = true; return; }
+  if (!window.Term || !window.Mux) { termsOff = true; return; }
   let r;
   try { r = await api("/api/terms", { since: 0, wait: 0 }); }
   catch (err) { return; }
   if (!r || !Array.isArray(r.terms)) return;
   if (r.off) { termsOff = true; return; }
   termSeq = r.seq || 0;
+  termLayouts = r.layouts || {};
   for (const t of r.terms) await adoptTerm(t, true);
+  for (const tool of termTabs()) muxRestore(tool);
   if (terms.size) watchTerms();
 }
 
@@ -6635,39 +6975,29 @@ function decodeChunk(term, b64) {
   return term.decoder.decode(bytes, { stream: true });
 }
 
-async function adoptTerm(t, replay) {
+async function adoptTerm(t, replay, where = {}) {
   const had = terms.get(t.id);
   if (had) return had;
   const host = document.createElement("div");
   host.className = "term";
   const term = {
-    id: t.id, title: t.title, kind: t.kind, owner: t.owner, cwd: t.cwd,
-    alive: t.alive, code: t.code, host, view: null, from: 0, unread: false,
-    bells: 0, out: "", sending: false,
+    id: t.id, mux: t.mux || t.id, title: t.title, name: null, kind: t.kind, owner: t.owner,
+    cwd: t.cwd, alive: t.alive, code: t.code, host, view: null, from: 0, unread: false,
+    bells: 0, out: "", sending: false, found: null,
     screen: new window.Term.Screen(t.cols || 100, t.rows || 30),
     decoder: typeof TextDecoder === "function" ? new TextDecoder("utf-8") : null,
   };
+  if (PAINT.termFg) term.screen.setColours(PAINT.termFg, PAINT.termBg);
+  // the pane: a frame with the terminal's name along its top, as zellij draws one
+  term.frame = document.createElement("div");
+  term.frame.className = "mx-pane";
+  term.titleEl = document.createElement("div");
+  term.titleEl.className = "mx-title";
+  term.frame.append(term.titleEl, host);
   terms.set(t.id, term);
-  addTool({
-    id: t.id, kind: "term", term, el: host,
-    shown: () => {
-      if (!term.view) {
-        term.view = window.Term.mount(host, term.screen, {
-          send: (text) => termSend(term, text),
-          resize: (cols, rows) => post("/api/term", { op: "resize", id: term.id, cols, rows })
-            .catch(() => {}),
-          changed: () => termNews(term),
-        });
-      }
-      term.unread = false;
-      term.view.fit();
-      term.view.refresh();
-      term.view.focus();
-      renderTabs();
-      renderRail();
-      renderStatus();
-    },
-  });
+  const tool = tools.get(term.mux) || newMux(term.mux);
+  term.frame.addEventListener("mousedown", () => muxFocus(tool, term.id));
+  muxAttach(tool, term, where);
   if (replay) {
     try {
       const got = await api("/api/term/replay", { id: t.id });
@@ -6716,8 +7046,11 @@ function watchTerms() {
       const listed = new Set(r.terms.map((t) => t.id));
       for (const t of r.terms) {
         const term = terms.get(t.id);
-        // one this window did not open, or fell too far behind on: from its replay
-        if (!term) await adoptTerm(t, true);
+        // One this window did not open, or fell too far behind on: from its
+        // replay. Not one it is in the middle of opening: the feed can say
+        // so before the answer to "open" has arrived, and taking it from
+        // here would put the pane wherever, instead of where it was asked for.
+        if (!term) { if (!termOpening) await adoptTerm(t, true); }
         else if (r.lost) await rejoinTerm(term);
         if (term && term.alive && !t.alive) { term.alive = false; term.code = t.code; termEnded(term); }
       }
@@ -6740,10 +7073,15 @@ async function rejoinTerm(term) {
   } catch (err) { /* the next poll tries again */ }
 }
 
+/* Its program has ended. Among other panes, the pane goes, as it does in
+   zellij; alone in its tab it stays, saying so, until enter is pressed. */
 function termEnded(term) {
+  const tool = tools.get(term.mux);
+  if (tool && muxTerms(tool).length > 1) { closePane(term.id); return; }
   term.screen.write(`\r\n\x1b[0;2m[ended${term.code > 0 ? ` with status ${term.code}` : ""}`
                     + " — enter closes this tab]\x1b[0m");
   if (term.view) term.view.refresh();
+  if (tool) muxMark(tool);
   renderTabs();
   renderRail();
   renderStatus();
@@ -6760,26 +7098,33 @@ function termNews(term, quiet) {
   if (s.notes.length || s.bells !== term.bells) {
     s.notes.length = 0;
     term.bells = s.bells;
-    const watching = activeTool === term.id && looking();
+    const watching = activeTool === term.mux && looking();
     if (!quiet && !watching) {
       term.unread = true;
       changed = true;
       if (said) {
-        toast(`${term.title} — ${said}`, true);
+        toast(`${term.name || term.title} — ${said}`, true);
         if (!looking()) {
-          post("/api/term", { op: "attention", title: term.title, body: said }).catch(() => {});
+          post("/api/term", { op: "attention", title: term.name || term.title, body: said })
+            .catch(() => {});
         }
       }
     }
   }
-  if (changed) { renderTabs(); renderRail(); renderStatus(); }
+  if (changed) {
+    const tool = tools.get(term.mux);
+    if (tool) muxMark(tool);
+    renderTabs();
+    renderRail();
+    renderStatus();
+  }
 }
 
 /* What is typed goes in the order it was typed: one request at a time, with
    whatever was typed meanwhile sent together in the next. */
 async function termSend(term, text) {
   if (!term.alive) {
-    if (text === "\r") closeTerm(term.id);
+    if (text === "\r") closeTerm(term.mux);
     return;
   }
   term.out += text;
@@ -6794,40 +7139,631 @@ async function termSend(term, text) {
   term.sending = false;
 }
 
+/* A first guess at a terminal's size; each pane measures itself once it is
+   on show. */
+function termSize() {
+  return { cols: Math.max(40, Math.floor((panelWidth - 30) / 7.9)),
+           rows: Math.max(10, Math.floor((H - 130) / 17)) };
+}
+
 async function openTerminal(o = {}) {
   if (termsOff || READ_ONLY || SNAPSHOT) {
     toast(READ_ONLY ? "cortex was started read-only" : "there are no terminals here", true);
     return null;
   }
-  // a first guess at the size; the tab measures itself once it is on show
-  const cols = Math.max(40, Math.floor((panelWidth - 30) / 7.9));
-  const rows = Math.max(10, Math.floor((H - 130) / 17));
   let r = null;
+  termOpening++;
   try {
     r = await post("/api/term", { op: "open", cwd: o.cwd, agent: o.agent, run: o.run,
-                                  takeover: !!o.takeover, cols, rows });
+                                  beside: o.beside, takeover: !!o.takeover, ...termSize() });
   } catch (err) { /* said below */ }
-  if (!r || !r.ok) { toast((r && r.error) || "could not open a terminal", true); return null; }
-  const term = await adoptTerm(r.term, false);
+  if (!r || !r.ok) {
+    termOpening--;
+    toast((r && r.error) || "could not open a terminal", true);
+    return null;
+  }
+  let term;
+  try { term = await adoptTerm(r.term, false); }
+  finally { termOpening--; }
   watchTerms();
-  showTool(term.id);
+  showTool(term.mux);
   return term;
 }
 
+/* A terminal has gone: its pane leaves its tab, and a tab with no panes
+   left closes. */
 function dropTerm(id) {
   const term = terms.get(id);
   if (!term) return;
   terms.delete(id);
   if (term.view) term.view.dispose();
-  closeTool(id);
+  const tool = tools.get(term.mux);
+  if (!tool) return;
+  tool.tree = window.Mux.remove(tool.tree, id);
+  tool.floats = tool.floats.filter((f) => f !== id);
+  const left = muxOrder(tool);
+  if (!left.length) { closeTool(tool.id); return; }
+  if (tool.focus === id || !left.includes(tool.focus)) {
+    tool.full = false;
+    tool.focus = (tool.lastTiled && left.includes(tool.lastTiled)) ? tool.lastTiled : left[0];
+  }
+  if (!tool.floats.length) tool.showFloats = false;
+  muxRender(tool);
+  if (activeTool === tool.id) muxShown(tool);
+  renderTabs();
+  renderRail();
+  renderStatus();
 }
 
+/* Close a whole terminal tab: every pane in it, and what each is running. */
 async function closeTerm(id) {
-  const term = terms.get(id);
-  if (!term) return;
+  const tool = tools.get(id);
+  if (!tool || tool.kind !== "term") return;
+  const mine = muxTerms(tool);
+  for (const term of mine) {
+    try { await post("/api/term", { op: "close", id: term.id }); }
+    catch (err) { /* it is gone from here either way */ }
+  }
+  for (const term of mine) dropTerm(term.id);
+  if (tools.has(id)) closeTool(id);
+}
+
+async function closePane(id) {
+  if (!terms.has(id)) return;
   try { await post("/api/term", { op: "close", id }); }
   catch (err) { /* it is gone from here either way */ }
   dropTerm(id);
+}
+
+/* ------------------------------------------------- workspace: panes, as zellij
+
+   A terminal tab is a set of panes -- tiled, with others floating over them
+   -- driven in zellij's modes with zellij's keys (mux.js has both the keys
+   and the arithmetic of the layout). Here is the part that is on the page:
+   the frames, which one has the keys, the bar that says what the keys do,
+   and what each action does to the tab. */
+const muxTerms = (tool) => [...terms.values()].filter((t) => t.mux === tool.id);
+const muxOrder = (tool) => [...window.Mux.ids(tool.tree), ...tool.floats];
+const muxUnread = (tool) => muxTerms(tool).some((t) => t.unread);
+const termTabs = () => [...tools.values()].filter((t) => t.kind === "term");
+let lastTermTab = null;           // the terminal tab on show before this one, for ctrl-t tab
+
+function newMux(id) {
+  const el = document.createElement("div");
+  el.className = "mux";
+  const body = document.createElement("div");
+  body.className = "mx-body";
+  const floatBox = document.createElement("div");
+  floatBox.className = "mx-floats";
+  const bar = document.createElement("div");
+  bar.className = "mx-bar";
+  el.append(body, floatBox, bar);
+  const tool = {
+    id, kind: "term", el, body, floatBox, bar, tree: null, floats: [], showFloats: false,
+    focus: null, lastTiled: null, full: false, frames: true, mode: "normal", sync: false,
+    name: null, layout: 0, typed: "", before: null, saver: null,
+    search: { term: "", case: false, wrap: true, word: false, at: null },
+    get term() { return terms.get(this.focus) || muxTerms(this)[0] || null; },
+    shown: () => muxShown(tool),
+  };
+  addTool(tool);
+  return tool;
+}
+
+/* Put a terminal into a tab as a pane: floating, or tiled beside another. */
+function muxAttach(tool, term, where) {
+  if (where.float) {
+    tool.floats.push(term.id);
+    tool.showFloats = true;
+  } else {
+    const at = where.at || (tool.floats.includes(tool.focus) ? tool.lastTiled : tool.focus);
+    tool.tree = window.Mux.split(tool.tree, at, term.id, where.dir || "row");
+    tool.lastTiled = term.id;
+  }
+  tool.focus = term.id;
+  tool.full = false;
+  muxRender(tool);
+}
+
+/* The tab's panes, put on the page the way the tree says. The frames
+   themselves are kept and moved; only the boxes around them are remade. */
+function muxRender(tool) {
+  // A place in the layout for a terminal that is not there -- it ended, it
+  // was moved, the server never heard of it -- would be drawn as an empty
+  // box with nothing to type into. There is no such place.
+  for (const id of window.Mux.ids(tool.tree)) {
+    const t = terms.get(id);
+    if (!t || t.mux !== tool.id) tool.tree = window.Mux.remove(tool.tree, id);
+  }
+  tool.floats = tool.floats.filter((id) => terms.has(id) && terms.get(id).mux === tool.id);
+  const here = muxOrder(tool);
+  if (here.length && !here.includes(tool.focus)) tool.focus = here[0];
+  const build = (n) => {
+    if (n.t === "leaf") {
+      const t = terms.get(n.id);
+      return t ? t.frame : document.createElement("div");
+    }
+    const box = document.createElement("div");
+    box.className = "mx-split " + n.dir;
+    n.kids.forEach((k, i) => {
+      const c = build(k);
+      c.style.flex = `${n.sizes[i].toFixed(4)} 1 0`;
+      box.appendChild(c);
+    });
+    return box;
+  };
+  // taking a pane off the page forgets how far it was scrolled
+  const places = muxTerms(tool).filter((t) => t.view).map((t) => [t, t.view.where()]);
+  tool.body.textContent = "";
+  if (tool.tree) {
+    const top = build(tool.tree);
+    top.style.flex = "1 1 0";
+    tool.body.appendChild(top);
+  }
+  tool.floatBox.textContent = "";
+  tool.floats.forEach((id, i) => {
+    const t = terms.get(id);
+    if (!t) return;
+    t.frame.style.flex = "";
+    t.frame.style.left = `${18 + (i % 5) * 3}%`;
+    t.frame.style.top = `${12 + (i % 5) * 4}%`;
+    tool.floatBox.appendChild(t.frame);
+  });
+  // a pane that arrived while the tab was on show is drawn now, not the
+  // next time someone happens to switch to the tab
+  if (activeTool === tool.id) muxMount(tool);
+  muxMark(tool);
+  muxSave(tool);
+  for (const [t, place] of places) t.view.restore(place);
+  // each terminal measures the room it now has, and stays where it was in
+  // what it has printed
+  setTimeout(() => {
+    for (const [t, place] of places) if (t.view) { t.view.fit(); t.view.restore(place); }
+    for (const t of muxTerms(tool)) if (t.view) t.view.fit();
+  }, 0);
+}
+
+/* Which pane has the keys, what each is called, and the bar: everything
+   that changes without the layout changing. */
+function muxMark(tool) {
+  const floating = new Set(tool.floats);
+  for (const t of muxTerms(tool)) {
+    t.frame.classList.toggle("on", t.id === tool.focus);
+    t.frame.classList.toggle("float", floating.has(t.id));
+    if (!floating.has(t.id)) { t.frame.style.left = ""; t.frame.style.top = ""; }
+    t.titleEl.textContent = (t.name || t.title || "pane")
+      + (t.alive ? "" : "  (ended)") + (t.unread ? "  •" : "");
+  }
+  tool.el.classList.toggle("full", tool.full);
+  tool.el.classList.toggle("bare", !tool.frames);
+  tool.floatBox.classList.toggle("show", tool.showFloats && tool.floats.length > 0);
+  muxBar(tool);
+}
+
+/* zellij's two lines: the modes, with the one that is on lit; then what the
+   keys do in it -- or, while a name or a search is being typed, that. */
+function muxBar(tool) {
+  const M = window.Mux, bar = tool.bar;
+  bar.textContent = "";
+  const lit = { entersearch: "scroll", search: "scroll", renamepane: "pane",
+                renametab: "tab" }[tool.mode] || tool.mode;
+  const modes = document.createElement("div");
+  modes.className = "mx-modes";
+  const lead = document.createElement("span");
+  lead.className = "mx-lead";
+  lead.textContent = "Ctrl +";
+  modes.appendChild(lead);
+  for (const [key, label, mode] of M.RIBBON) {
+    const s = document.createElement("span");
+    s.className = "mx-mode" + (mode && mode === lit ? " on" : "");
+    const k = document.createElement("b");
+    k.textContent = `<${key}>`;
+    s.append(k, document.createTextNode(" " + label));
+    modes.appendChild(s);
+  }
+  const flags = [];
+  if (tool.mode === "tmux") flags.push("TMUX");
+  if (tool.sync) flags.push("SYNC");
+  if (tool.full) flags.push("FULLSCREEN");
+  if (tool.floats.length && !tool.showFloats) flags.push(`${tool.floats.length} FLOATING HIDDEN`);
+  if (flags.length) {
+    const f = document.createElement("span");
+    f.className = "mx-flags";
+    f.textContent = flags.join(" · ");
+    modes.appendChild(f);
+  }
+  const hints = document.createElement("div");
+  hints.className = "mx-hints";
+  const say = (key, text) => {
+    const h = document.createElement("span");
+    h.className = "mx-hint";
+    const k = document.createElement("b");
+    k.textContent = key;
+    h.append(k, document.createTextNode(" " + text));
+    hints.appendChild(h);
+  };
+  if (tool.mode === "renamepane" || tool.mode === "renametab") {
+    say(tool.mode === "renametab" ? "tab name:" : "pane name:", tool.typed + "▏");
+  } else if (tool.mode === "entersearch") {
+    say("search for:", tool.typed + "▏");
+  } else if (tool.mode === "search") {
+    const at = tool.search.at;
+    say(`“${tool.search.term}”`, !at || !at.count ? "is not there" : `${at.of} of ${at.count}`);
+    const on = ["case", "wrap", "word"].filter((o) => tool.search[o]);
+    if (on.length) say("on:", on.join(", "));
+  }
+  for (const [key, text] of M.HINTS[tool.mode] || []) say(key, text);
+  bar.append(modes, hints);
+}
+
+/* Remember the arrangement where a reload will find it. */
+function muxSave(tool) {
+  clearTimeout(tool.saver);
+  tool.saver = setTimeout(() => {
+    if (!tools.has(tool.id)) return;
+    const names = {};
+    for (const t of muxTerms(tool)) if (t.name) names[t.id] = t.name;
+    post("/api/term", { op: "layout", mux: tool.id, layout: {
+      tree: tool.tree, floats: tool.floats, names, name: tool.name, frames: tool.frames,
+      show: tool.showFloats } }).catch(() => {});
+  }, 250);
+}
+
+/* ...and put it back: the panes that are still there, where they were. */
+function muxRestore(tool) {
+  const saved = termLayouts[tool.id];
+  if (!saved || typeof saved !== "object") return;
+  const known = muxTerms(tool).map((t) => t.id);
+  const floats = (Array.isArray(saved.floats) ? saved.floats : []).filter((f) => known.includes(f));
+  let tree = window.Mux.sound(saved.tree, known.filter((k) => !floats.includes(k)));
+  const placed = new Set([...window.Mux.ids(tree), ...floats]);
+  for (const id of known) if (!placed.has(id)) tree = window.Mux.split(tree, null, id, "row");
+  tool.tree = tree;
+  tool.floats = floats;
+  tool.showFloats = !!saved.show && floats.length > 0;
+  tool.frames = saved.frames !== false;
+  tool.name = typeof saved.name === "string" ? saved.name.slice(0, 60) : null;
+  for (const t of muxTerms(tool)) {
+    const name = saved.names && saved.names[t.id];
+    if (typeof name === "string") t.name = name.slice(0, 60);
+  }
+  // the keys go to a pane that can be seen: a tiled one, unless only
+  // floating ones are left
+  const tiled = window.Mux.ids(tree);
+  tool.lastTiled = tiled[0] || null;
+  tool.focus = tiled[0] || floats[0] || null;
+  if (!tiled.length && floats.length) tool.showFloats = true;
+  muxRender(tool);
+}
+
+function muxFocus(tool, id, grab = true) {
+  const term = terms.get(id);
+  if (!term || term.mux !== tool.id) return;
+  const moved = tool.focus !== id;
+  tool.focus = id;
+  if (tool.floats.includes(id)) tool.showFloats = true; else tool.lastTiled = id;
+  if (moved) tool.full = false;
+  term.unread = false;
+  muxMark(tool);
+  if (grab && activeTool === tool.id && term.view && !term.view.focused()) term.view.focus();
+  if (moved) { renderTabs(); renderRail(); }
+}
+
+/* The tab has come on show: every pane gets its terminal drawn, and the
+   one with the keys gets them. */
+function muxMount(tool) {
+  for (const term of muxTerms(tool)) {
+    if (term.view) continue;
+    term.view = window.Term.mount(term.host, term.screen, {
+      send: (text) => termType(tool, term, text),
+      resize: (cols, rows) => post("/api/term", { op: "resize", id: term.id, cols, rows })
+        .catch(() => {}),
+      changed: () => termNews(term),
+      key: (e) => muxKey(tool, term, e),
+      focus: () => { if (tool.focus !== term.id) muxFocus(tool, term.id, false); },
+    });
+  }
+}
+function muxShown(tool) {
+  muxMount(tool);
+  for (const term of muxTerms(tool)) { term.view.fit(); term.view.refresh(); }
+  const term = tool.term;
+  if (term) { term.unread = false; term.view.focus(); }
+  muxMark(tool);
+  renderTabs();
+  renderRail();
+  renderStatus();
+}
+
+/* What is typed: to this pane, or with sync on, to every pane in the tab. */
+function termType(tool, term, text) {
+  if (!tool.sync) { termSend(term, text); return; }
+  for (const t of muxTerms(tool)) if (t.alive) termSend(t, text);
+}
+
+/* A key pressed in a pane. True when it was the multiplexer's. */
+function muxKey(tool, term, e) {
+  const M = window.Mux;
+  const key = M.keyName(e);
+  if (!key || M.forProgram(tool.mode, key)) return false;
+  const acts = M.actions(tool.mode, key, e.key);
+  if (acts === null) return false;
+  for (const act of acts) muxDo(tool, act);
+  if (tools.has(tool.id)) { muxMark(tool); muxSave(tool); }
+  return true;
+}
+
+async function muxNewPane(tool, dir, o = {}) {
+  const from = tool.term;
+  // About the size it is going to be -- half of the pane it splits, or what a
+  // floating one gets -- so that the shell draws its first prompt for the
+  // room it has, not for a guess it then has to be corrected from.
+  const size = termSize();
+  const beside = terms.get(tool.lastTiled) || from;
+  if (o.float) {
+    size.cols = Math.max(20, Math.floor(size.cols * 0.6));
+    size.rows = Math.max(8, Math.floor(size.rows * 0.56));
+  } else if (beside && beside.view) {
+    size.cols = dir === "row" ? Math.max(10, Math.floor(beside.screen.cols / 2) - 1) : beside.screen.cols;
+    size.rows = dir === "col" ? Math.max(4, Math.floor(beside.screen.rows / 2) - 1) : beside.screen.rows;
+  }
+  let r = null;
+  termOpening++;
+  try {
+    r = await post("/api/term", { op: "open", mux: tool.id, beside: from ? from.id : undefined,
+                                  scrollback: o.scrollback, ...size });
+  } catch (err) { /* said below */ }
+  if (!r || !r.ok) {
+    termOpening--;
+    toast((r && r.error) || "could not open a pane", true);
+    return null;
+  }
+  let term;
+  try {
+    term = await adoptTerm({ ...r.term, mux: tool.id }, false,
+                           { dir, float: !!o.float, at: tool.lastTiled });
+  } finally { termOpening--; }
+  watchTerms();
+  if (activeTool === tool.id) muxShown(tool);
+  return term;
+}
+
+/* Which way to split when none was said: across the pane's longer side. */
+function muxWay(tool) {
+  const t = terms.get(tool.lastTiled) || tool.term;
+  const r = t ? t.frame.getBoundingClientRect() : { width: 2, height: 1 };
+  return r.width >= r.height * 1.25 ? "row" : "col";
+}
+
+function goTermTab(to) {
+  const all = termTabs();
+  const tool = typeof to === "number" ? all[to] : to;
+  if (tool) showTool(tool.id);
+}
+
+function muxDo(tool, [what, a, b]) {
+  const M = window.Mux;
+  const term = tool.term;
+  const order = muxOrder(tool);
+  const floating = tool.floats.includes(tool.focus);
+  const view = term && term.view;
+  switch (what) {
+    case "mode": {
+      const was = tool.mode;
+      tool.mode = a;
+      if (a === "renamepane") { tool.typed = ""; tool.before = term ? term.name : null; }
+      else if (a === "renametab") { tool.typed = ""; tool.before = tool.name; }
+      else if (a === "entersearch") tool.typed = "";
+      else if (a === "normal" && (was === "scroll" || was === "search")) {
+        // leaving the history puts the pane back at what is happening now
+        if (view) { view.find(""); view.scroll("bottom"); }
+        tool.search.at = null;
+      }
+      break;
+    }
+    case "focus": case "focus-or-tab": {
+      let next = null;
+      if (floating) {
+        // floating panes are not beside one another: left and right go round them
+        const k = tool.floats.indexOf(tool.focus), n = tool.floats.length;
+        next = tool.floats[(k + (a === "left" || a === "up" ? n - 1 : 1)) % n];
+        if (next === tool.focus) next = null;
+      } else {
+        next = M.neighbour(tool.tree, tool.focus, a);
+      }
+      if (next) muxFocus(tool, next);
+      else if (what === "focus-or-tab") {
+        const all = termTabs(), i = all.indexOf(tool);
+        if (all.length > 1) goTermTab((i + (a === "left" ? all.length - 1 : 1)) % all.length);
+      }
+      break;
+    }
+    case "switch-focus":
+      if (order.length > 1) muxFocus(tool, order[(order.indexOf(tool.focus) + 1) % order.length]);
+      break;
+    case "new":
+      muxNewPane(tool, a === "right" ? "row" : a ? "col" : muxWay(tool),
+                 { float: !a && floating && tool.showFloats });
+      break;
+    case "close":
+      if (term) closePane(term.id);
+      break;
+    case "fullscreen":
+      tool.full = !tool.full;
+      break;
+    case "frames":
+      tool.frames = !tool.frames;
+      break;
+    case "floating":
+      if (!tool.floats.length) { muxNewPane(tool, null, { float: true }); break; }
+      tool.showFloats = !tool.showFloats;
+      muxFocus(tool, tool.showFloats ? tool.floats[tool.floats.length - 1]
+        : (order.includes(tool.lastTiled) ? tool.lastTiled : M.ids(tool.tree)[0] || tool.focus));
+      break;
+    case "embed":
+      if (!term) break;
+      if (floating) {
+        tool.floats = tool.floats.filter((f) => f !== term.id);
+        tool.tree = M.split(tool.tree, tool.lastTiled, term.id, muxWay(tool));
+        tool.lastTiled = term.id;
+        if (!tool.floats.length) tool.showFloats = false;
+      } else {
+        tool.tree = M.remove(tool.tree, term.id);
+        tool.floats.push(term.id);
+        tool.showFloats = true;
+        tool.lastTiled = M.ids(tool.tree)[0] || null;
+      }
+      tool.full = false;
+      muxRender(tool);
+      break;
+    case "move": case "move-back": {
+      if (floating || !term) break;
+      const tiled = M.ids(tool.tree);
+      const other = a ? M.neighbour(tool.tree, term.id, a)
+        : tiled[(tiled.indexOf(term.id) + (what === "move" ? 1 : tiled.length - 1)) % tiled.length];
+      if (other && other !== term.id) { tool.tree = M.swap(tool.tree, term.id, other); muxRender(tool); }
+      break;
+    }
+    case "resize": {
+      if (floating || !term) break;
+      const grew = b ? M.resize(tool.tree, term.id, b, a === "increase")
+                     : M.resizeAll(tool.tree, term.id, a === "increase");
+      if (grew) muxRender(tool);
+      break;
+    }
+    case "layout": {
+      const tiled = M.ids(tool.tree);
+      if (tiled.length < 2) break;
+      const n = M.ARRANGEMENTS.length;
+      tool.layout = (tool.layout + (a === "next" ? 1 : n - 1)) % n;
+      tool.tree = M.arrange(tiled, tool.layout);
+      tool.full = false;
+      muxRender(tool);
+      toast(`panes ${M.ARRANGEMENTS[tool.layout]}`);
+      break;
+    }
+    case "tab": {
+      const all = termTabs(), i = all.indexOf(tool);
+      if (a === "new") openTerminal({ beside: term ? term.id : undefined });
+      else if (a === "close") closeTerm(tool.id);
+      else if (all.length > 1) goTermTab((i + (a === "prev" ? all.length - 1 : 1)) % all.length);
+      break;
+    }
+    case "goto": goTermTab(a - 1); break;
+    case "toggle-tab":
+      if (lastTermTab && tools.has(lastTermTab) && lastTermTab !== tool.id) showTool(lastTermTab);
+      break;
+    case "move-tab": {
+      // the tabs along the top, with this one a place to the left or the right
+      const all = [...tools.entries()], i = all.findIndex(([id]) => id === tool.id);
+      const j = i + (a === "left" ? -1 : 1);
+      if (j < 0 || j >= all.length) break;
+      [all[i], all[j]] = [all[j], all[i]];
+      tools.clear();
+      for (const [id, t] of all) tools.set(id, t);
+      renderTabs();
+      renderRail();
+      break;
+    }
+    case "sync":
+      tool.sync = !tool.sync;
+      toast(tool.sync ? "what is typed goes to every pane in this tab" : "typing to one pane again");
+      break;
+    case "break":
+      if (term && order.length > 1) muxBreak(tool, term);
+      else toast("a tab's only pane has nowhere to break out of");
+      break;
+    case "type": case "erase": case "commit": case "undo-rename": {
+      if (what === "type") tool.typed += a;
+      else if (what === "erase") tool.typed = tool.typed.slice(0, -1);
+      if (tool.mode === "renamepane" && term) {
+        term.name = what === "undo-rename" ? tool.before : tool.typed || null;
+      } else if (tool.mode === "renametab") {
+        tool.name = what === "undo-rename" ? tool.before : tool.typed || null;
+      }
+      renderTabs();
+      renderRail();
+      break;
+    }
+    case "scroll":
+      if (view) view.scroll(a);
+      break;
+    case "search-go":
+      tool.search.term = tool.typed;
+      tool.search.at = view ? view.find(tool.typed, null, tool.search) : null;
+      break;
+    case "search":
+      tool.search.at = view ? view.find(tool.search.term, a, tool.search) : null;
+      break;
+    case "search-option":
+      tool.search[a] = !tool.search[a];
+      tool.search.at = view ? view.find(tool.search.term, null, tool.search) : null;
+      break;
+    case "edit-scrollback": {
+      if (!term) break;
+      const text = [...term.screen.scrollback, ...term.screen.lines]
+        .map((r) => r.c.join("").replace(/\s+$/, "")).join("\n").replace(/\n+$/, "\n");
+      muxNewPane(tool, null, { float: true, scrollback: text });
+      break;
+    }
+    case "write":
+      if (term) termSend(term, a);
+      break;
+    case "detach":
+      tool.mode = "normal";
+      closePanel();
+      toast("put away — everything in it keeps running; the rail brings it back");
+      break;
+    case "sessions":
+      if (railShut) { railShut = false; savePref("rail", "open"); renderRail(); }
+      toast("the tabs are listed in the rail, on the left");
+      break;
+    case "quit":
+      muxQuit(tool);
+      break;
+    case "plugin":
+      toast(`zellij opens ${a} there; cortex has nothing of the kind`);
+      break;
+    case "pin": case "group":
+      toast("cortex's panes cannot do that yet");
+      break;
+  }
+}
+
+/* ctrl-q is zellij's quit, which ends everything in the session. Here it
+   ends this tab, and with more than a prompt in it, asks first. */
+async function muxQuit(tool) {
+  const n = muxTerms(tool).filter((t) => t.alive).length;
+  if (n > 1) {
+    const yes = await ask({ title: "Close this terminal tab?",
+                            text: `${plural(n, "pane")} in it, and whatever each is running, end.`,
+                            ok: "close" });
+    if (!yes) { const t = tool.term; if (t && t.view) t.view.focus(); return; }
+  }
+  closeTerm(tool.id);
+}
+
+/* A pane, out of its tab and into one of its own. */
+async function muxBreak(tool, term) {
+  const id = "m" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  let r = null;
+  try { r = await post("/api/term", { op: "move", id: term.id, mux: id }); }
+  catch (err) { /* said below */ }
+  if (!r || !r.ok) { toast((r && r.error) || "could not move the pane", true); return; }
+  tool.tree = window.Mux.remove(tool.tree, term.id);
+  tool.floats = tool.floats.filter((f) => f !== term.id);
+  const left = muxOrder(tool);
+  tool.focus = left.includes(tool.lastTiled) ? tool.lastTiled : left[0];
+  tool.full = false;
+  if (!tool.floats.length) tool.showFloats = false;
+  muxRender(tool);
+  term.mux = id;
+  const next = newMux(id);
+  term.frame.addEventListener("mousedown", () => muxFocus(next, term.id));
+  // the terminal was drawn for the old tab, and its keys went there
+  if (term.view) { term.view.dispose(); term.view = null; term.host.textContent = ""; }
+  muxAttach(next, term, {});
+  showTool(id);
 }
 
 /* ---------------------------------------------------- workspace: a preview
@@ -6843,7 +7779,7 @@ async function openPreview(url) {
   if (!url) {
     url = await ask({ title: "Preview a local address",
                       text: "A page served on this machine, such as a dev server.",
-                      value: keep.get("preview") || "http://localhost:3000", ok: "open" });
+                      value: PREFS.preview || "http://localhost:3000", ok: "open" });
     if (!url) return;
   }
   if (/^(localhost|127\.0\.0\.1)/i.test(url) || /^:\d+/.test(url) || /^\d{2,5}$/.test(url)) {
@@ -6853,7 +7789,7 @@ async function openPreview(url) {
     toast("only pages on this machine can be shown here — that one is for your browser", true);
     return;
   }
-  keep.set("preview", url);
+  savePref("preview", url);
   const id = "web:" + (++webCount);
   const el = document.createElement("div");
   el.className = "web";
@@ -6874,7 +7810,7 @@ async function openPreview(url) {
     tool.url = next;
     tool.title = next.replace(/^https?:\/\//, "").replace(/\/$/, "");
     frame.src = next;
-    keep.set("preview", next);
+    savePref("preview", next);
     renderTabs();
     renderRail();
   };
@@ -7123,6 +8059,7 @@ function keyHandler(e) {
     openBrowser();
     return;
   }
+  if (themesOpen && e.key === "Escape") { closeThemes(); return; }
   if ($("agent-new").classList.contains("open")) {
     if (e.key === "Escape") closeAgentNew();
     else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); startAgents(); }
@@ -7248,6 +8185,8 @@ function keyHandler(e) {
       break;
     case "m":
       if (sel) setMax(!maximized); break;
+    case "G":
+      if (canWork()) setWork(!work, true); break;
     case "o":
       if (sel && sel.dir && !sel.tag) isolate(sel.id); break;
     case "b":
@@ -7281,6 +8220,7 @@ function keyHandler(e) {
 // --------------------------------------------------------------------- wire
 $("p-close").addEventListener("click", closePanel);
 $("p-max").addEventListener("click", () => setMax(!maximized));
+$("btn-graph").addEventListener("click", () => setWork(!work, true));
 $("p-path").addEventListener("click", () => {
   if (!sel || sel.tag) return;
   navigator.clipboard.writeText(sel.id).then(() => toast("path copied"),
@@ -7324,12 +8264,32 @@ document.addEventListener("click", (e) => {
 });
 
 // the dock, and what its buttons open
+$("th-filter").addEventListener("input", () => { themeIndex = 0; renderThemes(); previewTheme(0); });
+$("th-filter").addEventListener("keydown", (e) => themeKey(e));
+$("th-close").addEventListener("click", () => closeThemes());
+$("th-follow").addEventListener("change", () => {
+  savePref("follow", !!$("th-follow").checked);
+  applyTheme();
+  renderThemes();
+  renderStatus();
+});
+document.addEventListener("click", (e) => {
+  const inside = (q) => e.target && e.target.closest && e.target.closest(q);
+  if (themesOpen && !inside("#themes") && !inside("#status") && !inside("#palette")) closeThemes();
+});
+if (typeof matchMedia === "function") {
+  // the system went light or dark: a pair that follows it changes over
+  const mode = matchMedia("(prefers-color-scheme: light)");
+  if (mode.addEventListener) {
+    mode.addEventListener("change", () => { if (PREFS.follow && !themesOpen) { applyTheme(); renderStatus(); } });
+  }
+}
 $("d-agents").addEventListener("click", () => openAgents());
 $("rail-new").addEventListener("click", () => openAgentNew());
 $("rail-term").addEventListener("click", () => openTerminal({ cwd: viewRoot }));
 $("rail-shut").addEventListener("click", () => {
   railShut = true;
-  keep.set("rail", "shut");
+  savePref("rail", "shut");
   renderRail();
 });
 /* The pane's edge: drag it to give the conversation, or the graph, more room. */
@@ -7342,7 +8302,7 @@ $("p-resize").addEventListener("mousedown", (e) => {
     document.body.classList.remove("resizing");
     setPanelWidth(panelWidth, true);
     const tool = activeTool && tools.get(activeTool);
-    if (tool && tool.kind === "term" && tool.term.view) tool.term.view.fit();
+    if (tool && tool.kind === "term") for (const t of muxTerms(tool)) if (t.view) t.view.fit();
   };
   document.body.classList.add("resizing");
   window.addEventListener("mousemove", move);
@@ -7453,6 +8413,7 @@ $("gone-retry").addEventListener("click", () => location.reload && location.relo
     return;
   }
   buildFilters();
+  applyTheme();
   showZoom();
   toggleSearchMode("names");        // label, placeholder and list, in one place
   // the name identifies a folder; the path is in the tooltip
@@ -7514,12 +8475,14 @@ $("gone-retry").addEventListener("click", () => location.reload && location.relo
       if (name === "address" && tool && tool.address) tool.address();
     });
   }
-  railShut = keep.get("rail") === "shut";
-  setPanelWidth(Number(keep.get("panel")) || 520);
+  railShut = PREFS.rail === "shut";
+  setPanelWidth(Number(PREFS.panel) || 520);
   renderTabs();
   renderRail();
   renderStatus();
-  if (!SNAPSHOT) { loadAgents(); loadTerms(); }
+  work = PREFS.layout === "work" && canWork();
+  if (work) document.body.classList.add("work");
+  if (!SNAPSHOT) { loadAgents(); loadTerms().then(startWork); }
   if (SNAPSHOT && CFG.view) await applyView(CFG.view);
   if (SNAPSHOT) {
     // the dock has only tours to offer, and only when there are some

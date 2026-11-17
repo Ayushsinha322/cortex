@@ -171,12 +171,22 @@ s.resize(10, 3);
 check("unless there was room below it", same(s.text(), ["ab", "cd", ""]) && s.y === 1
       && s.scrollback.length === 0);
 s.resize(4, 6);
-check("narrower and taller: cut, and padded", s.lines.length === 6 && s.lines[0].c.length === 4
-      && s.bottom === 5);
+check("narrower and taller: less of each row is shown, and rows are added",
+      s.lines.length === 6 && s.cols === 4 && s.bottom === 5 && s.text()[0] === "ab");
+s = fed("a long line of text", 30, 3);
+s.resize(8, 3);
+check("a screen squeezed narrow shows what fits", s.text()[0] === "a long l");
+s.resize(30, 3);
+check("and widened again has lost nothing", s.text()[0] === "a long line of text");
+s.resize(8, 3);
+s.write("\r" + E + "[K");
+s.resize(30, 3);
+check("but what a program erased while it was narrow is erased, all of it", s.text()[0] === "");
 s = fed(E + "[?1049h" + "alt", 10, 4);
 s.resize(6, 2);
 s.write(E + "[?1049l");
-check("the screen underneath is resized with it", s.lines.length === 2 && s.lines[0].c.length === 6);
+check("the screen underneath is resized with it", s.lines.length === 2 && s.cols === 6
+      && s.text().every((r) => r.length <= 6));
 
 // --- keys ----------------------------------------------------------------------------
 check("keys that type are left to the text box", key("a") === null && key("é") === null);

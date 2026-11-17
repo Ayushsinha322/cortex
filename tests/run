@@ -63,6 +63,7 @@ step "python: ghosts and suggestions" python3 tests/test_suggest.py
 step "python: agents" python3 tests/test_agents.py
 step "python: terminals" python3 tests/test_terminals.py
 step "python: its own window" python3 tests/test_shell.py
+step "python: what is remembered, and themes" python3 tests/test_prefs.py
 
 # --- browser-side logic -----------------------------------------------------
 if command -v node >/dev/null; then
@@ -81,7 +82,10 @@ if command -v node >/dev/null; then
   step "agents" node tests/agents.test.js
   step "terminal" node tests/terminal.test.js
   step "workspace" node tests/workspace.test.js
+  step "workspace first" node tests/home.test.js
+  step "panes" node tests/mux.test.js
   step "browser tabs" node tests/browser.test.js
+  step "themes" node tests/themes.test.js
   step "quick capture" node tests/capture.test.js
   step "snapshot" node tests/snapshot.test.js
   step "performance" node tests/perf.test.js

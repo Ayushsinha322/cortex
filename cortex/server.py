@@ -14,14 +14,17 @@ import mimetypes
 import os
 import posixpath
 import secrets
+import shlex
+import shutil
 import socketserver
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, quote
 
 from . import (desktop, dismissed, files, gitstatus, grep, journal, layout, places,
-               reader, snapshot, tours, views)
+               prefs, reader, snapshot, themes, tours, views)
 from . import agents, history, terminals
 from .agents import Pool
 from .terminals import Terminals
@@ -491,6 +494,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": "no such agent"}, 404)
             return self._json(got)
 
+        if route == "/api/themes":
+            return self._json({"themes": themes.available()})
+
         if route == "/api/terms":
             if self.ctx.read_only or not terminals.supported():
                 return self._json({"off": True, "seq": 0, "chunks": [], "terms": []})
@@ -560,6 +566,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/dismiss": self._dismiss,
             "/api/agents": self._agents,
             "/api/term": self._term,
+            "/api/prefs": self._prefs,
         }
         handler = routes.get(url.path)
         if handler is None:
@@ -864,6 +871,39 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(got)
         return self._json({"ok": False, "error": f"unknown operation {op!r}"})
 
+    def _prefs(self, body):
+        """How the window is to be left: the theme, the pane's width. Not a
+        change to anyone's files, so it is kept even when cortex is read-only."""
+        return self._json({"ok": True, "prefs": prefs.update(body.get("set"))})
+
+    def _scrollback(self, terms, body, cwd, cols, rows, mux):
+        text = body.get("scrollback")
+        if not isinstance(text, str) or len(text) > 4 * 1024 * 1024:
+            return {"ok": False, "error": "bad scrollback"}
+        editor = None
+        for var in ("VISUAL", "EDITOR"):
+            try:
+                argv = shlex.split(os.environ.get(var) or "")
+            except ValueError:
+                argv = []
+            if argv and shutil.which(argv[0]):
+                editor = argv
+                break
+        if editor is None:
+            editor = next(([name] for name in ("nvim", "vim", "nano", "vi", "less")
+                           if shutil.which(name)), None)
+        if editor is None:
+            return {"ok": False, "error": "no editor to open it in - set $EDITOR"}
+        folder = os.path.join(os.path.expanduser("~"), ".cache", "cortex", "scrollback")
+        try:
+            os.makedirs(folder, mode=0o700, exist_ok=True)
+            fd, path = tempfile.mkstemp(prefix="pane-", suffix=".txt", dir=folder)
+            with os.fdopen(fd, "w", encoding="utf-8", errors="replace") as fh:
+                fh.write(text)
+        except OSError as exc:
+            return {"ok": False, "error": f"could not write it: {exc.strerror or exc}"}
+        return terms.open(editor + [path], cwd, "scrollback", cols=cols, rows=rows, mux=mux)
+
     def _term(self, body):
         """A terminal in the window: open one, type into it, size it, close it."""
         if not self._writable():
@@ -887,6 +927,12 @@ class Handler(BaseHTTPRequestHandler):
                                              cols=cols, rows=rows))
             raw = body.get("cwd")
             cwd = self._inside(raw) if raw else self.ctx.scanner.root
+            beside = terms.where(body.get("beside")) if body.get("beside") else None
+            if beside:
+                # a pane opened beside another starts where that one is: a
+                # folder a terminal of ours is already in, not one the page names
+                cwd = beside
+            mux = body.get("mux")
             if cwd and os.path.isfile(cwd):
                 cwd = os.path.dirname(cwd)
             if not cwd or not os.path.isdir(cwd):
@@ -900,10 +946,17 @@ class Handler(BaseHTTPRequestHandler):
                 if agent is None:
                     return self._json({"ok": False, "error": f"{wanted} is not installed"})
                 return self._json(terms.open([agent["exe"]], cwd, agent["label"],
-                                             kind="agent", cols=cols, rows=rows))
+                                             kind="agent", cols=cols, rows=rows, mux=mux))
+            if body.get("scrollback") is not None:
+                # what a pane has printed, opened in the person's editor
+                return self._json(self._scrollback(terms, body, cwd, cols, rows, mux))
             return self._json(terms.open(terminals.default_shell(), cwd,
                                          os.path.basename(cwd) or cwd,
-                                         cols=cols, rows=rows))
+                                         cols=cols, rows=rows, mux=mux))
+        if op == "layout":
+            return self._json(terms.arrange(body.get("mux"), body.get("layout")))
+        if op == "move":
+            return self._json(terms.regroup(tid, body.get("mux")))
         if op == "input":
             return self._json(terms.write(tid, body.get("data")))
         if op == "resize":
@@ -963,6 +1016,16 @@ class Handler(BaseHTTPRequestHandler):
                "terminal": self.ctx.runner.mode,
                "canQuit": self.ctx.lifecycle is not None}
         cfg.update(self.ctx.ui_config)
+        # how the window was left -- and, if its theme is not one of cortex's
+        # own, the theme itself, so the first thing painted is already in it
+        kept = prefs.load()
+        # The window opens on the place to work, a terminal already in it.
+        # The graph is one key away, and whoever prefers to open on it is
+        # remembered as preferring that.
+        kept.setdefault("layout", "work")
+        cfg["prefs"] = kept
+        chosen = [themes.find(kept.get(k)) for k in ("theme", "light") if kept.get(k)]
+        cfg["themes"] = [t for t in chosen if t is not None]
         nonce = secrets.token_urlsafe(16)
         page = (page.replace("__CONFIG__", json.dumps(cfg))
                     .replace("__NONCE__", nonce)

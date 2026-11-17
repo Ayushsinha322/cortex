@@ -31,7 +31,7 @@ is merged.
 ![Clicking a node opens the file; pressing Enter opens it in Neovim in the terminal cortex was launched from](https://raw.githubusercontent.com/Ayushsinha322/cortex/main/docs/demo.gif)
 
 No dependencies. No database. No import step. It reads your disk directly, and
-it is about 20,000 lines of Python standard library and vanilla JavaScript.
+it is about 21,700 lines of Python standard library and vanilla JavaScript.
 
 ---
 
@@ -51,6 +51,7 @@ it is about 20,000 lines of Python standard library and vanilla JavaScript.
 - [Working on one project](#working-on-one-project)
 - [Opening another folder](#opening-another-folder)
 - [Agents](#agents) — a task, a copy of its own, and a place on the map
+- [Themes](#themes) — OLED, light, your terminal's, or two colours of your own
 - [Ways of looking](#ways-of-looking) — live, history, the path, tours, views, disk
 - [Reading the graph](#reading-the-graph)
 - [Every command and key](#every-command-and-key)
@@ -182,8 +183,11 @@ A site that asks for your camera, microphone or location is told no.
 cortex
 ```
 
-A window opens showing your home directory. On Chrome, Brave or Edge it is a
-real app window — no tabs, no address bar. Firefox gets a normal window.
+A window opens on your home directory, with a terminal already in it to type
+into. The graph of the folder is one button away — **graph**, top right, or
+<kbd>G</kbd> — and the window opens next time on whichever of the two you left
+it on. On Chrome, Brave or Edge it is a real app window — no tabs, no address
+bar. Firefox gets a normal window.
 
 Your terminal stays where it is and prints what it is doing:
 
@@ -742,7 +746,20 @@ both as tabs beside the conversation.
 
 ### The window, as a place to work
 
-Around the graph is what you need to keep several things going at once.
+cortex opens on the place to work: the rail on the left, and a terminal
+filling the rest, ready. You did not come to look at a graph first. When you
+want it, **graph** in the top bar (or <kbd>G</kbd>, or "Show the graph" on the
+rail) brings it in beside what you have open, and the same button puts it
+away again. Which one you left it on is how it opens the next time. Until
+the graph is asked for it is not drawn at all, so it costs nothing.
+
+With every tab closed the window says what there is to begin from — an
+agent, a terminal, a browser tab, another folder, the graph — instead of
+starting things for you. Closing a file you were reading goes back to the
+tab that was there before it.
+
+With the graph showing, around it is what you need to keep several things
+going at once.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -790,7 +807,7 @@ tab instead, for any site.
 
 **The rail** down the left lists the agents and the tabs, with what each is
 doing; an agent that needs you is at the top, in amber. **‹** hides it, and
-<kbd>ctrl</kbd> <kbd>k</kbd> brings it back.
+<kbd>ctrl</kbd> <kbd>k</kbd> brings it back; it is as you left it the next time.
 
 **The status bar** counts the agents working and the ones waiting on you —
 click to go to one — and shows how much of each agent's allowance is used
@@ -798,6 +815,61 @@ and when it comes back, as the agent itself reports it.
 
 Terminals live in cortex, not in the page: reloading the window brings each
 one back as it was. Closing the window ends them, and asks first.
+
+### Panes, the way zellij has them
+
+A terminal tab splits into panes, with zellij's keys in zellij's modes — the
+bindings are taken from zellij's own default configuration, and where zellij
+is installed the tests compare the two key for key. If your hands know
+zellij, they know this.
+
+```
+┌ shop ───────────────────────┐┌ shop ─────────────────────────────────────┐
+│ ➜ ls -la                    ││ ➜ git log --oneline                       │
+│ total 24                    ││ affcdd6 a tiny shop                       │
+│ …                           │└───────────────────────────────────────────┘
+│                             │┌ tests ────────────────────────────────────┐
+│                             ││ ➜ python3 tests/test_pricing.py           │
+│                             ││ ok                                        │
+└─────────────────────────────┘└───────────────────────────────────────────┘
+ Ctrl + <g> LOCK  <p> PANE  <t> TAB  <n> RESIZE  <h> MOVE  <s> SEARCH  <o> SESSION  <q> QUIT
+ Alt n new pane   Alt ←↓↑→ change focus   Alt f floating   Alt + − resize   Alt [ ] layout
+```
+
+The two lines along the bottom are zellij's: the modes, with the one you are
+in lit, and under them what each key does there.
+
+| | |
+| --- | --- |
+| <kbd>alt</kbd> <kbd>n</kbd> | a new pane, across the longer side of this one |
+| <kbd>alt</kbd> <kbd>←↓↑→</kbd> or <kbd>hjkl</kbd> | move to the pane that way; at the edge, to the next tab |
+| <kbd>alt</kbd> <kbd>f</kbd> | floating panes, shown or put away — the first press makes one |
+| <kbd>alt</kbd> <kbd>+</kbd> <kbd>−</kbd> | grow or shrink this pane |
+| <kbd>alt</kbd> <kbd>[</kbd> <kbd>]</kbd> | the same panes, laid out another way |
+| <kbd>ctrl</kbd> <kbd>p</kbd> | **pane**: <kbd>n</kbd> new, <kbd>d</kbd> down, <kbd>r</kbd> right, <kbd>x</kbd> close, <kbd>f</kbd> fullscreen, <kbd>z</kbd> frames, <kbd>w</kbd> floating, <kbd>e</kbd> float or embed this one, <kbd>c</kbd> rename, <kbd>p</kbd> next |
+| <kbd>ctrl</kbd> <kbd>t</kbd> | **tab**: <kbd>n</kbd> new, <kbd>x</kbd> close, <kbd>r</kbd> rename, <kbd>←→</kbd> move between, <kbd>1</kbd>–<kbd>9</kbd> go to, <kbd>tab</kbd> the last one, <kbd>s</kbd> type into every pane at once, <kbd>b</kbd> break this pane out into a tab |
+| <kbd>ctrl</kbd> <kbd>n</kbd> | **resize**: a direction grows the pane that way, its capital shrinks it |
+| <kbd>ctrl</kbd> <kbd>h</kbd> | **move**: a direction swaps the pane with the one beside it |
+| <kbd>ctrl</kbd> <kbd>s</kbd> | **scroll**: <kbd>↓↑</kbd> <kbd>d</kbd> <kbd>u</kbd> and the page keys; <kbd>s</kbd> searches (<kbd>n</kbd> <kbd>p</kbd> next and previous, <kbd>c</kbd> case, <kbd>w</kbd> wrap, <kbd>o</kbd> whole word); <kbd>e</kbd> opens what the pane has printed in your editor |
+| <kbd>ctrl</kbd> <kbd>o</kbd> | **session**: <kbd>d</kbd> detach — the pane is put away and everything keeps running |
+| <kbd>ctrl</kbd> <kbd>g</kbd> | **lock**: every key goes to the program, until <kbd>ctrl</kbd> <kbd>g</kbd> again |
+| <kbd>ctrl</kbd> <kbd>b</kbd> | tmux's keys, for the one after it: <kbd>"</kbd> <kbd>%</kbd> <kbd>z</kbd> <kbd>c</kbd> <kbd>n</kbd> <kbd>p</kbd> <kbd>x</kbd> <kbd>[</kbd> |
+| <kbd>ctrl</kbd> <kbd>q</kbd> | close this terminal tab; it asks first if more than one thing is running |
+
+<kbd>enter</kbd> or <kbd>esc</kbd> leaves a mode. A new pane starts in the
+folder the pane beside it is in. A pane whose program ends closes, unless it
+is the only one in its tab. The arrangement — the splits, their sizes, what
+floats, the names — is kept with the terminals, so a window that reloads
+finds it as it was.
+
+Where it is not zellij: tabs are cortex's own tabs, along the top of the
+pane, so a terminal tab sits beside an agent's conversation or a browser
+tab. Zellij's plugins (the session manager, configuration, sharing) have
+nothing behind their keys, and say so. Stacked panes open as a pane below;
+pinned panes and pane groups are not there. And these keys are only all
+yours in cortex's [own window](#its-own-window-with-a-browser-in-it): in a
+browser's window, the browser keeps <kbd>ctrl</kbd> <kbd>n</kbd>,
+<kbd>ctrl</kbd> <kbd>t</kbd> and <kbd>ctrl</kbd> <kbd>w</kbd> for itself.
 
 ### Looking at what it did
 
@@ -851,8 +923,8 @@ adds nothing to that and takes nothing from it.
 
 Agents run on this machine, for as long as cortex is open: closing the window
 stops them, and asks first if any is in the middle of something. The
-conversations are kept, so one can be picked up the next time. The pane does
-not split into more than the graph and one set of tabs. There is no phone
+conversations are kept, so one can be picked up the next time. The window
+is the graph and one set of tabs; it is a terminal tab that splits into panes. There is no phone
 app and there are no remote machines.
 `cortex --read-only` has no agents and no terminals at all.
 
@@ -875,6 +947,66 @@ in, what those files are imported by, and where it is about to collide with
 another agent. It runs on Linux as well as macOS, installs with one `pipx`
 command, depends on nothing, and works on a folder of notes as well as on a
 repository.
+
+---
+
+## Themes
+
+Click the theme's name at the right of the status bar, or <kbd>ctrl</kbd>
+<kbd>k</kbd> and type *theme*. A list opens, and as you move through it the
+whole window is repainted in each — not a swatch of it. <kbd>enter</kbd>
+keeps one; <kbd>esc</kbd> puts back what was there.
+
+One theme changes everything together: the panes, the graph's nodes and
+links, the terminal's sixteen colours, the code in the reader, the green and
+red of a diff. Nothing is left over in the old colours.
+
+| | |
+| --- | --- |
+| **Midnight** | the look cortex has always had |
+| **OLED** | black that is off — panes too, told apart by a line — and nothing glows, so an OLED screen lights only what is drawn |
+| **Graphite** | neutral dark grey |
+| **Aurora** | deep violet |
+| **Ember** | warm, low-blue dark |
+| **Paper** | light |
+| **Sand** | light and warm |
+
+**A pair can follow the system.** Tick *follow the system* and choose one
+light theme and one dark: cortex shows the light one while your desktop is
+light and the dark one when it turns dark.
+
+**A folder can have a colour of its own.** Under the list is a row of
+colours; pick one and what is selected, the links and the buttons take it,
+in that folder, whatever the theme. Two cortex windows on two projects are
+then told apart before you have read a word.
+
+**The themes you already have are in the list.** A terminal theme is a
+background, a foreground and sixteen colours, which is all a theme here
+needs — the graph takes its colours from the palette too. If
+[Ghostty](https://ghostty.org) is installed, every theme it has is there by
+name. A terminal theme in the form Ghostty writes them, put in
+`~/.config/cortex/themes/`, is there as well.
+
+**A theme of your own is two colours.** `~/.config/cortex/themes/Dusk.json`:
+
+```json
+{ "bg": "#1b1430", "fg": "#e8e0ff", "accent": "#ff7ad9" }
+```
+
+`bg` and `fg` are all it needs; the panes, borders, dimmer text and the rest
+are worked out from them. Say more to change more: `ok`, `warn`, `bad`,
+`info`, `nodes` (`dir`, `note`, `code`, `config`, `doc`, `media`, `archive`,
+`other`, `tag`), `syn` (`com`, `kw`, `str`, `num`, `type`, `fn`, `op`),
+`term` (sixteen colours), `glow: false`, and `set` for any single colour by
+its name in the stylesheet. Colours are `#hex` and nothing else, and a theme
+whose text could not be read on its background is not listed.
+
+A program in a terminal tab that asks what colour its background is — which
+is how they pick a light or a dark look of their own — is told the theme's.
+
+What is chosen is kept in `~/.config/cortex/prefs.json`, with the width of
+the pane and whether the rail is shown, so the next launch opens as the last
+one was left.
 
 ---
 
@@ -1176,6 +1308,7 @@ cortex [folder] [options]
 | <kbd>d</kbd> | today's note |
 | <kbd>r</kbd> | page through the selection in the terminal |
 | <kbd>m</kbd> | full screen the reader |
+| <kbd>G</kbd> | the graph, or back to the workspace the window opened on |
 | <kbd>e</kbd> | expand / collapse the selected folder |
 | <kbd>f</kbd> | focus mode — hide everything not linked |
 | <kbd>c</kbd> | collapse / expand the connections list |
@@ -1336,6 +1469,8 @@ cortex/
 │   ├── worktrees.py      a copy of the project for each agent, and what it changed
 │   ├── terminals.py      programs on pseudo-terminals, for the tabs in the window
 │   ├── shell.py          finding and starting cortex's own window
+│   ├── prefs.py          how the window was left: theme, pane width, rail
+│   ├── themes.py         themes of your own, and the ones Ghostty has
 │   ├── actions.py        editor detection, terminal handoff, terminal windows
 │   ├── lifecycle.py      noticing the window has closed
 │   ├── desktop.py        the app-menu launcher
@@ -1345,6 +1480,8 @@ cortex/
 │       ├── style.css
 │       ├── app.js        the graph, the reader and editor, the panes, the sheets
 │       ├── terminal.js   a terminal emulator, no dependencies
+│       ├── mux.js        panes in a terminal tab: zellij's keys, and the layout
+│       ├── themes.js     themes: every colour worked out from a few
 │       ├── markdown.js   markdown renderer, no dependencies
 │       ├── highlight.js  syntax highlighter, no dependencies
 │       ├── snapshot.js   the server, played by data inside a shared map
@@ -1364,6 +1501,7 @@ cortex/
     ├── test_agents.py       agents and their worktrees, against stand-in agents
     ├── test_terminals.py    real shells on real pseudo-terminals
     ├── test_shell.py        finding the window, and handing it the address
+    ├── test_prefs.py        what is remembered, and themes found on disk
     ├── harness.js           the stub DOM the browser-side tests run against
     ├── markdown.test.js     the markdown renderer
     ├── render-loop.test.js  cooling and repaint gating
@@ -1381,7 +1519,10 @@ cortex/
     ├── agents.test.js       agents on the graph, the conversation, the review
     ├── terminal.test.js     the terminal emulator: bytes in, a screen out
     ├── workspace.test.js    tabs, a terminal in one, the rail, the status bar
+    ├── home.test.js         opening on a terminal, the graph when asked for
+    ├── mux.test.js          panes and modes, checked against zellij's own keys
     ├── browser.test.js      browser tabs, addresses, picking for the agent
+    ├── themes.test.js       colours worked out, and the list that previews them
     ├── capture.test.js      the quick-note window
     └── snapshot.test.js     a shared map, with no server behind it
 ```
@@ -1402,6 +1543,7 @@ python3 tests/test_suggest.py
 python3 tests/test_agents.py
 python3 tests/test_terminals.py
 python3 tests/test_shell.py
+python3 tests/test_prefs.py
 node tests/markdown.test.js
 node tests/render-loop.test.js
 node tests/connections.test.js
@@ -1417,13 +1559,16 @@ node tests/notes.test.js
 node tests/agents.test.js
 node tests/terminal.test.js
 node tests/workspace.test.js
+node tests/home.test.js
+node tests/mux.test.js
 node tests/browser.test.js
+node tests/themes.test.js
 node tests/capture.test.js
 node tests/snapshot.test.js
 node tests/perf.test.js
 ```
 
-1,095 tests, no framework to install — `unittest` and plain `node`. The agent
+1,257 tests, no framework to install — `unittest` and plain `node`. The agent
 tests need no agent: stand-ins that speak the same lines as Claude Code and
 Codex are put on the `PATH`, so what is tested is cortex's half of the
 conversation. They run on
@@ -1449,7 +1594,8 @@ and nothing is ever deleted — trash is your desktop's trash. An agent works in
 a copy unless you tell it to work right here, and its changes reach your
 folder only when you apply them. Start cortex with `--read-only` and it
 changes nothing at all. Of its own accord it writes only its own state: saved
-projects in `~/.config/cortex/`, recent folders, layouts and a log in
+projects and the look of the window in `~/.config/cortex/`, recent folders,
+layouts and a log in
 `~/.cache/cortex/`, and agents' copies and conversations in
 `~/.local/share/cortex/`.
 

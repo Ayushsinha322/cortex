@@ -47,7 +47,7 @@ const { boot, pump, el, sent, press, fire } = harness({
   rootNode: () => fsnode(ROOT, true, 1, ROOT),
   children: childrenOf,
   autoExpand: { depth: 3, budget: 300 },
-  preload: ["terminal.js"],
+  preload: ["terminal.js", "mux.js"],
   api: {
     "/api/preview": ({ path }) => ({ kind: "text", lang: "python", text: `# ${path}`, ext: ".py" }),
     "/api/agents": (_q, body) => body ? { ok: false, error: "none" }
@@ -89,7 +89,10 @@ const onShow = () => el("p-tool").children.find((c) => !c.classList.contains("of
   check("the rail is there from the start, with the things to begin from",
         D.workspace().rail && el("rail").hidden === false
         && el("rail-do").children.map((c) => c.querySelector(".nm").textContent).join()
-           === "New agent,New terminal,Preview a local page,Open a folder");
+           === "New agent,New terminal,Preview a local page,Open a folder,Hide the graph");
+  check("left on the graph, it opens on the graph: no terminal is started for you",
+        D.workspace().work === false && el("btn-graph").hidden === false
+        && el("btn-graph").classList.contains("on") && posted.length === 0);
   check("with nothing open there are no tabs, and nothing is asked of the terminals feed twice",
         names().length === 0 && sent.filter((s) => s.url.includes("/api/terms")).length === 1);
   check("and the status bar is quiet", chips().length === 0);
@@ -107,6 +110,20 @@ const onShow = () => el("p-tool").children.find((c) => !c.classList.contains("of
   check("what the program prints is on its screen", W.terms[0].text[0] === "$", W.terms[0].text[0]);
   check("the rail lists it, and the status bar counts it",
         railRows("rail-terms").length === 1 && chips().join() === "1 terminal", chips().join());
+
+  // whether the view is kept at the end is remembered, and only the person changes it
+  const sc = onShow().querySelector(".t-scroll");
+  const follows = () => D.workspace().terms[0].following;
+  sc.scrollHeight = 2000; sc.clientHeight = 300; sc.scrollTop = 0;
+  sc.dispatchEvent({ type: "scroll", target: sc });
+  check("a view the page moved by itself still follows what is printed", follows() === true);
+  sc.dispatchEvent({ type: "wheel", target: sc, preventDefault() {} });
+  sc.dispatchEvent({ type: "scroll", target: sc });
+  check("one the person scrolled back does not", follows() === false);
+  sc.scrollTop = 1700;
+  sc.dispatchEvent({ type: "wheel", target: sc, preventDefault() {} });
+  sc.dispatchEvent({ type: "scroll", target: sc });
+  check("and scrolled to the end again, it does", follows() === true);
 
   const box = onShow().querySelector("textarea");
   box.value = "ls";

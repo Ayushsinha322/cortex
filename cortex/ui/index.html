@@ -63,6 +63,9 @@
   </div>
   <nav id="filters"></nav>
   <div class="spacer"></div>
+  <!-- the graph, when it is wanted: the window opens on the workspace -->
+  <button id="btn-graph" class="ghost" hidden
+          title="Show the graph of this folder (G)"><span class="gdot"></span>graph</button>
   <button id="btn-links" class="ghost on" title="Toggle semantic links">links</button>
   <button id="btn-fit" class="ghost" title="Fit graph to screen">fit</button>
   <div class="more" id="save-wrap">
@@ -168,6 +171,15 @@
   <div id="p-body"></div>
   <!-- a terminal or a preview, when that is the tab on show -->
   <div id="p-tool"></div>
+  <!-- the workspace with nothing open in it: where to begin from -->
+  <div id="p-home">
+    <div class="home-in">
+      <div class="home-brand"><span class="dot"></span>cortex</div>
+      <div id="home-where"></div>
+      <div id="home-do"></div>
+      <div class="home-foot"><kbd>ctrl</kbd> <kbd>k</kbd> finds everything else</div>
+    </div>
+  </div>
 </aside>
 
 <!-- overlays -->
@@ -231,6 +243,23 @@
       <button id="an-cancel" class="ghost">cancel</button>
       <button id="an-ok" class="primary">start</button>
     </div>
+  </div>
+</div>
+
+<!-- themes: move through the list and the whole window changes as you look -->
+<div id="themes" class="glass" hidden>
+  <div class="th-head">
+    <span class="th-title">Theme</span>
+    <button id="th-close" class="ghost sm">esc</button>
+  </div>
+  <input id="th-filter" type="text" spellcheck="false" autocomplete="off"
+         placeholder="type to find one — ↑ ↓ to look, enter to keep">
+  <div id="th-list"></div>
+  <div class="th-foot">
+    <label class="check"><input id="th-follow" type="checkbox">
+      <span>follow the system: a light one by day, a dark one by night</span></label>
+    <div class="th-accent"><span class="muted">this folder's colour</span>
+      <div id="th-accents"></div></div>
   </div>
 </div>
 
@@ -324,6 +353,7 @@
       <dt><kbd>s</kbd></dt><dd>open / close the directory sidebar</dd>
       <dt><kbd>t</kbd></dt><dd>hide the labels — for screenshots and demos</dd>
       <dt><kbd>m</kbd></dt><dd>full screen the reader — for PDFs, images, long notes</dd>
+      <dt><kbd>G</kbd></dt><dd>the graph, or back to the workspace it opened on</dd>
       <dt><kbd>esc</kbd></dt><dd>leave full screen, or close the reader</dd>
     </dl>
     <p class="muted">Terminal editors run in the terminal you launched cortex
@@ -338,6 +368,8 @@
 <script src="/static/markdown.js"></script>
 <script src="/static/highlight.js"></script>
 <script src="/static/terminal.js"></script>
+<script src="/static/mux.js"></script>
+<script src="/static/themes.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

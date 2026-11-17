@@ -20,7 +20,7 @@ import datetime
 import json
 import os
 
-from . import __version__, gitstatus, reader, tours, views
+from . import __version__, gitstatus, prefs, reader, themes, tours, views
 
 UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
 
@@ -139,7 +139,11 @@ def build(scanner, links, root: str, request: dict) -> tuple[bytes, dict]:
         "tours": tour_list,
         "tourText": tour_text,
     }
+    # in the theme it was made in: a map sent to someone looks as it looked
+    kept = {k: v for k, v in prefs.load().items() if k in ("theme", "light", "follow")}
+    chosen = [themes.find(kept.get(k)) for k in ("theme", "light") if kept.get(k)]
     config = {
+        "prefs": kept, "themes": [t for t in chosen if t is not None],
         "token": "snapshot", "root": root, "title": title, "home": "",
         "readOnly": True, "terminal": None, "canQuit": False,
         "autoExpand": {"depth": 0, "budget": 0}, "pulseMs": 0,
@@ -170,6 +174,9 @@ def build(scanner, links, root: str, request: dict) -> tuple[bytes, dict]:
                      _script(_read("highlight.js")))
             # a shared map has nothing to run a terminal on
             .replace('<script src="/static/terminal.js"></script>\n', "")
+            .replace('<script src="/static/mux.js"></script>\n', "")
+            .replace('<script src="/static/themes.js"></script>',
+                     _script(_read("themes.js")))
             .replace('<script src="/static/app.js"></script>',
                      _script(_read("app.js"))))
     body = page.encode("utf-8")

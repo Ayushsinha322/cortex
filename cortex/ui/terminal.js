@@ -51,6 +51,8 @@ class Screen {
     this.rows = rows;
     this.sbMax = 5000;
     this.onReply = null;           // what the program is told when it asks something
+    this.fgColour = "#e6ebf4";     // what it is told when it asks what colours it is on
+    this.bgColour = "#070910";
     this.reset();
   }
 
@@ -84,7 +86,7 @@ class Screen {
   /* The screen as text, a string per row, for anything that wants to read
      it rather than look at it. */
   text() {
-    return this.lines.map((r) => r.c.join("").replace(/\s+$/, ""));
+    return this.lines.map((r) => r.c.slice(0, this.cols).join("").replace(/\s+$/, ""));
   }
 
   write(s) {
@@ -234,6 +236,9 @@ class Screen {
 
   erase(y, from, to) {
     const row = this.lines[y];
+    // to the end of the line is to the end of what the row holds, which is
+    // more than can be seen after the screen was narrowed
+    if (to >= this.cols) to = Math.max(to, row.c.length);
     const a = this.attr.bg === -1 ? DEFAULT : { fg: -1, bg: this.attr.bg, f: 0 };
     for (let x = from; x < to; x++) { row.c[x] = " "; row.a[x] = a; }
     row.dirty = true;
@@ -377,9 +382,10 @@ class Screen {
         const r = this.lines[this.y], k = Math.min(n1(0), this.cols - this.x);
         const a = this.attr.bg === -1 ? DEFAULT : { fg: -1, bg: this.attr.bg, f: 0 };
         if (final === "@") {
+          const was = r.c.length;
           r.c.splice(this.x, 0, ...new Array(k).fill(" "));
           r.a.splice(this.x, 0, ...new Array(k).fill(a));
-          r.c.length = this.cols; r.a.length = this.cols;
+          r.c.length = was; r.a.length = was;
         } else {
           r.c.splice(this.x, k); r.a.splice(this.x, k);
           for (let i = 0; i < k; i++) { r.c.push(" "); r.a.push(a); }
@@ -502,7 +508,8 @@ class Screen {
       if (m) { try { this.cwd = decodeURIComponent(m[1]); } catch (err) { /* left as it was */ } }
     } else if ((code === "10" || code === "11") && rest === "?") {
       // "what colour is your background?" -- how a program picks a dark theme
-      this.reply(`\x1b]${code};rgb:${code === "10" ? "e6e6/ebeb/f4f4" : "0707/0909/1010"}\x1b\\`);
+      const c = (code === "10" ? this.fgColour : this.bgColour).slice(1);
+      this.reply(`\x1b]${code};rgb:${[0, 2, 4].map((i) => c.slice(i, i + 2).repeat(2)).join("/")}\x1b\\`);
     }
   }
 
@@ -510,14 +517,21 @@ class Screen {
     if (this.onReply) this.onReply(s);
   }
 
-  /* The tab changed size. Rows are cut or padded where they stand -- text is
-     not re-wrapped -- and when the screen gets shorter, what leaves is the
-     top, into the history, so the line being typed on stays in sight. */
+  /* The colours the page is drawing this screen in, as #rrggbb. */
+  setColours(fg, bg) {
+    if (/^#[0-9a-f]{6}$/i.test(fg || "")) this.fgColour = fg;
+    if (/^#[0-9a-f]{6}$/i.test(bg || "")) this.bgColour = bg;
+  }
+
+  /* The tab changed size. Text is not re-wrapped. A narrower screen shows
+     less of each row but keeps all of it, so that widening it again shows
+     what was there -- a pane squeezed for a moment loses nothing. When the
+     screen gets shorter, what leaves is the top, into the history, so the
+     line being typed on stays in sight. */
   resize(cols, rows) {
     if (cols === this.cols && rows === this.rows) return;
     const fit = (lines, moving) => {
       for (const r of lines) {
-        if (r.c.length > cols) { r.c.length = cols; r.a.length = cols; }
         while (r.c.length < cols) { r.c.push(" "); r.a.push(DEFAULT); }
         r.dirty = true;
       }
@@ -615,7 +629,9 @@ const rgb = (c) => `rgb(${(c >> 16) & 255},${(c >> 8) & 255},${c & 255})`;
 const loose = (code) => code > 0x2000 && !(code >= 0x2500 && code <= 0x259f);
 
 /* Draw `screen` into `host` and send it what is typed.
-   opts: send(text), resize(cols, rows), changed(screen) after each paint. */
+   opts: send(text), resize(cols, rows), changed(screen) after each paint,
+   key(event) -- asked first about every key, true if it has dealt with it --
+   and focus() when this terminal is the one being typed into. */
 function mount(host, screen, opts) {
   const doc = host.ownerDocument || document;
   const make = (tag, cls) => { const e = doc.createElement(tag); e.className = cls; return e; };
@@ -628,9 +644,24 @@ function mount(host, screen, opts) {
   scroller.append(sb, live);
   host.append(scroller, input);
 
-  let rows = [], frame = 0, sbSeen = screen.scrolled, cleared = screen.cleared;
+  // what the screen already holds -- a window that reloaded, a pane moved to
+  // another tab -- is drawn the first time round like anything else
+  let rows = [], frame = 0, cleared = screen.cleared;
+  let sbSeen = screen.scrolled - screen.scrollback.length;
   let cur = { x: -1, y: -1, on: false }, focused = false, cell = { w: 8, h: 17 };
   const SB_DOM = 3000;
+
+  /* Whether the view is kept at the end as more is printed. It is, until the
+     person scrolls back, and again once they return to the end or type.
+
+     This is remembered, not read off the page each time. Read off the page
+     it was wrong whenever the page had just forgotten: a pane taken out and
+     put back to make room for another, a tab that was out of sight, come
+     back scrolled to the very top -- and, looking like someone who had
+     scrolled there, were left there while the prompt went on below. */
+  let following = true, held = false, handled = 0;
+  const atEnd = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < cell.h * 2;
+  const toEnd = () => { scroller.scrollTop = scroller.scrollHeight; };
 
   const style = (el, a) => {
     let fg = a.fg, bg = a.bg, cls = "";
@@ -654,7 +685,7 @@ function mount(host, screen, opts) {
      row are not drawn at all. */
   const paint = (el, row, cx) => {
     el.textContent = "";
-    let end = row.c.length;
+    let end = Math.min(row.c.length, screen.cols);
     while (end > 0 && end - 1 !== cx && row.c[end - 1] === " "
            && row.a[end - 1].bg === -1 && !(row.a[end - 1].f & INVERSE)) end--;
     let run = "", attr = null;
@@ -689,7 +720,6 @@ function mount(host, screen, opts) {
 
   const draw = () => {
     frame = 0;
-    const stick = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < cell.h * 2;
     if (screen.cleared !== cleared) { cleared = screen.cleared; sb.textContent = ""; }
     const fresh = Math.min(screen.scrolled - sbSeen, screen.scrollback.length);
     sbSeen = screen.scrolled;
@@ -699,18 +729,24 @@ function mount(host, screen, opts) {
       sb.appendChild(el);
     }
     while (sb.childElementCount > SB_DOM && sb.firstChild) sb.removeChild(sb.firstChild);
-    while (rows.length < screen.rows) { const el = make("div", "t-row"); live.appendChild(el); rows.push(el); }
+    let made = false;
+    while (rows.length < screen.rows) {
+      const el = make("div", "t-row");
+      live.appendChild(el);
+      rows.push(el);
+      made = true;
+    }
     while (rows.length > screen.rows) { const el = rows.pop(); if (el.remove) el.remove(); }
     const on = screen.cursorVisible;
     const moved = cur.x !== screen.x || cur.y !== screen.y || cur.on !== on;
     for (let y = 0; y < screen.rows; y++) {
       const row = screen.lines[y];
-      if (!row.dirty && !(moved && (y === cur.y || y === screen.y))) continue;
+      if (!made && !row.dirty && !(moved && (y === cur.y || y === screen.y))) continue;
       paint(rows[y], row, on && y === screen.y ? screen.x : -1);
       row.dirty = false;
     }
     cur = { x: screen.x, y: screen.y, on };
-    if (stick || fresh === 0 && screen.alt) scroller.scrollTop = scroller.scrollHeight;
+    if (following || fresh === 0 && screen.alt) toEnd();
     if (opts.changed) opts.changed(screen);
   };
   const refresh = () => {
@@ -720,18 +756,33 @@ function mount(host, screen, opts) {
     frame = raf(draw) || 1;
   };
 
-  /* How many cells fit, from the size one cell really is in this font. */
+  /* How many cells fit, from the size one cell really is in this font.
+
+     A terminal that is out of sight -- another tab on show, the pane put
+     away -- is given no room, and "no room" is not a size: telling the
+     program its screen is twenty columns wide, because that is the least it
+     may be, cut every line it had printed to twenty. So a size that is not a
+     real one changes nothing. */
   const fit = () => {
-    if (!scroller.clientWidth || !scroller.clientHeight) return false;
+    const w = scroller.clientWidth - 14, h = scroller.clientHeight - 6;
+    if (!(w > 0) || !(h > 0)) return false;
     const probe = make("span", "t-probe");
     probe.textContent = "MMMMMMMMMMMMMMMMMMMM";
     live.appendChild(probe);
     const box = probe.getBoundingClientRect();
     if (probe.remove) probe.remove();
     if (box.width > 0 && box.height > 0) cell = { w: box.width / 20, h: box.height };
-    const cols = Math.max(20, Math.floor((scroller.clientWidth - 14) / cell.w));
-    const rws = Math.max(5, Math.floor((scroller.clientHeight - 6) / cell.h));
-    if (cols === screen.cols && rws === screen.rows) return false;
+    let cols = Math.floor(w / cell.w), rws = Math.floor(h / cell.h);
+    if (cols < 8 || rws < 2) return false;            // too small to be meant
+    // and never more than the window could show: if the box is ever sized by
+    // what is in it, counting that as rows makes it grow without end
+    const page = doc.documentElement || {};
+    if (page.clientHeight > 0) rws = Math.min(rws, Math.ceil(page.clientHeight / cell.h));
+    if (page.clientWidth > 0) cols = Math.min(cols, Math.ceil(page.clientWidth / cell.w));
+    if (cols === screen.cols && rws === screen.rows) {
+      if (following) toEnd();                         // back in sight, or a new height
+      return false;
+    }
     screen.resize(cols, rws);
     if (opts.resize) opts.resize(cols, rws);
     refresh();
@@ -740,16 +791,20 @@ function mount(host, screen, opts) {
 
   const send = (text) => {
     if (!text) return;
-    scroller.scrollTop = scroller.scrollHeight;
+    following = true;
+    toEnd();
     opts.send(text);
   };
 
   input.addEventListener("keydown", (e) => {
     e.stopPropagation();           // the keys are the program's, not cortex's
     if (e.isComposing) return;
+    // ...unless whatever holds this terminal -- panes, modes -- wants one
+    if (opts.key && opts.key(e)) { e.preventDefault(); input.value = ""; return; }
     if (e.shiftKey && (e.key === "PageUp" || e.key === "PageDown")) {
       e.preventDefault();
       scroller.scrollTop += (e.key === "PageUp" ? -1 : 1) * scroller.clientHeight * 0.9;
+      following = atEnd();
       return;
     }
     if (e.ctrlKey && e.shiftKey && (e.key === "C" || e.key === "c")) {
@@ -776,6 +831,7 @@ function mount(host, screen, opts) {
   input.addEventListener("focus", () => {
     focused = true;
     host.classList.add("focus");
+    if (opts.focus) opts.focus();
     if (screen.focusEvents) opts.send("\x1b[I");
   });
   input.addEventListener("blur", () => {
@@ -797,14 +853,86 @@ function mount(host, screen, opts) {
     opts.send(key.repeat(3));
   }, { passive: false });
 
+  // Scrolling the person did -- the wheel, the bar, a finger, a selection
+  // dragged past the edge -- decides whether the view follows. Scrolling the
+  // page did to itself decides nothing.
+  const byHand = () => { handled = Date.now(); };
+  scroller.addEventListener("wheel", byHand, { passive: true });
+  scroller.addEventListener("touchmove", byHand, { passive: true });
+  scroller.addEventListener("pointerdown", () => { held = true; byHand(); });
+  for (const up of ["pointerup", "pointercancel", "pointerleave"]) {
+    scroller.addEventListener(up, () => { held = false; byHand(); });
+  }
+  scroller.addEventListener("scroll", () => {
+    if (!scroller.clientHeight) return;
+    if (held || Date.now() - handled < 1500) following = atEnd();
+  });
+
   let watcher = null;
   if (typeof ResizeObserver === "function") {
     watcher = new ResizeObserver(() => fit());
     watcher.observe(host);
   }
+  /* Move through what has been printed: a line, half a page, a page, or
+     back to the end. */
+  const scroll = (what) => {
+    const page = scroller.clientHeight || cell.h * screen.rows;
+    const by = { up: -cell.h, down: cell.h, "half-up": -page / 2, "half-down": page / 2,
+                 "page-up": -page * 0.9, "page-down": page * 0.9 }[what];
+    if (what === "bottom") { following = true; toEnd(); }
+    else if (by) { scroller.scrollTop = (scroller.scrollTop || 0) + by; following = by > 0 && atEnd(); }
+  };
+
+  /* Find `term` in what has been printed, history and screen together.
+     `way` is null for the first look (the nearest above the end), "down" or
+     "up" from the last one found. Returns {index, count, of} or null. */
+  let hit = { el: null, index: -1 };
+  const find = (term, way, o = {}) => {
+    if (hit.el) { hit.el.classList.remove("t-hit"); hit.el = null; }
+    if (!term) { hit.index = -1; return null; }
+    const lines = [...screen.scrollback, ...screen.lines];
+    const flags = o.case ? "" : "i";
+    const body = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const test = new RegExp(o.word ? `(^|\\W)${body}(\\W|$)` : body, flags);
+    const found = [];
+    lines.forEach((r, i) => { if (test.test(r.c.join(""))) found.push(i); });
+    if (!found.length) { hit.index = -1; return { index: -1, count: 0, of: 0 }; }
+    let at;
+    if (way === "down") {
+      at = found.find((i) => i > hit.index);
+      if (at === undefined) at = o.wrap ? found[0] : hit.index;
+    } else {
+      const before = found.filter((i) => (hit.index === -1 ? true : i < hit.index));
+      at = before.length ? before[before.length - 1]
+        : o.wrap ? found[found.length - 1] : hit.index;
+    }
+    if (!found.includes(at)) at = found[found.length - 1];
+    hit.index = at;
+    const kept = sb.children.length;                 // the history's rows still on the page
+    const inSb = at < screen.scrollback.length;
+    const el = inSb ? sb.children[at - (screen.scrollback.length - kept)]
+                    : rows[at - screen.scrollback.length];
+    if (el) {
+      el.classList.add("t-hit");
+      hit.el = el;
+      if (el.scrollIntoView) el.scrollIntoView({ block: "center" });
+      following = false;                             // looking at what was found
+    }
+    return { index: at, count: found.length, of: found.indexOf(at) + 1 };
+  };
+
+  /* Where the view is, counted from the end, and going back there: for when
+     the pane is taken off the page and put back, which forgets it. */
+  const where = () => (following ? 0 : scroller.scrollHeight - (scroller.scrollTop || 0));
+  const restore = (fromEnd) => {
+    if (following || !fromEnd) toEnd();
+    else scroller.scrollTop = scroller.scrollHeight - fromEnd;
+  };
+
   refresh();
   return {
-    fit, refresh,
+    fit, refresh, scroll, find, where, restore,
+    following: () => following,
     focus: () => input.focus(),
     focused: () => focused,
     dispose: () => { if (watcher) watcher.disconnect(); },
