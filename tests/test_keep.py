@@ -350,7 +350,10 @@ class TestTheRealThing(unittest.TestCase):
                          [("open", f"{self.root}/app.py", 3, None),
                           ("notify", None, None, "the build is green")])
         until(lambda: "the build is green" in text(f"{self.home}/notified"), what="it on the desktop")
-        outside = self.cortex("--show", "/etc/hostname", wait=True)
+        # a file that is real, but in no folder a cortex has open
+        with open(f"{self.home}/elsewhere.txt", "w") as fh:
+            fh.write("x\n")
+        outside = self.cortex("--show", f"{self.home}/elsewhere.txt", wait=True)
         self.assertEqual(outside.returncode, 1)
         self.assertIn("no cortex is running for", outside.stderr)
 
