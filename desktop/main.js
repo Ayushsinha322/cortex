@@ -115,8 +115,11 @@ const goodbyes = [];
 function sayGoodbye(address) {
   const quit = new URL("/api/quit", address);
   quit.search = new URL(address).search;
+  // "closed", not "stop": a cortex with an agent at work or a program running
+  // in a terminal goes on with it, and is there to be opened again
   return net.fetch(quit.toString(), {
-    method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ closed: true }),
   }).catch(() => {});
 }
 
@@ -229,16 +232,20 @@ function createWindow(address) {
   page.on("will-prevent-unload", (e) => {
     const leave = dialog.showMessageBoxSync(win, {
       type: "question", buttons: ["Stay", "Close anyway"], defaultId: 0, cancelId: 0,
-      title: "cortex", message: "Something is still running.",
-      detail: "Closing stops the agents that are working and ends what is running in "
-            + "the terminals. Unsaved edits are lost.",
+      title: "cortex", message: "Close this window?",
+      detail: "Edits that were not saved are lost. Agents at work and programs "
+            + "running in terminals carry on in the background, unless cortex "
+            + "was started with --no-keep.",
     });
     if (leave === 1) e.preventDefault();          // preventing the prevention: close
   });
   const id = page.id;
+  const origin = new URL(address).origin;
   win.on("closed", () => {
     homes.delete(id);
-    if (!args.shot) goodbyes.push(sayGoodbye(address));
+    // only the last window onto a cortex says it has gone: another window
+    // still open on the same one is still looking at it
+    if (!args.shot && ![...homes.values()].includes(origin)) goodbyes.push(sayGoodbye(address));
   });
   win.loadURL(address);
   if (args.shot) page.once("did-finish-load", () => takeShot(page));

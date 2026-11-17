@@ -63,6 +63,7 @@ step "python: ghosts and suggestions" python3 tests/test_suggest.py
 step "python: agents" python3 tests/test_agents.py
 step "python: terminals" python3 tests/test_terminals.py
 step "python: its own window" python3 tests/test_shell.py
+step "python: going on with the window closed" python3 tests/test_keep.py
 step "python: what is remembered, and themes" python3 tests/test_prefs.py
 
 # --- browser-side logic -----------------------------------------------------

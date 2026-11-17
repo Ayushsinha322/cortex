@@ -45,12 +45,18 @@ function width(code) {
   return 1;
 }
 
+/* Make a row at least `n` cells long. */
+function fill(row, n) {
+  while (row.c.length < n) { row.c.push(" "); row.a.push(DEFAULT); }
+}
+
 class Screen {
   constructor(cols = 80, rows = 24) {
     this.cols = cols;
     this.rows = rows;
     this.sbMax = 5000;
     this.onReply = null;           // what the program is told when it asks something
+    this.onCopy = null;            // what the program puts on the clipboard
     this.fgColour = "#e6ebf4";     // what it is told when it asks what colours it is on
     this.bgColour = "#070910";
     this.reset();
@@ -71,14 +77,24 @@ class Screen {
     this.g = [false, false]; this.gl = 0; this.gsel = 0;
     this.wrap = true; this.origin = false;
     this.appCursor = false; this.cursorVisible = true;
-    this.bracketed = false; this.focusEvents = false; this.mouse = false;
+    this.bracketed = false; this.focusEvents = false;
+    this.mouse = 0;                // 0, or 1000 (clicks), 1002 (and drags), 1003 (and moves)
+    this.mouseSgr = false;         // the encoding with no limit on how far across
+    this.cursorShape = 0;          // as the program asked: block, underline or bar
+    this.link = null;              // the address the text being written leads to
+    this.sync = false; this.syncAt = 0;   // "do not draw yet, I am mid-frame"
     this.title = ""; this.cwd = null;
     this.bells = 0; this.notes = [];
     this.st = GROUND; this.buf = ""; this.last = "";
   }
 
+  /* An empty row. A row is only as long as what has been written on it:
+     the cells past its end are blank ones nobody has had to make. (Making a
+     full row of them for every line printed was most of the cost of a long
+     listing.) A row cleared to a colour is the exception, and is all there. */
   blank() {
-    const a = this.attr.bg === -1 ? DEFAULT : { fg: -1, bg: this.attr.bg, f: 0 };
+    if (this.attr.bg === -1) return { c: [], a: [], dirty: true };
+    const a = { fg: -1, bg: this.attr.bg, f: 0 };
     return { c: new Array(this.cols).fill(" "), a: new Array(this.cols).fill(a),
              dirty: true };
   }
@@ -152,7 +168,10 @@ class Screen {
         this.x = Math.min(this.cols - 1, (Math.floor(this.x / 8) + 1) * 8);
         this.pending = false;
         break;
-      case 0x0a: case 0x0b: case 0x0c: this.index(); break;
+      case 0x0a: case 0x0b: case 0x0c:
+        this.lines[this.y].w = false;            // the line ends here: it was not wrapped
+        this.index();
+        break;
       case 0x0d: this.x = 0; this.pending = false; break;
       case 0x0e: this.gl = 1; break;
       case 0x0f: this.gl = 0; break;
@@ -166,17 +185,20 @@ class Screen {
       const row = this.lines[this.y];
       let at = this.pending ? this.x : this.x - 1;
       if (at >= 0 && row.c[at] === "" && at > 0) at--;
-      if (at >= 0) { row.c[at] += ch; row.dirty = true; }
+      if (at >= 0 && at < row.c.length) { row.c[at] += ch; row.dirty = true; }
       return;
     }
     if (this.g[this.gl] && LINES[ch]) ch = LINES[ch];
     if (this.pending) {
       this.pending = false;
-      if (this.wrap) { this.x = 0; this.index(); }
+      // the row goes on into the next one: remembered, so that a screen made
+      // wider or narrower can put the line back together and wrap it again
+      if (this.wrap) { this.lines[this.y].w = true; this.x = 0; this.index(); }
     }
     if (w === 2 && this.x === this.cols - 1) {
       if (!this.wrap) return;
       this.put(this.x, " ", this.attr);
+      this.lines[this.y].w = true;
       this.x = 0;
       this.index();
     }
@@ -191,6 +213,7 @@ class Screen {
      the other half is written over. */
   put(x, ch, attr) {
     const row = this.lines[this.y];
+    if (row.c.length < x) fill(row, x);
     if (row.c[x] === "" && x > 0) row.c[x - 1] = " ";
     else if (x + 1 < this.cols && row.c[x + 1] === "" && ch !== "") row.c[x + 1] = " ";
     row.c[x] = ch;
@@ -219,7 +242,11 @@ class Screen {
       if (keep && top === 0 && !this.alt) {
         this.scrollback.push(gone);
         this.scrolled++;
-        if (this.scrollback.length > this.sbMax) this.scrollback.shift();
+        // in batches: taking one row off the front of thousands, for every
+        // row printed, is most of the time a long listing takes
+        if (this.scrollback.length > this.sbMax + 512) {
+          this.scrollback.splice(0, this.scrollback.length - this.sbMax);
+        }
       }
       this.lines.splice(bottom, 0, this.blank());
     }
@@ -238,10 +265,18 @@ class Screen {
     const row = this.lines[y];
     // to the end of the line is to the end of what the row holds, which is
     // more than can be seen after the screen was narrowed
-    if (to >= this.cols) to = Math.max(to, row.c.length);
-    const a = this.attr.bg === -1 ? DEFAULT : { fg: -1, bg: this.attr.bg, f: 0 };
-    for (let x = from; x < to; x++) { row.c[x] = " "; row.a[x] = a; }
+    if (to >= this.cols) { to = Math.max(to, row.c.length); row.w = false; }
     row.dirty = true;
+    if (this.attr.bg === -1) {
+      // to plain blank: past the end of the row there is nothing to do, and
+      // a row cleared to its end simply ends sooner
+      if (to >= row.c.length) { if (from < row.c.length) { row.c.length = from; row.a.length = from; } return; }
+      for (let x = from; x < to; x++) { row.c[x] = " "; row.a[x] = DEFAULT; }
+      return;
+    }
+    const a = { fg: -1, bg: this.attr.bg, f: 0 };
+    fill(row, from);
+    for (let x = from; x < to; x++) { row.c[x] = " "; row.a[x] = a; }
   }
 
   saveCursor() {
@@ -311,7 +346,9 @@ class Screen {
       // "do you know this mode?" -- say so for the ones kept track of
       const m = n(0, 0);
       const on = { 1: this.appCursor, 7: this.wrap, 25: this.cursorVisible,
-                   1049: this.alt, 2004: this.bracketed, 2026: false }[m];
+                   1000: this.mouse === 1000, 1002: this.mouse === 1002,
+                   1003: this.mouse === 1003, 1004: this.focusEvents, 1006: this.mouseSgr,
+                   1049: this.alt, 2004: this.bracketed, 2026: this.sync }[m];
       this.reply(`\x1b[?${m};${on === undefined ? 0 : on ? 1 : 2}$y`);
       return;
     }
@@ -320,7 +357,12 @@ class Screen {
       this.wrap = true; this.origin = false; this.cursorVisible = true;
       return;
     }
-    if (inter) return;                          // cursor shapes and the like
+    if (inter === " " && final === "q") {       // the shape of the cursor
+      this.cursorShape = n(0, 0);
+      this.lines[this.y].dirty = true;
+      return;
+    }
+    if (inter) return;
 
     if (pre === "?") {
       if (final === "h" || final === "l") { for (const m of p) this.mode(m, final === "h"); return; }
@@ -382,13 +424,16 @@ class Screen {
         const r = this.lines[this.y], k = Math.min(n1(0), this.cols - this.x);
         const a = this.attr.bg === -1 ? DEFAULT : { fg: -1, bg: this.attr.bg, f: 0 };
         if (final === "@") {
-          const was = r.c.length;
-          r.c.splice(this.x, 0, ...new Array(k).fill(" "));
-          r.a.splice(this.x, 0, ...new Array(k).fill(a));
-          r.c.length = was; r.a.length = was;
+          if (r.c.length > this.x) {
+            const most = Math.max(r.c.length, this.cols);
+            r.c.splice(this.x, 0, ...new Array(k).fill(" "));
+            r.a.splice(this.x, 0, ...new Array(k).fill(a));
+            if (r.c.length > most) { r.c.length = most; r.a.length = most; }
+          }
         } else {
+          if (a !== DEFAULT) fill(r, this.cols);
           r.c.splice(this.x, k); r.a.splice(this.x, k);
-          for (let i = 0; i < k; i++) { r.c.push(" "); r.a.push(a); }
+          if (a !== DEFAULT) for (let i = 0; i < k; i++) { r.c.push(" "); r.a.push(a); }
         }
         r.dirty = true;
         break;
@@ -431,7 +476,11 @@ class Screen {
         if (on) { this.saveCursor(); this.swap(true); this.x = 0; this.y = 0; }
         else { this.swap(false); this.restoreCursor(); }
         break;
-      case 1000: case 1002: case 1003: this.mouse = on; break;
+      case 1000: case 1002: case 1003:
+        this.mouse = on ? m : this.mouse === m ? 0 : this.mouse;
+        break;
+      case 1006: this.mouseSgr = on; break;
+      case 2026: this.sync = on; this.syncAt = Date.now(); break;
       case 1004: this.focusEvents = on; break;
       case 2004: this.bracketed = on; break;
     }
@@ -488,7 +537,14 @@ class Screen {
         if (v === 38) fg = c; else bg = c;
       }
     }
-    this.attr = (fg === -1 && bg === -1 && f === 0) ? DEFAULT : { fg, bg, f };
+    this.attr = this.look(fg, bg, f);
+  }
+
+  /* What is written next looks like this -- and, between the two halves of
+     an OSC 8, leads somewhere. */
+  look(fg, bg, f) {
+    if (this.link) return { fg, bg, f, u: this.link };
+    return (fg === -1 && bg === -1 && f === 0) ? DEFAULT : { fg, bg, f };
   }
 
   osc() {
@@ -506,6 +562,23 @@ class Screen {
     } else if (code === "7") {
       const m = /^file:\/\/[^/]*(\/.*)$/.exec(rest);
       if (m) { try { this.cwd = decodeURIComponent(m[1]); } catch (err) { /* left as it was */ } }
+    } else if (code === "8") {
+      // a link: "8;params;address" before the text, "8;;" after it
+      const uri = rest.slice(rest.indexOf(";") + 1);
+      this.link = /^[a-z][a-z0-9+.-]*:/i.test(uri) ? uri.slice(0, 2048) : null;
+      this.attr = this.look(this.attr.fg, this.attr.bg, this.attr.f);
+    } else if (code === "52") {
+      // "put this on the clipboard": how a program copies, an editor over ssh
+      // among them. Asking what is on it ("?") is not answered: what you
+      // copied elsewhere is not a program's to read.
+      const data = rest.slice(rest.indexOf(";") + 1);
+      if (data && data !== "?" && this.onCopy) {
+        try {
+          const raw = atob(data.replace(/\s+/g, ""));
+          const bytes = Uint8Array.from(raw, (c) => c.charCodeAt(0));
+          this.onCopy(new TextDecoder("utf-8").decode(bytes).slice(0, 200000));
+        } catch (err) { /* not base64: nothing copied */ }
+      }
     } else if ((code === "10" || code === "11") && rest === "?") {
       // "what colour is your background?" -- how a program picks a dark theme
       const c = (code === "10" ? this.fgColour : this.bgColour).slice(1);
@@ -523,18 +596,118 @@ class Screen {
     if (/^#[0-9a-f]{6}$/i.test(bg || "")) this.bgColour = bg;
   }
 
-  /* The tab changed size. Text is not re-wrapped. A narrower screen shows
-     less of each row but keeps all of it, so that widening it again shows
-     what was there -- a pane squeezed for a moment loses nothing. When the
+  /* What is at a place in everything printed -- history and screen, counted
+     from the oldest row -- that could be opened: an address, or a file. A
+     link a program marked as one (OSC 8) is that; otherwise the text of the
+     whole line is looked at, across the rows it was wrapped onto. */
+  linkAt(at, x) {
+    const all = [...this.scrollback, ...this.lines], y = at;
+    const row = all[y];
+    if (!row || x < 0 || y < 0) return null;
+    if (row.a[x] && row.a[x].u) return { url: row.a[x].u };
+    let first = y, last = y;
+    while (first > 0 && all[first - 1].w) first--;
+    while (last < all.length - 1 && all[last].w) last++;
+    let text = "", here = -1;
+    for (let r = first; r <= last; r++) {
+      const cells = all[r].c, end = Math.min(cells.length, this.cols);
+      for (let c = 0; c < end; c++) {
+        if (r === y && c === x) here = text.length;
+        text += cells[c];
+      }
+    }
+    if (here < 0) return null;
+    const inside = (m) => m.index <= here && here < m.index + m[0].length;
+    for (const m of text.matchAll(/\bhttps?:\/\/[^\s<>"'`]+/g)) {
+      const url = m[0].replace(/[.,;:!?'"\])}>]+$/, "");
+      if (m.index <= here && here < m.index + url.length) return { url };
+    }
+    for (const m of text.matchAll(/[^\s"'`()<>[\]{}|,;=*]+/g)) {
+      if (!inside(m)) continue;
+      const hit = /^(.*?)(?::(\d+))?(?::(\d+))?:?$/.exec(m[0].replace(/[.:]+$/, ""));
+      const path = hit ? hit[1] : "";
+      // a path, or a name with an extension: `src/app.py:12`, `README.md`
+      if (!path || !(path.includes("/") || /^[\w@+-][\w.@+-]*\.[A-Za-z][\w]{0,9}$/.test(path))) return null;
+      if (/^\/+$/.test(path) || /^[\d.]+$/.test(path)) return null;
+      return { path, line: hit[2] ? Number(hit[2]) : null };
+    }
+    return null;
+  }
+
+  /* Put the lines back together and wrap them again at a new width: history
+     and screen as one run of text, the way it was printed. Returns the rows,
+     where the screen's first row went, and where the cursor is among them. */
+  static rewrap(all, mainStart, cur, oldCols, cols) {
+    const empty = (ch, a) => ch === " " && a.bg === -1 && !(a.f & (INVERSE | UNDER)) && !a.u;
+    const out = [];
+    let start = -1, cy = -1, cx = 0, i = 0;
+    while (i < all.length) {
+      const cells = [], attrs = [];
+      let at = -1, mainAt = -1, j = i;
+      for (;;) {
+        const r = all[j];
+        const more = !!r.w && j + 1 < all.length;
+        let len = Math.min(r.c.length, oldCols);
+        if (!more) while (len > 0 && empty(r.c[len - 1], r.a[len - 1])) len--;
+        // the gap left where a wide character did not fit at the edge
+        else if (len > 0 && r.c[len - 1] === " " && all[j + 1].c[1] === "") len--;
+        if (j === cur.y) { len = Math.max(len, Math.min(cur.x, r.c.length)); at = cells.length + cur.x; }
+        if (j === mainStart) mainAt = cells.length;
+        for (let k = 0; k < len; k++) { cells.push(r.c[k]); attrs.push(r.a[k]); }
+        j++;
+        if (!more) break;
+      }
+      let k = 0;
+      do {
+        let end = Math.min(k + cols, cells.length);
+        if (end < cells.length && cells[end] === "" && end > k + 1) end--;   // never half of a wide one
+        const row = { c: cells.slice(k, end), a: attrs.slice(k, end), dirty: true,
+                      w: end < cells.length };
+        if (at >= k && cy === -1 && (at < end || end === cells.length)) {
+          cy = out.length;
+          cx = Math.min(at - k, cols - 1);
+        }
+        if (mainAt >= k && start === -1 && (mainAt < end || end === cells.length)) start = out.length;
+        out.push(row);
+        k = end;
+      } while (k < cells.length);
+      i = j;
+    }
+    if (start === -1) start = Math.max(0, out.length - 1);
+    if (cy === -1) { cy = out.length - 1; cx = 0; }
+    return { rows: out, start, cy, cx };
+  }
+
+  /* The tab changed size. A different width wraps the text again: what was
+     printed is kept as lines, not as rows, so a pane made narrower loses
+     nothing and one made wider gets its long lines back on one row. (Not the
+     second screen: a full-screen program draws that again itself.) When the
      screen gets shorter, what leaves is the top, into the history, so the
      line being typed on stays in sight. */
   resize(cols, rows) {
     if (cols === this.cols && rows === this.rows) return;
+    if (cols !== this.cols && cols >= 2) {
+      const main = this.alt ? this.held : this.lines;
+      const pos = this.alt ? (this.saved || { x: 0, y: 0 }) : this;
+      const all = [...this.scrollback, ...main];
+      const base = this.scrollback.length;
+      const got = Screen.rewrap(all, base, { x: pos.x, y: base + pos.y }, this.cols, cols);
+      // the screen begins where it began, unless that would put the cursor,
+      // or the last thing printed, off the bottom of it
+      let last = got.rows.length - 1;
+      while (last > got.cy && got.rows[last].c.every((ch) => ch === " ")) last--;
+      const height = this.alt ? this.rows : rows;
+      const start = Math.max(got.start, last - height + 1, 0);
+      const kept = got.rows.slice(start, last + 1);
+      this.scrollback = got.rows.slice(Math.max(0, start - this.sbMax), start);
+      this.scrolled += this.scrollback.length;   // the page draws the history again
+      this.cleared++;
+      if (this.alt) this.held = kept; else this.lines = kept;
+      pos.x = got.cx;
+      pos.y = got.cy - start;
+    }
     const fit = (lines, moving) => {
-      for (const r of lines) {
-        while (r.c.length < cols) { r.c.push(" "); r.a.push(DEFAULT); }
-        r.dirty = true;
-      }
+      for (const r of lines) r.dirty = true;
       while (lines.length > rows) {
         const end = lines[lines.length - 1];
         const empty = end.c.every((ch) => ch === " ");
@@ -672,6 +845,7 @@ function mount(host, screen, opts) {
     if (a.f & UNDER) cls += " t-u";
     if (a.f & STRIKE) cls += " t-s";
     if (a.f & HIDDEN) cls += " t-h";
+    if (a.u) cls += " t-link";
     if (fg === -2) cls += " t-fi";
     else if (fg >= 0 && fg < 16) cls += " t-f" + fg;
     else if (fg >= 16) el.style.color = fg & RGB ? rgb(fg) : palette(fg);
@@ -703,25 +877,42 @@ function mount(host, screen, opts) {
       if (odd || here) {
         flush();
         const wide = x + 1 < row.c.length && row.c[x + 1] === "";
-        const s = make("span", (odd ? (wide ? "t-w2" : "t-w1") : "") + (here ? " t-cur" : ""));
+        const shape = screen.cursorShape;
+        const s = make("span", (odd ? (wide ? "t-w2" : "t-w1") : "")
+          + (here ? " t-cur" + (shape === 3 || shape === 4 ? " t-cur-u"
+                                : shape === 5 || shape === 6 ? " t-cur-bar" : "") : ""));
         style(s, a);
         s.textContent = ch;
         el.appendChild(s);
         continue;
       }
-      if (a !== attr && !(attr && a.fg === attr.fg && a.bg === attr.bg && a.f === attr.f)) {
+      if (a !== attr && !(attr && a.fg === attr.fg && a.bg === attr.bg && a.f === attr.f
+                          && a.u === attr.u)) {
         flush();
         attr = a;
       }
       run += ch;
     }
     flush();
+    if (cx >= end) {
+      // the cursor is past the last thing written on its row
+      if (cx > end) el.appendChild(doc.createTextNode(" ".repeat(cx - end)));
+      const shape = screen.cursorShape;
+      const s = make("span", "t-cur" + (shape === 3 || shape === 4 ? " t-cur-u"
+                                        : shape === 5 || shape === 6 ? " t-cur-bar" : ""));
+      s.textContent = " ";
+      el.appendChild(s);
+    }
   };
 
   const draw = () => {
     frame = 0;
+    // A program in the middle of redrawing says so, and is not shown half
+    // done -- for a moment; one that never says it has finished is drawn anyway.
+    if (screen.sync && Date.now() - screen.syncAt < 200) { refresh(); return; }
     if (screen.cleared !== cleared) { cleared = screen.cleared; sb.textContent = ""; }
-    const fresh = Math.min(screen.scrolled - sbSeen, screen.scrollback.length);
+    // of a great deal printed at once, only as much as is kept is drawn
+    const fresh = Math.min(screen.scrolled - sbSeen, screen.scrollback.length, SB_DOM);
     sbSeen = screen.scrolled;
     for (let i = screen.scrollback.length - fresh; i < screen.scrollback.length; i++) {
       const el = make("div", "t-row");
@@ -839,14 +1030,74 @@ function mount(host, screen, opts) {
     host.classList.remove("focus");
     if (screen.focusEvents) opts.send("\x1b[O");
   });
+  /* Where on the screen a pointer is, in cells counted from 1 -- and where
+     in everything printed, for a row of history. */
+  const cellAt = (e) => {
+    const box = live.getBoundingClientRect();
+    const x = Math.floor((e.clientX - box.left) / cell.w);
+    const y = Math.floor((e.clientY - box.top) / cell.h);
+    return { x, y, col: Math.max(1, Math.min(screen.cols, x + 1)),
+             row: Math.max(1, Math.min(screen.rows, y + 1)) };
+  };
+  const linkUnder = (e) => {
+    const at = cellAt(e);
+    if (at.x < 0 || at.x >= screen.cols || at.y >= screen.rows) return null;
+    // above the screen is the history: its rows on the page end where the screen begins
+    return screen.linkAt(screen.scrollback.length + at.y, at.x);
+  };
+  const mods = (e) => (e.shiftKey ? 4 : 0) + (e.altKey ? 8 : 0) + (e.ctrlKey ? 16 : 0);
+  // A program that asked for the mouse gets it: clicks, drags, the wheel.
+  // Holding shift keeps it for the page, to select text as usual.
+  const reports = (e) => screen.mouse && !e.shiftKey;
+  let down = null, lastCell = "";
+  const tell = (b, e, release) => {
+    const at = cellAt(e);
+    const bytes = mouseBytes(screen.mouseSgr, b + mods(e), at.col, at.row, release);
+    if (bytes) opts.send(bytes);
+    lastCell = at.col + "," + at.row;
+  };
+  scroller.addEventListener("mousedown", (e) => {
+    // ctrl and a click on an address or a file opens it, whoever has the mouse
+    if ((e.ctrlKey || e.metaKey) && e.button === 0 && opts.open) {
+      const link = linkUnder(e);
+      if (link) { e.preventDefault(); opts.open(link); return; }
+    }
+    if (!reports(e) || e.button > 2) return;
+    e.preventDefault();                          // no selection: the click is the program's
+    down = e.button;
+    input.focus();
+    tell(down, e, false);
+  });
+  scroller.addEventListener("mouseup", (e) => {
+    if (down === null) return;
+    tell(down, e, true);
+    down = null;
+  });
+  scroller.addEventListener("mousemove", (e) => {
+    if (opts.open && scroller.style) {
+      scroller.style.cursor = (e.ctrlKey || e.metaKey) && linkUnder(e) ? "pointer" : "";
+    }
+    if (!reports(e)) return;
+    if (!(screen.mouse === 1003 || (screen.mouse === 1002 && down !== null))) return;
+    const at = cellAt(e);
+    if (at.col + "," + at.row === lastCell) return;
+    tell((down === null ? 3 : down) + 32, e, false);
+  });
+  scroller.addEventListener("contextmenu", (e) => { if (reports(e)) e.preventDefault(); });
   // a click is for typing, unless it was the end of selecting some text
   host.addEventListener("mouseup", () => {
     const picked = typeof getSelection === "function" ? String(getSelection()) : "";
     if (!picked) input.focus();
   });
-  // on the second screen there is nothing to scroll back to, so the wheel
-  // moves what the program is showing, the way it does in a pager
+  // The wheel is the program's if it asked for the mouse. Otherwise, on the
+  // second screen there is nothing to scroll back to, so it moves what the
+  // program is showing, the way it does in a pager.
   scroller.addEventListener("wheel", (e) => {
+    if (reports(e)) {
+      e.preventDefault();
+      tell(e.deltaY < 0 ? 64 : 65, e, false);
+      return;
+    }
     if (!screen.alt) return;
     e.preventDefault();
     const key = keyBytes({ key: e.deltaY < 0 ? "ArrowUp" : "ArrowDown" }, screen.appCursor);
@@ -939,7 +1190,17 @@ function mount(host, screen, opts) {
   };
 }
 
-const api = { Screen, mount, keyBytes, width };
+/* What a mouse button, the wheel or a move sends to a program that asked to
+   be told. `b` is the button (0 left, 1 middle, 2 right, 64 and 65 the
+   wheel) with 4, 8 and 16 added for shift, alt and ctrl and 32 for a move;
+   col and row count from 1. */
+function mouseBytes(sgr, b, col, row, release) {
+  if (sgr) return `\x1b[<${b};${col};${row}${release ? "m" : "M"}`;
+  if (col > 223 || row > 223) return "";       // the old encoding cannot say it
+  return "\x1b[M" + String.fromCharCode(32 + (release ? (b & ~3) | 3 : b), 32 + col, 32 + row);
+}
+
+const api = { Screen, mount, keyBytes, mouseBytes, width };
 if (typeof window !== "undefined") window.Term = api;
 if (typeof module !== "undefined" && module.exports) module.exports = api;
 })();

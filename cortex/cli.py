@@ -12,10 +12,11 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from urllib.request import pathname2url
 
-from . import __version__, agents, desktop, files, places, shell
+from . import __version__, agents, desktop, files, instances, places, shell
 from .actions import ActionRunner, C
 from .lifecycle import Lifecycle
 from .links import LinkIndex
@@ -211,6 +212,54 @@ def launch_window(url: str, mode: str, browser: str | None,
         return None
 
 
+def describe(status: dict) -> str:
+    """What a running cortex has going on, in a few words."""
+    bits = []
+    if status.get("agents"):
+        n = status["agents"]
+        bits.append(f"{n} agent{'' if n == 1 else 's'} working")
+    if status.get("terminals"):
+        n, busy = status["terminals"], status.get("running", 0)
+        bits.append(f"{n} terminal{'' if n == 1 else 's'}"
+                    + (f" ({busy} running something)" if busy else ""))
+    if not bits:
+        bits.append("nothing running")
+    n = status.get("windows", 0)
+    bits.append("no window open" if not n else f"{n} window{'' if n == 1 else 's'} open")
+    return ", ".join(bits)
+
+
+def status_of(ctx) -> dict:
+    busy, alive = ctx.terminals.activity() if ctx.terminals is not None else (0, 0)
+    return {"terminals": alive, "running": busy,
+            "agents": ctx.agents.busy() if ctx.agents is not None else 0, "windows": 0}
+
+
+def join(other: dict, args, launched: bool) -> int:
+    """Open a window on the cortex that is already running for this folder."""
+    url = instances.url(other)
+    forward = write_forward(url)
+    opened = launch_window(url, args.window, args.browser, forward)
+    print(f"  {C['b']}cortex{C['off']}    already running for {_short(other['root'])}"
+          f"  {C['dim']}({describe(other['status'])}){C['off']}")
+    if opened:
+        print(f"  {C['b']}window{C['off']}    opened with {opened}  "
+              f"{C['dim']}(--new starts a separate one){C['off']}")
+    else:
+        print(f"  {C['amber']}no browser found - open this yourself:{C['off']} {url}")
+        if launched:
+            desktop.notify("cortex could not open a window", "No browser was found.")
+    if forward:
+        # the page that leads the browser there has done its work by now
+        if opened and opened != "cortex desktop":
+            time.sleep(6)
+        try:
+            os.remove(forward)
+        except OSError:
+            pass
+    return 0 if opened else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="cortex",
@@ -243,6 +292,27 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--read-only", action="store_true",
                    help="never change a file: no agents, editing, new, rename "
                         "or trash")
+
+    k = p.add_argument_group("running in the background")
+    k.add_argument("--no-keep", action="store_true",
+                   help="closing the window always ends cortex, and what is "
+                        "running in it; by default an agent at work or a "
+                        "program in a terminal keeps it going")
+    k.add_argument("--new", action="store_true",
+                   help="start a separate cortex even if one is already "
+                        "running for this folder")
+    k.add_argument("--running", action="store_true",
+                   help="list the cortexes running, and what is going on in "
+                        "each, and exit")
+    k.add_argument("--show", metavar="FILE[:LINE]",
+                   help="show a file, at a line if one is given, in the cortex "
+                        "already running for its folder, and exit")
+    k.add_argument("--notify", metavar="TEXT",
+                   help="have the running cortex tell you something -- for "
+                        "scripts, and for agents' hooks -- and exit")
+    k.add_argument("--stop", action="store_true",
+                   help="stop the cortex running for this folder (every one, "
+                        "if no folder is named), ending what runs in it, and exit")
 
     g = p.add_argument_group("projects")
     g.add_argument("-P", "--project", metavar="NAME",
@@ -323,6 +393,57 @@ def main(argv=None) -> int:
         print(f"forgot {C['b']}{args.forget}{C['off']}")
         return 0
 
+    if args.running:
+        found = instances.running()
+        if not found:
+            print(f"{C['dim']}no cortex is running{C['off']}")
+        for entry in found:
+            print(f"  {C['b']}{_short(entry['root'])}{C['off']}  "
+                  f"{C['dim']}{describe(entry['status'])}{C['off']}")
+        return 0
+
+    if args.show:
+        name, _, tail = args.show.rpartition(":")
+        line = int(tail) if name and tail.isdigit() else None
+        path = os.path.realpath(os.path.expanduser(name if line else args.show))
+        if not os.path.exists(path):
+            print(f"{C['red']}no such file: {args.show}{C['off']}", file=sys.stderr)
+            return 2
+        for entry in instances.covering(path):
+            got = instances.ask(entry, "/api/tell", {"kind": "open", "path": path, "line": line})
+            if got and got.get("ok"):
+                print(f"shown in {C['b']}{_short(entry['root'])}{C['off']}"
+                      + ("" if got.get("windows") else
+                         f"  {C['dim']}(no window is open on it: run cortex){C['off']}"))
+                return 0
+        print(f"{C['red']}no cortex is running for {_short(path)}{C['off']}", file=sys.stderr)
+        return 1
+
+    if args.notify:
+        here = os.path.realpath(os.getcwd())
+        found = instances.covering(here) or instances.running()
+        told = 0
+        for entry in found[:1] if instances.covering(here) else found:
+            got = instances.ask(entry, "/api/tell", {"kind": "notify", "text": args.notify})
+            told += 1 if got and got.get("ok") else 0
+        if not told:
+            # nothing to pass it on: say it directly, so a hook is never silent
+            desktop.notify("cortex", args.notify[:300])
+        return 0
+
+    if args.stop:
+        only = os.path.realpath(os.path.expanduser(args.root)) if args.root else None
+        found = [e for e in instances.running() if only is None or e["root"] == only]
+        if not found:
+            print(f"{C['dim']}no cortex is running"
+                  + (f" for {_short(only)}" if only else "") + C["off"])
+            return 0
+        for entry in found:
+            instances.ask(entry, "/api/quit", {})
+            print(f"stopped {C['b']}{_short(entry['root'])}{C['off']}  "
+                  f"{C['dim']}{describe(entry['status'])}{C['off']}")
+        return 0
+
     start_log(launched)
     home = os.path.realpath(os.path.expanduser("~"))
 
@@ -346,6 +467,14 @@ def main(argv=None) -> int:
         save_projects(projects)
         desktop.refresh(projects)
         label = args.save
+
+    # One already running for this folder -- its window closed on an agent at
+    # work, or still open elsewhere -- gets a window, rather than a second
+    # cortex started beside it with none of its terminals.
+    if not (args.new or args.capture or args.port or args.window == "none"):
+        other = instances.find(root)
+        if other and bool(other.get("readOnly")) == bool(args.read_only):
+            return join(other, args, launched)
 
     extra = {s.strip() for s in args.ignore.split(",") if s.strip()}
     runner = ActionRunner()
@@ -380,7 +509,28 @@ def main(argv=None) -> int:
     # Closing the window ends cortex, unless nobody opened a window: then the
     # page may be in a tab somewhere else, or at the far end of an SSH tunnel,
     # and cortex has no way to know it has gone.
-    lifecycle = Lifecycle(auto_exit=args.window != "none")
+    def still_running():
+        busy, alive = ctx.terminals.activity() if ctx.terminals is not None else (0, 0)
+        if ctx.agents is not None:
+            busy += ctx.agents.busy()
+        return "busy" if busy else "idle" if alive else None
+
+    def tell(what: str) -> None:
+        where = ctx.title
+        if what == "held":
+            line = f"still running in {where}: {describe(status_of(ctx))}"
+            desktop.notify("cortex is still running",
+                           f"{describe(status_of(ctx)).capitalize()} kept going in {where}. "
+                           "Open cortex to pick it up.")
+        else:
+            line = f"what was running in {where} has finished; open cortex to see it"
+            desktop.notify("cortex: finished", f"What was running in {where} is done. "
+                                               "Open cortex to see it.")
+        print(f"  {C['dim']}{line}{C['off']}")
+        logging.getLogger("cortex").info(line)
+
+    lifecycle = Lifecycle(auto_exit=args.window != "none",
+                          keep=None if args.no_keep else still_running, tell=tell)
     ctx = Context(first["scanner"], first["links"], runner, token,
                   title=first["title"],
                   ui_config={**first["ui"],
@@ -398,6 +548,8 @@ def main(argv=None) -> int:
     port = httpd.server_address[1]
     url = f"http://127.0.0.1:{port}/?t={token}"
     places.remember(root)
+    if not args.capture:
+        instances.announce(root, port, token, args.read_only)
     if args.window != "none":
         ctx.bootstrap = write_forward(url)
 
@@ -407,9 +559,26 @@ def main(argv=None) -> int:
     # Logging out, or the desktop shutting down, ends cortex with a signal
     # rather than a key. It should leave the same way either way: a save
     # finished, and no agent left running with nobody to answer it.
-    for sig in (signal.SIGTERM, signal.SIGHUP):
+    def hung_up(*_):
+        # The terminal cortex was started from has closed. That ends cortex --
+        # unless it is keeping something going, which closing a terminal is
+        # no more a reason to end than closing the window was. It lets go of
+        # the terminal instead, so that nothing it prints later can fail.
+        if lifecycle.keep is not None and lifecycle.keep() == "busy":
+            try:
+                null = os.open(os.devnull, os.O_RDWR)
+                for fd in (0, 1, 2):
+                    os.dup2(null, fd)
+                os.close(null)
+            except OSError:
+                pass
+            return
+        lifecycle.quit("asked to stop")
+
+    for sig, how in ((signal.SIGTERM, lambda *_: lifecycle.quit("asked to stop")),
+                     (signal.SIGHUP, hung_up)):
         try:
-            signal.signal(sig, lambda *_: lifecycle.quit("asked to stop"))
+            signal.signal(sig, how)
         except (OSError, ValueError):
             pass
 
@@ -446,6 +615,9 @@ def main(argv=None) -> int:
         print(f"\n{C['green']}  ready.{C['off']} "
               f"{C['dim']}click a node in the window; actions land here. "
               f"close the window or ctrl-c to quit.{C['off']}")
+        if lifecycle.keep is not None:
+            print(f"  {C['dim']}closing the window on an agent at work, or a program "
+                  f"in a terminal, leaves cortex running for it.{C['off']}")
         if desktop.supported() and not desktop.installed():
             print(f"  {C['dim']}tip: cortex --install-launcher puts it in your "
                   f"app menu, no terminal needed{C['off']}")
@@ -456,6 +628,7 @@ def main(argv=None) -> int:
         pass
     finally:
         runner.stop.set()
+        instances.withdraw()
         files.quiesce()             # a save in progress finishes, whole
         httpd.shutdown()
         if ctx.agents is not None:

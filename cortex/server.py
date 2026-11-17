@@ -25,7 +25,7 @@ from urllib.parse import urlparse, parse_qs, quote
 
 from . import (desktop, dismissed, files, gitstatus, grep, journal, layout, places,
                prefs, reader, snapshot, themes, tours, views)
-from . import agents, history, terminals
+from . import agents, history, instances, terminals
 from .agents import Pool
 from .terminals import Terminals
 from .activity import Activity
@@ -84,6 +84,41 @@ STATIC_TYPES = {
 BEACONS = {"/api/hello", "/api/bye"}
 
 
+class Inbox:
+    """Things said to the window from outside it: `cortex --show app.py:12`
+    from a terminal, `cortex --notify` from a script or an agent's hook.
+
+    The window asks, and waits for an answer; this is what answers. Only the
+    last few are kept, and a window that has only just opened starts from
+    now -- it is not told what was said before it was there."""
+
+    def __init__(self) -> None:
+        self._changed = threading.Condition()
+        self._seq = 0
+        self._items: list[dict] = []
+
+    def put(self, item: dict) -> int:
+        with self._changed:
+            self._seq += 1
+            self._items.append({**item, "seq": self._seq})
+            del self._items[:-50]
+            self._changed.notify_all()
+            return self._seq
+
+    def since(self, since: int, wait: float = 0.0) -> dict:
+        deadline = time.monotonic() + max(0.0, wait)
+        with self._changed:
+            if since < 0:
+                return {"seq": self._seq, "items": []}
+            while self._seq <= since:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    break
+                self._changed.wait(left)
+            return {"seq": self._seq,
+                    "items": [i for i in self._items if i["seq"] > since]}
+
+
 class Context:
     """Everything the handler needs, injected once at startup.
 
@@ -128,6 +163,7 @@ class Context:
         self.terminals = None              # and the terminals in the window, likewise
         self._agents_lock = threading.Lock()
         self._noted = 0.0                  # when a terminal last rang the desktop
+        self.inbox = Inbox()               # what the window has been told from outside
 
     def pool(self) -> Pool:
         with self._agents_lock:
@@ -420,6 +456,15 @@ class Handler(BaseHTTPRequestHandler):
                 snap["suggest"] = dismissed.without(self.ctx.scanner.root, snap["suggest"])
             return self._json(snap)
 
+        if route == "/api/status":
+            return self._json(self._status())
+        if route == "/api/inbox":
+            try:
+                since = int((params.get("since") or ["-1"])[0])
+                wait = min(25.0, max(0.0, float((params.get("wait") or ["0"])[0])))
+            except ValueError:
+                return self._json({"error": "bad since"}, 400)
+            return self._json(self.ctx.inbox.since(since, wait))
         if route == "/api/editors":
             return self._json({"editors": self.ctx.runner.editors(),
                                "terminal": self.ctx.runner.mode})
@@ -557,6 +602,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/project": self._project,
             "/api/launcher": self._launcher,
             "/api/quit": self._quit,
+            "/api/tell": self._tell,
             "/api/nodes": self._nodes,
             "/api/views": self._views,
             "/api/tours": self._tours,
@@ -673,6 +719,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": False, "error": "cortex is not allowed to read that folder"})
         self.ctx.reopen(root)
         places.remember(root)
+        instances.moved(root)
         return self._json({"ok": True, "root": root})
 
     def _project(self, body):
@@ -953,6 +1000,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(terms.open(terminals.default_shell(), cwd,
                                          os.path.basename(cwd) or cwd,
                                          cols=cols, rows=rows, mux=mux))
+        if op == "where":
+            # the folder its program is in now, for a file name clicked in it
+            return self._json({"ok": True, "cwd": terms.where(body.get("id"))})
         if op == "layout":
             return self._json(terms.arrange(body.get("mux"), body.get("layout")))
         if op == "move":
@@ -974,9 +1024,50 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True})
         return self._json({"ok": False, "error": f"unknown operation {op!r}"})
 
+    def _status(self) -> dict:
+        """What this cortex is, to another `cortex` asking before it starts."""
+        ctx, life = self.ctx, self.ctx.lifecycle
+        busy, alive = ctx.terminals.activity() if ctx.terminals is not None else (0, 0)
+        return {"pid": os.getpid(), "root": ctx.scanner.root, "title": ctx.title,
+                "readOnly": ctx.read_only,
+                "windows": life.clients if life is not None else 0,
+                "held": bool(life is not None and life.held),
+                "terminals": alive, "running": busy,
+                "agents": ctx.agents.busy() if ctx.agents is not None else 0}
+
+    def _tell(self, body):
+        """Something said to the window from outside it. Not a change to any
+        file, so it is heard even when cortex is read-only."""
+        kind = body.get("kind")
+        life = self.ctx.lifecycle
+        windows = life.clients if life is not None else 0
+        if kind == "open":
+            path = self._inside(body.get("path"))
+            if path is None or not os.path.exists(path):
+                return self._json({"ok": False, "error": "not a file in this folder"}, 400)
+            line = body.get("line")
+            self.ctx.inbox.put({"kind": "open", "path": path,
+                                "line": line if isinstance(line, int) and line > 0 else None})
+            return self._json({"ok": True, "windows": windows})
+        if kind == "notify":
+            text = str(body.get("text") or "").strip()[:300]
+            if not text:
+                return self._json({"ok": False, "error": "nothing to say"}, 400)
+            title = str(body.get("title") or f"cortex — {self.ctx.title}")[:120]
+            self.ctx.inbox.put({"kind": "notify", "text": text, "title": title})
+            desktop.notify(title, text)
+            return self._json({"ok": True, "windows": windows})
+        return self._json({"ok": False, "error": "unknown"}, 400)
+
     def _quit(self, body):
         if self.ctx.lifecycle is None:
             return self._json({"ok": False, "error": "nothing to quit"})
+        life = self.ctx.lifecycle
+        if isinstance(body, dict) and body.get("closed") and life.keep is not None:
+            # the window closed, which is not the same as being told to stop:
+            # what is still running decides whether cortex goes
+            life.closed()
+            return self._json({"ok": True, "kept": life.keep() == "busy"})
         # recorded before answering: once the answer is out, the page may ask
         # whether cortex is stopping, and it must already be
         self.ctx.lifecycle.quit("quit from the window")
@@ -1018,6 +1109,10 @@ class Handler(BaseHTTPRequestHandler):
         cfg.update(self.ctx.ui_config)
         # how the window was left -- and, if its theme is not one of cortex's
         # own, the theme itself, so the first thing painted is already in it
+        life = self.ctx.lifecycle
+        # it went on working with the window closed, and this is someone back
+        cfg["kept"] = bool(life is not None and life.held)
+        cfg["keeps"] = bool(life is not None and life.keep is not None and life.auto_exit)
         kept = prefs.load()
         # The window opens on the place to work, a terminal already in it.
         # The graph is one key away, and whoever prefers to open on it is

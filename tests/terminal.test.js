@@ -9,7 +9,7 @@
  */
 
 const path = require("path");
-const { Screen, keyBytes, width } = require(path.join(__dirname, "..", "cortex", "ui", "terminal.js"));
+const { Screen, keyBytes, mouseBytes, width } = require(path.join(__dirname, "..", "cortex", "ui", "terminal.js"));
 const { reporter } = require("./harness");
 
 const { check, done } = reporter();
@@ -173,20 +173,110 @@ check("unless there was room below it", same(s.text(), ["ab", "cd", ""]) && s.y 
 s.resize(4, 6);
 check("narrower and taller: less of each row is shown, and rows are added",
       s.lines.length === 6 && s.cols === 4 && s.bottom === 5 && s.text()[0] === "ab");
+// a different width wraps the text again
 s = fed("a long line of text", 30, 3);
 s.resize(8, 3);
-check("a screen squeezed narrow shows what fits", s.text()[0] === "a long l");
+check("a narrower screen wraps a long line onto the rows below",
+      same(s.text(), ["a long l", "ine of t", "ext"]) && s.y === 2 && s.x === 3, JSON.stringify([s.text(), s.x, s.y]));
 s.resize(30, 3);
-check("and widened again has lost nothing", s.text()[0] === "a long line of text");
+check("and a wider one puts it back on one row, with the cursor at its end",
+      same(s.text(), ["a long line of text", "", ""]) && s.y === 0 && s.x === 19);
+s = fed("one\r\ntwo is the long one here\r\nthree", 30, 4);
+s.resize(10, 4);
+check("lines that were separate stay separate, and what no longer fits goes to history",
+      same(s.text(), ["two is the", " long one", "here", "three"]) && s.scrollback.length === 1
+      && s.scrollback[0].c.join("").trim() === "one", JSON.stringify(s.text()));
+s.resize(30, 4);
+check("history is wrapped again with the rest",
+      [...s.scrollback, ...s.lines].map((r) => r.c.join("").trimEnd()).filter(Boolean).join("|")
+      === "one|two is the long one here|three");
+s = fed("0123456789abcdef", 8, 4);
+check("a line the terminal wrapped is known to be one line",
+      s.lines[0].w === true && !s.lines[1].w && same(s.text().slice(0, 2), ["01234567", "89abcdef"]));
+s.resize(16, 4);
+check("so widening joins it", s.text()[0] === "0123456789abcdef" && s.text()[1] === "");
+s = fed("01234567\r\n89abcdef", 8, 4);
+s.resize(16, 4);
+check("and two lines that happened to be full are not joined",
+      same(s.text().slice(0, 2), ["01234567", "89abcdef"]));
+s = fed("ab\u4e16\u754ccd", 6, 3);
+s.resize(3, 4);
+check("a wide character is never cut in half by the wrapping",
+      same(s.text().slice(0, 3), ["ab", "\u4e16", "\u754cc"]) || same(s.text().slice(0, 3), ["ab", "\u4e16\u754c", "cd"])
+      || s.text().join("").replace(/\s/g, "") === "ab\u4e16\u754ccd", JSON.stringify(s.text()));
+s = fed("$ ", 20, 5);
+s.resize(10, 5);
+check("a prompt on an empty screen stays at the top", s.y === 0 && s.x === 2 && s.text()[0] === "$");
+s = fed("x".repeat(50) + "\r\n$ ", 20, 6);
+const count0 = s.cleared;
+s.resize(40, 6);
+check("the page is told to draw the history again", s.cleared === count0 + 1);
 s.resize(8, 3);
 s.write("\r" + E + "[K");
 s.resize(30, 3);
-check("but what a program erased while it was narrow is erased, all of it", s.text()[0] === "");
+check("what a program erased while narrow stays erased",
+      s.text().every((r) => !r.includes("$")), JSON.stringify(s.text()));
 s = fed(E + "[?1049h" + "alt", 10, 4);
 s.resize(6, 2);
 s.write(E + "[?1049l");
 check("the screen underneath is resized with it", s.lines.length === 2 && s.cols === 6
       && s.text().every((r) => r.length <= 6));
+
+// --- the mouse, links, the cursor, the clipboard -----------------------------------
+s = fed(E + "[?1002h" + E + "[?1006h");
+check("a program can ask for the mouse, and say how to be told", s.mouse === 1002 && s.mouseSgr === true);
+s.write(E + "[?1002l");
+check("and give it back", s.mouse === 0);
+check("a click, as the newer encoding says it", mouseBytes(true, 0, 5, 3, false) === E + "[<0;5;3M"
+      && mouseBytes(true, 0, 5, 3, true) === E + "[<0;5;3m");
+check("the wheel, and a drag with ctrl held", mouseBytes(true, 64, 1, 1, false) === E + "[<64;1;1M"
+      && mouseBytes(true, 32 + 16, 300, 2, false) === E + "[<48;300;2M");
+check("the older encoding, which cannot say far across",
+      mouseBytes(false, 0, 1, 1, false) === E + "[M" + " !!" && mouseBytes(false, 0, 1, 1, true) === E + "[M#!!"
+      && mouseBytes(false, 0, 300, 1, false) === "");
+s = fed("see " + E + "]8;;https://example.com/a" + E + "\\" + "the docs" + E + "]8;;" + E + "\\" + " now", 80, 4);
+check("text a program marked as a link leads there, and only that text",
+      s.linkAt(0, 4).url === "https://example.com/a" && s.linkAt(0, 11).url === "https://example.com/a"
+      && s.linkAt(0, 1) === null && s.linkAt(0, 13) === null && s.text()[0] === "see the docs now");
+s = fed("open https://example.com/x?y=1). ok", 80, 4);
+check("an address in plain text is found, without the full stop after it",
+      s.linkAt(0, 8).url === "https://example.com/x?y=1" && s.linkAt(0, 2) === null);
+s = fed("go to https://example.com/a/long/path now", 20, 4);
+check("an address wrapped onto two rows is still one address",
+      s.linkAt(0, 10).url === "https://example.com/a/long/path"
+      && s.linkAt(1, 3).url === "https://example.com/a/long/path");
+s = fed('  File "src/app.py", line 3\r\nsrc/app.py:42:7: error\r\nsee README.md and v1.2.3 at 10:30', 80, 6);
+check("a file name is found, with the line after it",
+      s.linkAt(0, 10).path === "src/app.py" && s.linkAt(0, 10).line === null
+      && s.linkAt(1, 2).path === "src/app.py" && s.linkAt(1, 2).line === 42
+      && s.linkAt(2, 6).path === "README.md");
+check("a word, a version and a time are not files",
+      s.linkAt(2, 1) === null && s.linkAt(2, 19) === null && s.linkAt(2, 28) === null
+      && s.linkAt(1, 18) === null);
+s = fed("one\r\ntwo\r\nsrc/x.py\r\nfour", 20, 2);
+check("and in the history as on the screen", s.scrollback.length === 2 && s.linkAt(2, 1).path === "src/x.py");
+s = fed(E + "[5 q");
+check("the cursor is the shape the program asked for", s.cursorShape === 5);
+s = scr();
+let copied = null;
+s.onCopy = (text) => { copied = text; };
+s.write(E + "]52;c;" + Buffer.from("héllo", "utf8").toString("base64") + "\x07");
+check("a program can put text on the clipboard", copied === "héllo");
+copied = null;
+let asked = null;
+s.onReply = (r) => { asked = r; };
+s.write(E + "]52;c;?" + "\x07");
+check("and cannot read what is on it", copied === null && asked === null);
+s = fed(E + "[?2026h");
+check("a program mid-frame says so", s.sync === true);
+s.write(E + "[?2026l");
+check("and says when it is done", s.sync === false);
+s = scr(10, 3);
+s.sbMax = 100;
+for (let i = 0; i < 2000; i++) s.write("line " + i + "\r\n");
+check("a great deal of output keeps a bounded history, the newest of it",
+      s.scrollback.length <= 100 + 512 && s.scrollback[s.scrollback.length - 1].c.join("").trim() === "line 1997"
+      && s.scrolled === 1998);
 
 // --- keys ----------------------------------------------------------------------------
 check("keys that type are left to the text box", key("a") === null && key("é") === null);

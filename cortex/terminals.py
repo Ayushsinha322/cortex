@@ -234,6 +234,28 @@ class Terminals:
         for tid in mine:
             self.close(tid)
 
+    def activity(self) -> tuple[int, int]:
+        """(terminals with something running in them, terminals open).
+
+        A shell sitting at its prompt is not running anything; one with a
+        program in the foreground is, and the terminal itself knows which --
+        the foreground group is the shell's own only while it waits. An
+        agent's own interface counts for as long as it is open."""
+        busy = alive = 0
+        with self._lock:
+            terms = [t for t in self._terms.values() if t.alive and t.proc is not None]
+        for term in terms:
+            alive += 1
+            if term.kind != "shell":
+                busy += 1
+                continue
+            try:
+                if os.tcgetpgrp(term.master) != term.proc.pid:
+                    busy += 1
+            except OSError:
+                pass
+        return busy, alive
+
     def stop_all(self) -> None:
         with self._changed:
             self._stopping = True

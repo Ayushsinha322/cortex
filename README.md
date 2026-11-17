@@ -207,7 +207,9 @@ Your terminal stays where it is and prints what it is doing:
 
 Leave that terminal alone — it is where your editor will appear. Close the
 window when you are done, and cortex quits with it; <kbd>Ctrl-C</kbd> works
-too.
+too. (Unless something is still running in it — an agent at work, a program
+in a terminal. Then cortex [stays for it](#when-the-window-closes), and the
+next `cortex` opens a window on it again.)
 
 **Getting around the graph:**
 
@@ -247,8 +249,11 @@ using it needs one:
   window of its own — your desktop's terminal, or `$TERMINAL` — which closes
   when you quit the editor. If the editor fails, that window stays open long
   enough to read why.
-- **Closing the window quits it.** A reload does not count; closing does.
-  There is also a **quit cortex** button in the folder sheet.
+- **Closing the window quits it** — if nothing is running. A reload does
+  not count; closing does. An agent at work or a program running in a
+  terminal [keeps cortex going](#when-the-window-closes) without its window.
+  There is also a **quit cortex** button in the folder sheet, which stops
+  everything.
 - **If it stops, the window says so.** Rather than buttons that silently do
   nothing.
 - **Errors go to a file**, `~/.cache/cortex/cortex.log`, since there is no
@@ -814,7 +819,59 @@ click to go to one — and shows how much of each agent's allowance is used
 and when it comes back, as the agent itself reports it.
 
 Terminals live in cortex, not in the page: reloading the window brings each
-one back as it was. Closing the window ends them, and asks first.
+one back as it was.
+
+**The terminal itself** is written here, like the rest of the page, and does
+what you would miss if it did not:
+
+- **Lines wrap again when the width changes.** What was printed is kept as
+  lines, not as rows; make a pane narrower and nothing is cut, make it wider
+  and a long line is back on one row.
+- **The mouse works in programs that ask for it** — clicks, drags and the
+  wheel in vim, htop, a pager, an agent's own interface. Hold
+  <kbd>shift</kbd> to select text instead.
+- **<kbd>ctrl</kbd>-click opens what was printed.** An address opens in a
+  tab. A file name opens in the reader, at its line: `src/app.py:42` in a
+  failing test's output is one click from the code. Links a program marks
+  as links (OSC 8) work the same way.
+- **The cursor is the shape the program asks for**, a program can put text
+  on your clipboard (an editor over ssh; it cannot read what is there), and
+  one that says it is mid-redraw is not shown half done.
+- **A great deal of output is fast**: 300,000 lines of `seq` are through in
+  well under a second, and the history is kept bounded as it goes.
+
+### When the window closes
+
+Closing the window used to end whatever was running in it. Now cortex looks
+first. If an agent is working, or a program is running in a terminal — a
+test run, a build, an agent's own interface — cortex stays, without its
+window, and tells you so once with a desktop notification. A shell sitting
+at its prompt is not a reason to stay.
+
+```bash
+cortex ~/code/shop       # later: opens a window on the one still running
+cortex --running         # what is running, and what is going on in each
+cortex --stop ~/code/shop   # end it, and what runs in it
+```
+
+Run `cortex` for the same folder and you get a window on the one that is
+already there — its terminals, their output, the agents — rather than a
+second cortex beside it. That is also true while its window is still open:
+you get a second window on the same one. `--new` starts a separate cortex
+all the same; `--no-keep` goes back to closing meaning stopping.
+
+When what it stayed for finishes with nobody there, cortex says so, and
+keeps the result for you to come back to — for twelve hours, and then it
+goes. Closing the terminal that cortex was started from does not end one
+that is keeping something going either.
+
+**Said from outside.** A script, or an agent's hook, can talk to the cortex
+that is running:
+
+```bash
+cortex --show src/app.py:42      # open that file, at that line, in the window
+cortex --notify "tests are green"   # a notification, and a line in the window
+```
 
 ### Panes, the way zellij has them
 
@@ -921,8 +978,8 @@ adds nothing to that and takes nothing from it.
 
 ### What it does not do
 
-Agents run on this machine, for as long as cortex is open: closing the window
-stops them, and asks first if any is in the middle of something. The
+Agents run on this machine, for as long as cortex is running — which, with
+one at work, is past the closing of its window. The
 conversations are kept, so one can be picked up the next time. The window
 is the graph and one set of tabs; it is a terminal tab that splits into panes. There is no phone
 app and there are no remote machines.
@@ -1264,6 +1321,13 @@ cortex [folder] [options]
       --read-only         never change a file: no agents, editing, new, rename
                           or trash
 
+      --no-keep           closing the window always ends cortex, whatever is running
+      --new               start a separate cortex even if one runs for this folder
+      --running           list the cortexes running, then exit
+      --stop              stop the one for this folder (all, with no folder), then exit
+      --show FILE[:LINE]  show a file in the cortex running for its folder, then exit
+      --notify TEXT       have the running cortex tell you something, then exit
+
       --install-launcher  put cortex in your app menu, then exit
       --remove-launcher   take it out again, then exit
       --capture           a small window that adds a line to today's note
@@ -1393,7 +1457,13 @@ usage and the history are each started the first time they are wanted, not at
 launch, so an ordinary session pays nothing for them — not even inotify watches,
 which other programs on the machine draw from the same allowance.
 
-**Closing the window is quitting.** The page says hello as it opens and
+**Closing the window is quitting, unless something is running.** `keep`, in
+`lifecycle.py`, is asked what is: an agent's state, or a terminal whose
+foreground process group is not its shell's own — which is how a terminal
+knows a program is running in it. A cortex that is up writes one small file
+in the runtime directory (`$XDG_RUNTIME_DIR/cortex`, yours alone, gone at
+logout) saying where it is, which is how the next `cortex` finds it and how
+`--show` and `--notify` reach it. The page says hello as it opens and
 goodbye as it closes, and once the last goodbye has gone a few seconds without a
 new hello — a reload is both, a moment apart — cortex exits. There is
 deliberately no timeout on silence: a browser may freeze a minimised window for
@@ -1472,7 +1542,8 @@ cortex/
 │   ├── prefs.py          how the window was left: theme, pane width, rail
 │   ├── themes.py         themes of your own, and the ones Ghostty has
 │   ├── actions.py        editor detection, terminal handoff, terminal windows
-│   ├── lifecycle.py      noticing the window has closed
+│   ├── lifecycle.py      noticing the window has closed, and whether to stay
+│   ├── instances.py      which cortex is already running, for which folder
 │   ├── desktop.py        the app-menu launcher
 │   ├── server.py         local HTTP API, token and host checks, path guards
 │   └── ui/
@@ -1501,6 +1572,7 @@ cortex/
     ├── test_agents.py       agents and their worktrees, against stand-in agents
     ├── test_terminals.py    real shells on real pseudo-terminals
     ├── test_shell.py        finding the window, and handing it the address
+    ├── test_keep.py         going on with the window closed, and being found again
     ├── test_prefs.py        what is remembered, and themes found on disk
     ├── harness.js           the stub DOM the browser-side tests run against
     ├── markdown.test.js     the markdown renderer
@@ -1543,6 +1615,7 @@ python3 tests/test_suggest.py
 python3 tests/test_agents.py
 python3 tests/test_terminals.py
 python3 tests/test_shell.py
+python3 tests/test_keep.py
 python3 tests/test_prefs.py
 node tests/markdown.test.js
 node tests/render-loop.test.js
@@ -1568,7 +1641,7 @@ node tests/snapshot.test.js
 node tests/perf.test.js
 ```
 
-1,257 tests, no framework to install — `unittest` and plain `node`. The agent
+1,301 tests, no framework to install — `unittest` and plain `node`. The agent
 tests need no agent: stand-ins that speak the same lines as Claude Code and
 Codex are put on the `PATH`, so what is tested is cortex's half of the
 conversation. They run on
@@ -1615,8 +1688,9 @@ forget it. A command is different — it runs on your machine, as you — which 
 why commands are asked about unless you chose otherwise.
 
 **What happens to the agents when I close the window?**
-They stop: cortex quits with its window, and takes what it started with it.
-If one is in the middle of a task, the window asks first. Their copies, their
+One that is working carries on: cortex stays for it, without its window, and
+`cortex` opens a window on it again. With nothing running, cortex quits with
+its window as before (`--no-keep` makes that always so). Their copies, their
 branches and their conversations stay, so opening cortex again shows them
 where they were, and a message picks one up.
 

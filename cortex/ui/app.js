@@ -6699,6 +6699,30 @@ function newTabItems() {
   return items;
 }
 
+/* ------------------------------------------------------ told from outside
+
+   `cortex --show src/app.py:12` in a terminal, `cortex --notify "done"` from
+   a script or an agent's hook: said to the cortex that is running, which
+   passes it to its windows. This is the window listening. */
+async function watchInbox() {
+  let since = -1;
+  while (!gone) {
+    let r;
+    try { r = await api("/api/inbox", { since, wait: since < 0 ? 0 : 25 }); }
+    catch (err) {
+      if (staleToken(err)) { serverGone(); return; }
+      await sleep(3000);
+      continue;
+    }
+    if (!r || typeof r.seq !== "number") return;       // nothing there to listen to
+    since = r.seq;
+    for (const item of r.items || []) {
+      if (item.kind === "open" && typeof item.path === "string") revealPath(item.path, item.line);
+      else if (item.kind === "notify") toast(String(item.text || ""));
+    }
+  }
+}
+
 /* ------------------------------------------- workspace: first, and the graph
 
    cortex opens on the place to work: the rail, and a terminal already there
@@ -7009,6 +7033,11 @@ async function adoptTerm(t, replay, where = {}) {
   // answered then, by the window that was. Answering again on replay would
   // type the answers into whatever is at the prompt today.
   term.screen.onReply = (s) => termSend(term, s);
+  // likewise what it copies: only what it copies from now on
+  term.screen.onCopy = (text) => {
+    if (navigator.clipboard) navigator.clipboard.writeText(text).then(
+      () => toast("copied by the program in the terminal"), () => {});
+  };
   if (!term.alive) termEnded(term);
   termNews(term, true);
   renderTabs();
@@ -7063,12 +7092,14 @@ function watchTerms() {
 async function rejoinTerm(term) {
   try {
     const got = await api("/api/term/replay", { id: term.id });
-    const answer = term.screen.onReply;
+    const answer = term.screen.onReply, copy = term.screen.onCopy;
     term.screen.onReply = null;              // as above: old questions, already answered
+    term.screen.onCopy = null;
     term.screen.reset();
     term.from = got.seq;
     term.screen.write(decodeChunk(term, got.data));
     term.screen.onReply = answer;
+    term.screen.onCopy = copy;
     if (term.view) term.view.refresh();
   } catch (err) { /* the next poll tries again */ }
 }
@@ -7461,8 +7492,51 @@ function muxMount(tool) {
       changed: () => termNews(term),
       key: (e) => muxKey(tool, term, e),
       focus: () => { if (tool.focus !== term.id) muxFocus(tool, term.id, false); },
+      open: (link) => termOpen(term, link),
     });
   }
+}
+
+/* Ctrl and a click on something a program printed. An address opens in a
+   tab -- the window's own browser where it has one. A file opens in the
+   reader, at the line if one was given: `src/app.py:42` in a test's output
+   is one click from the code it is about. A name is looked for where the
+   program is now, which the server knows better than the page does. */
+async function termOpen(term, link) {
+  if (link.url) {
+    const local = /^file:\/\/[^/]*(\/.*)$/.exec(link.url);
+    if (!local) {
+      if (!/^https?:/i.test(link.url)) return;
+      if (SHELL) openBrowser(link.url);
+      else if (/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(link.url)) openPreview(link.url);
+      else window.open(link.url, "_blank", "noopener");
+      return;
+    }
+    try { link = { path: decodeURIComponent(local[1]), line: null }; }
+    catch (err) { return; }
+  }
+  let path = link.path;
+  if (path === "~" || path.startsWith("~/")) path = CFG.home + path.slice(1);
+  else if (!path.startsWith("/")) {
+    let cwd = term.screen.cwd || term.cwd || viewRoot;
+    try {
+      const r = await post("/api/term", { op: "where", id: term.id });
+      if (r && r.cwd) cwd = r.cwd;
+    } catch (err) { /* where it started will do */ }
+    path = cwd + "/" + path;
+  }
+  // a/./b and a/x/../b are a/b
+  const parts = [];
+  for (const part of path.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") parts.pop(); else parts.push(part);
+  }
+  path = "/" + parts.join("/");
+  if (path !== ROOT && !path.startsWith(ROOT + "/")) {
+    toast(`${shortPath(path)} is outside the folder cortex has open`, true);
+    return;
+  }
+  await revealPath(path, link.line);
 }
 function muxShown(tool) {
   muxMount(tool);
@@ -8443,8 +8517,11 @@ $("gone-retry").addEventListener("click", () => location.reload && location.relo
     // ...or stop agents in the middle of their work: cortex quits with its
     // window, and takes what it started with it
     // or end whatever is running in a terminal
-    const running = [...terms.values()].some((t) => t.alive);
-    if ((!drafts.size && !agentState.sessions.some(agentBusy) && !running) || gone) return;
+    // -- unless cortex keeps going without its window, which it does for
+    // exactly those: then only what was typed and not saved is at stake
+    const running = !CFG.keeps && ([...terms.values()].some((t) => t.alive)
+                                   || agentState.sessions.some(agentBusy));
+    if ((!drafts.size && !running) || gone) return;
     e.preventDefault();
     e.returnValue = "";
   });
@@ -8480,9 +8557,11 @@ $("gone-retry").addEventListener("click", () => location.reload && location.relo
   renderTabs();
   renderRail();
   renderStatus();
+  if (CFG.kept) toast("cortex kept working while its window was closed — it is all still here");
   work = PREFS.layout === "work" && canWork();
   if (work) document.body.classList.add("work");
   if (!SNAPSHOT) { loadAgents(); loadTerms().then(startWork); }
+  if (!SNAPSHOT && !CFG.capture) watchInbox();
   if (SNAPSHOT && CFG.view) await applyView(CFG.view);
   if (SNAPSHOT) {
     // the dock has only tours to offer, and only when there are some

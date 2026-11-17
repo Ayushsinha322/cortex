@@ -1009,6 +1009,14 @@ body.sidebar-open #stats{left:auto}
 .t-gi{background:var(--t-fg)}
 .t-cur{outline:1px solid var(--fg-dim);outline-offset:-1px}
 .term.focus .t-cur{outline:none;background:var(--t-fg);color:var(--t-bg)}
+/* the cursor as the program asked for it: a line under, or a bar before */
+.term .t-cur.t-cur-u,.term.focus .t-cur.t-cur-u{outline:none;background:none;color:inherit;
+  box-shadow:inset 0 -2px 0 var(--t-fg)}
+.term .t-cur.t-cur-bar,.term.focus .t-cur.t-cur-bar{outline:none;background:none;color:inherit;
+  box-shadow:inset 2px 0 0 var(--t-fg)}
+.term:not(.focus) .t-cur.t-cur-u,.term:not(.focus) .t-cur.t-cur-bar{opacity:.55}
+/* text that leads somewhere: ctrl and a click opens it */
+.t-link{text-decoration:underline dotted;text-underline-offset:2px}
 .t-f0{color:var(--t0)}.t-g0{background:var(--t0)}
 .t-f1{color:var(--t1)}.t-g1{background:var(--t1)}
 .t-f2{color:var(--t2)}.t-g2{background:var(--t2)}
